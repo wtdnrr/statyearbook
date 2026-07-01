@@ -1,0 +1,1 @@
+"""Annual statistics assistant backend."""
