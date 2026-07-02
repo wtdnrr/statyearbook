@@ -5,6 +5,7 @@ from pathlib import Path
 
 from app.db.schema import DB_PATH
 from app.validation.engine import ValidationEngine
+from app.validation.profile_repository import SQLiteValidationProfileRepository
 from app.validation.sqlite_repository import SQLiteValidationRepository
 
 
@@ -15,19 +16,22 @@ def run_validations(db_path: Path = DB_PATH) -> dict[str, int | str]:
         raise RuntimeError("검수할 연보 데이터가 없습니다.")
 
     tables = repository.load_tables(report["id"])
-    engine = ValidationEngine()
-    issues = engine.validate(tables)
+    profile_repository = SQLiteValidationProfileRepository(db_path)
+    profiles = profile_repository.ensure_profiles(report_id=report["id"], tables=tables)
+    engine = ValidationEngine(profiles=profiles)
+    outcome = engine.evaluate(tables)
     run_id = repository.save_run(
         report_id=report["id"],
         rules_version=engine.rules_version,
-        issues=issues,
+        issues=outcome.issues,
+        checks=outcome.checks,
     )
 
     return {
         "run_id": run_id,
         "report_id": report["id"],
         "tables": len(tables),
-        "issues": len(issues),
+        "issues": len(outcome.issues),
     }
 
 
@@ -50,4 +54,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

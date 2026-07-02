@@ -58,6 +58,29 @@ ON stat_tables(report_id, table_order);
 CREATE INDEX IF NOT EXISTS idx_stat_table_cells_table_position
 ON stat_table_cells(table_id, row_index, col_index);
 
+CREATE TABLE IF NOT EXISTS validation_profiles (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    table_code TEXT NOT NULL,
+    table_title TEXT NOT NULL DEFAULT '',
+    source_report_id INTEGER,
+    structure_signature TEXT NOT NULL,
+    table_type TEXT NOT NULL DEFAULT 'general',
+    status TEXT NOT NULL DEFAULT 'draft',
+    source TEXT NOT NULL DEFAULT 'heuristic',
+    llm_model TEXT,
+    rules_json TEXT NOT NULL DEFAULT '{}',
+    notes TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    approved_at TEXT,
+    approved_by TEXT,
+    FOREIGN KEY (source_report_id) REFERENCES annual_reports(id) ON DELETE SET NULL,
+    UNIQUE (table_code, structure_signature)
+);
+
+CREATE INDEX IF NOT EXISTS idx_validation_profiles_code_latest
+ON validation_profiles(table_code, updated_at DESC, id DESC);
+
 CREATE TABLE IF NOT EXISTS validation_runs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     report_id INTEGER NOT NULL,
@@ -93,6 +116,33 @@ ON validation_runs(report_id, completed_at DESC, id DESC);
 
 CREATE INDEX IF NOT EXISTS idx_validation_issues_run_table
 ON validation_issues(run_id, table_id);
+
+CREATE TABLE IF NOT EXISTS validation_checks (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id INTEGER NOT NULL,
+    table_id INTEGER NOT NULL,
+    profile_id INTEGER,
+    rule_id TEXT NOT NULL,
+    check_type TEXT NOT NULL,
+    check_label TEXT NOT NULL,
+    location TEXT NOT NULL,
+    row_index INTEGER,
+    col_index INTEGER,
+    current_value TEXT NOT NULL DEFAULT '',
+    expected_value TEXT,
+    difference TEXT,
+    status TEXT NOT NULL DEFAULT '정상',
+    severity TEXT NOT NULL DEFAULT 'info',
+    detail TEXT NOT NULL,
+    formula TEXT,
+    confidence REAL,
+    FOREIGN KEY (run_id) REFERENCES validation_runs(id) ON DELETE CASCADE,
+    FOREIGN KEY (table_id) REFERENCES stat_tables(id) ON DELETE CASCADE,
+    FOREIGN KEY (profile_id) REFERENCES validation_profiles(id) ON DELETE SET NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_validation_checks_run_table
+ON validation_checks(run_id, table_id);
 """
 
 

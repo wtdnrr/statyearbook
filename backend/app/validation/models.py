@@ -30,6 +30,26 @@ class ValidationIssueRecord:
     formula: str | None = None
 
 
+@dataclass(frozen=True)
+class ValidationCheckRecord:
+    table_id: int
+    rule_id: str
+    check_type: str
+    check_label: str
+    location: str
+    current_value: str
+    expected_value: str | None
+    difference: str | None
+    status: str
+    severity: str
+    detail: str
+    row_index: int | None = None
+    col_index: int | None = None
+    formula: str | None = None
+    profile_id: int | None = None
+    confidence: float | None = None
+
+
 @dataclass
 class ValidationTable:
     id: int
@@ -104,4 +124,3 @@ def format_number(value: float) -> str:
     if value.is_integer():
         return f"{int(value):,}"
     return f"{value:,.1f}"
-

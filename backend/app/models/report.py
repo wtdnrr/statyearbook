@@ -26,6 +26,8 @@ class ValidationIssue(BaseModel):
     id: str
     type: str
     location: str
+    row_index: int | None = None
+    col_index: int | None = None
     current_value: str
     expected_value: str | None = None
     difference: str | None = None
@@ -116,3 +118,31 @@ class ReportPayload(BaseModel):
     summary: ReportSummary
     tables: list[StatTable]
     press_insights: list[PressInsight]
+
+
+class ValidationProfileSummary(BaseModel):
+    id: int
+    table_code: str
+    table_title: str
+    structure_signature: str
+    table_type: str
+    status: str
+    source: str
+    rules_count: int
+    requires_llm_review: bool = False
+    notes: str
+    created_at: str
+    updated_at: str
+    approved_at: str | None = None
+    approved_by: str | None = None
+
+
+class ValidationProfileApprovalRequest(BaseModel):
+    approved_by: str = "담당자"
+
+
+class ValidationRunResult(BaseModel):
+    run_id: int
+    report_id: int
+    tables: int
+    issues: int

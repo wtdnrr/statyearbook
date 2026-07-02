@@ -21,6 +21,8 @@ export interface ValidationIssue {
   id: string;
   type: string;
   location: string;
+  row_index?: number;
+  col_index?: number;
   current_value: string;
   expected_value?: string;
   difference?: string;

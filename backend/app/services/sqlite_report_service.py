@@ -207,7 +207,7 @@ class SQLiteReportService:
                 ChangeItem(
                     id=f"{table_id}-import",
                     category="구조화",
-                    item="HWPX 원문 표",
+                    item="원천 데이터 표",
                     previous="더미 데이터",
                     current="SQLite DB 적재",
                     status="정상",
@@ -247,6 +247,50 @@ def build_validation_issues(
     if run_id is None:
         return []
 
+    check_rows = connection.execute(
+        """
+        SELECT *
+        FROM validation_checks
+        WHERE run_id = ? AND table_id = ?
+        ORDER BY
+            CASE status
+                WHEN '오류 의심' THEN 0
+                WHEN '확인 필요' THEN 1
+                WHEN '정상' THEN 2
+                ELSE 3
+            END,
+            CASE severity
+                WHEN 'critical' THEN 0
+                WHEN 'warning' THEN 1
+                ELSE 2
+            END,
+            row_index IS NULL,
+            row_index,
+            col_index,
+            id
+        """,
+        (run_id, table_id),
+    ).fetchall()
+
+    if check_rows:
+        return [
+            ValidationIssue(
+                id=f"check-{row['id']}",
+                type=row["check_type"],
+                location=row["location"],
+                row_index=row["row_index"],
+                col_index=row["col_index"],
+                current_value=row["current_value"],
+                expected_value=row["expected_value"],
+                difference=row["difference"],
+                status=row["status"],
+                severity=row["severity"],
+                detail=row["detail"],
+                formula=row["formula"],
+            )
+            for row in check_rows
+        ]
+
     rows = connection.execute(
         """
         SELECT *
@@ -271,6 +315,8 @@ def build_validation_issues(
             id=f"issue-{row['id']}",
             type=row["issue_type"],
             location=row["location"],
+            row_index=row["row_index"],
+            col_index=row["col_index"],
             current_value=row["current_value"],
             expected_value=row["expected_value"],
             difference=row["difference"],

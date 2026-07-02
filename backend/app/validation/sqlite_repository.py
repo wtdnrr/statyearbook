@@ -5,7 +5,12 @@ from pathlib import Path
 import sqlite3
 
 from app.db.schema import DB_PATH, connect, init_db
-from app.validation.models import ValidationCell, ValidationIssueRecord, ValidationTable
+from app.validation.models import (
+    ValidationCell,
+    ValidationCheckRecord,
+    ValidationIssueRecord,
+    ValidationTable,
+)
 
 
 class SQLiteValidationRepository:
@@ -45,9 +50,11 @@ class SQLiteValidationRepository:
         report_id: int,
         rules_version: str,
         issues: list[ValidationIssueRecord],
+        checks: list[ValidationCheckRecord] | None = None,
     ) -> int:
         started_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         completed_at = started_at
+        check_records = checks or []
 
         with connect(self._db_path) as connection:
             init_db(connection)
@@ -92,6 +99,38 @@ class SQLiteValidationRepository:
                         for issue in issues
                     ],
                 )
+                connection.executemany(
+                    """
+                    INSERT INTO validation_checks (
+                        run_id, table_id, profile_id, rule_id, check_type, check_label,
+                        location, row_index, col_index, current_value, expected_value,
+                        difference, status, severity, detail, formula, confidence
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    [
+                        (
+                            run_id,
+                            check.table_id,
+                            check.profile_id,
+                            check.rule_id,
+                            check.check_type,
+                            check.check_label,
+                            check.location,
+                            check.row_index,
+                            check.col_index,
+                            check.current_value,
+                            check.expected_value,
+                            check.difference,
+                            check.status,
+                            check.severity,
+                            check.detail,
+                            check.formula,
+                            check.confidence,
+                        )
+                        for check in check_records
+                    ],
+                )
 
         return int(run_id)
 
@@ -130,4 +169,3 @@ class SQLiteValidationRepository:
                 for cell in cells
             ],
         )
-
