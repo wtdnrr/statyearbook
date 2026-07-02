@@ -47,9 +47,12 @@ export function DataGrid({
   const hasColumnHighlight = columns.some((column) => textMatches(column.label, highlight?.columnText));
   const highlightedCellRef = useRef<HTMLTableCellElement | null>(null);
   const highlightedRowRef = useRef<HTMLTableRowElement | null>(null);
-  const highlightKey = `${highlight?.rowText ?? ""}:${highlight?.columnText ?? ""}`;
 
   useEffect(() => {
+    if (scrollSignal <= 0) {
+      return;
+    }
+
     const target = highlightedCellRef.current ?? highlightedRowRef.current;
 
     target?.scrollIntoView({
@@ -57,7 +60,7 @@ export function DataGrid({
       inline: "center",
       behavior: "smooth",
     });
-  }, [highlightKey, scrollSignal]);
+  }, [scrollSignal]);
 
   return (
     <div className={`data-grid data-grid--${theme} ${stickyHeader ? "data-grid--sticky-header" : ""}`}>
@@ -111,7 +114,7 @@ export function DataGrid({
                       key={column.key}
                       ref={isCellHighlight ? highlightedCellRef : undefined}
                     >
-                      <span>{formatCellValue(row[column.key] ?? "")}</span>
+                      <span>{formatCellValue(row[column.key] ?? "", column.label)}</span>
                       {row[`${column.key}_en`] ? <small>{row[`${column.key}_en`]}</small> : null}
                     </td>
                   );

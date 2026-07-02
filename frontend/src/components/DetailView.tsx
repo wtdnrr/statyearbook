@@ -95,10 +95,18 @@ export function DetailView({ table, onBack }: DetailViewProps) {
       </header>
 
       <div className="detail-meta-strip">
-        <span>단위 {table.unit}</span>
-        <span>기준일 {table.metadata.base_date}</span>
-        <span>시트 {table.sheet_name}</span>
-        <span>수정일 {table.updated_at}</span>
+        <span>
+          <em>단위</em>
+          <strong>{table.unit}</strong>
+        </span>
+        <span>
+          <em>기준일</em>
+          <strong>{table.metadata.base_date}</strong>
+        </span>
+        <span>
+          <em>수정일</em>
+          <strong>{table.updated_at}</strong>
+        </span>
       </div>
 
       <div className="detail-workspace">

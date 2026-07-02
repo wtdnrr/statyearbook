@@ -1,5 +1,9 @@
-export function formatCellValue(value: string | number) {
+export function formatCellValue(value: string | number, columnLabel = "") {
   if (typeof value === "number") {
+    if (/연도|year/i.test(columnLabel) && Number.isInteger(value)) {
+      return String(value);
+    }
+
     return new Intl.NumberFormat("ko-KR", {
       maximumFractionDigits: Number.isInteger(value) ? 0 : 1,
     }).format(value);
