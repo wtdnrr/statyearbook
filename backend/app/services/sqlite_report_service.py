@@ -5,6 +5,7 @@ from pathlib import Path
 import re
 import sqlite3
 from typing import Any
+from urllib.parse import unquote
 
 from app.db.schema import DB_PATH, connect, init_db
 from app.models.report import (
@@ -92,7 +93,7 @@ class SQLiteReportService:
         warning_tables -= critical_tables
 
         return ReportSummary(
-            file_name=report["source_file_name"],
+            file_name=decode_display_text(report["source_file_name"]),
             base_year=str(report["year"]),
             total_tables=total,
             normal_count=max(total - len(critical_tables) - len(warning_tables), 0),
@@ -214,7 +215,7 @@ class SQLiteReportService:
             ],
             visualizations=build_visualizations(table_id, table_row, rows, columns),
             metadata=TableMetadata(
-                original_file=report["source_file_name"],
+                original_file=decode_display_text(report["source_file_name"]),
                 sheet_name=table_row["section_file"],
                 cell_range=table_row["cell_range"],
                 note=table_row["note"],
@@ -280,6 +281,11 @@ def build_validation_issues(
         )
         for row in rows
     ]
+
+
+def decode_display_text(value: str) -> str:
+    decoded = unquote(value)
+    return decoded or value
 
 
 def status_from_checks(checks: list[ValidationIssue]) -> tuple[str, str]:
