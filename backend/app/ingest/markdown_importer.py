@@ -22,6 +22,7 @@ from app.ingest.hwpx_importer import (
     is_metadata_row,
     numeric_value,
     parse_title_block,
+    split_bilingual,
 )
 
 
@@ -43,6 +44,36 @@ class LogicalTable:
     parts: list[TablePart] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
     sources: list[str] = field(default_factory=list)
+
+
+APPENDIX_TITLE_RE = re.compile(r"^부록\s*(\d+)(?:\s*-\s*(\d+))?\s+(.+)$")
+HEADER_HINTS = (
+    "구분",
+    "분류",
+    "지역",
+    "연도",
+    "기관",
+    "항목",
+    "유형",
+    "성별",
+    "직급",
+    "계급",
+    "classification",
+    "region",
+    "year",
+    "organization",
+    "institution",
+    "item",
+    "type",
+    "category",
+)
+
+
+@dataclass(frozen=True)
+class AppendixSection:
+    code: str
+    title: str
+    title_en: str
 
 
 @dataclass
@@ -187,11 +218,11 @@ def normalize_text_line(line: str) -> str:
 
 
 def line_is_title_candidate(line: str) -> bool:
-    if not TABLE_CODE_RE.search(line):
-        return False
     if line.startswith("|") or line.startswith("<"):
         return False
-    return bool(re.search(r"[가-힣A-Za-z]", line))
+    if TABLE_CODE_RE.search(line) or APPENDIX_TITLE_RE.match(line):
+        return bool(re.search(r"[가-힣A-Za-z]", line))
+    return False
 
 
 def line_is_source(line: str) -> bool:
@@ -202,11 +233,51 @@ def line_is_note(line: str) -> bool:
     return line.startswith("#") or line.startswith("※") or line.startswith("- ") or "출처" in line
 
 
+def parse_appendix_title_block(
+    text: str,
+    appendix_section: AppendixSection | None,
+) -> tuple[str, str, str, str, str, AppendixSection | None] | None:
+    match = APPENDIX_TITLE_RE.match(text)
+    if not match:
+        return None
+
+    appendix_number, appendix_sub_number, title_text = match.groups()
+    title_ko, title_en = split_bilingual(title_text)
+    code = f"부록 {appendix_number}-{appendix_sub_number}" if appendix_sub_number else f"부록 {appendix_number}"
+
+    section_title = ""
+    section_title_en = ""
+    next_section = appendix_section
+    if appendix_sub_number:
+        if appendix_section and appendix_section.code == f"부록 {appendix_number}":
+            section_title = appendix_section.title
+            section_title_en = appendix_section.title_en
+    else:
+        next_section = AppendixSection(code=code, title=title_ko or code, title_en=title_en)
+
+    return code, title_ko or code, title_en, section_title, section_title_en, next_section
+
+
+def parse_markdown_title_block(
+    line: str,
+    appendix_section: AppendixSection | None,
+) -> tuple[str, str, str, str, str, AppendixSection | None] | None:
+    appendix_title = parse_appendix_title_block(line, appendix_section)
+    if appendix_title:
+        return appendix_title
+
+    parsed_title = parse_title_block(line)
+    if parsed_title:
+        return (*parsed_title, None)
+    return None
+
+
 def parse_markdown(source_path: Path) -> list[LogicalTable]:
     content = source_path.read_text(encoding="utf-8")
     lines = content.splitlines()
     tables: list[LogicalTable] = []
     current: LogicalTable | None = None
+    appendix_section: AppendixSection | None = None
     index = 0
 
     while index < len(lines):
@@ -223,7 +294,7 @@ def parse_markdown(source_path: Path) -> list[LogicalTable]:
                 index += 1
             html = "\n".join(block)
             matrix = html_table_matrix(html)
-            if current and is_data_table(matrix):
+            if current and is_data_table(matrix) and not is_publication_info_table(matrix):
                 current.parts.append(TablePart(matrix=matrix, raw_text=table_raw_text(matrix), source_kind="html"))
             index += 1
             continue
@@ -234,21 +305,24 @@ def parse_markdown(source_path: Path) -> list[LogicalTable]:
                 block.append(lines[index])
                 index += 1
             matrix = markdown_table_matrix(block)
-            if current and is_data_table(matrix):
+            if current and is_data_table(matrix) and not is_publication_info_table(matrix):
                 current.parts.append(
                     TablePart(matrix=matrix, raw_text=table_raw_text(matrix), source_kind="markdown")
                 )
             continue
 
         if line_is_title_candidate(line):
-            parsed_title = parse_title_block(line)
+            parsed_title = parse_markdown_title_block(line, appendix_section)
             if parsed_title:
+                code, title, title_en, section_title, section_title_en, next_appendix_section = parsed_title
+                if next_appendix_section is not None:
+                    appendix_section = next_appendix_section
                 current = LogicalTable(
-                    code=parsed_title[0],
-                    title=parsed_title[1],
-                    title_en=parsed_title[2],
-                    section_title=parsed_title[3],
-                    section_title_en=parsed_title[4],
+                    code=code,
+                    title=title,
+                    title_en=title_en,
+                    section_title=section_title,
+                    section_title_en=section_title_en,
                     table_order=len(tables) + 1,
                 )
                 tables.append(current)
@@ -265,6 +339,16 @@ def parse_markdown(source_path: Path) -> list[LogicalTable]:
 
 def table_raw_text(matrix: list[list[str]]) -> str:
     return " ".join(cell for row in matrix for cell in row if cell)
+
+
+def is_publication_info_table(matrix: list[list[str]]) -> bool:
+    raw_text = table_raw_text(matrix)
+    normalized = compact_signature_cell(raw_text)
+    return (
+        "통계연보" in raw_text
+        and ("발행처" in raw_text or "publishedby" in normalized)
+        and ("편집" in raw_text or "editedby" in normalized)
+    )
 
 
 def normalize_matrix(parts: Iterable[TablePart]) -> list[list[str]]:
@@ -295,6 +379,116 @@ def normalize_matrix(parts: Iterable[TablePart]) -> list[list[str]]:
     return [row + [""] * (max_cols - len(row)) for row in rows]
 
 
+def normalized_part_rows(part: TablePart) -> list[list[str]]:
+    rows: list[list[str]] = []
+    max_cols = 0
+
+    for source_row in part.matrix:
+        cleaned_row = [cell.strip() for cell in source_row]
+        if not any(cleaned_row) or is_metadata_row(cleaned_row):
+            continue
+        max_cols = max(max_cols, len(cleaned_row))
+        rows.append(cleaned_row)
+
+    return [row + [""] * (max_cols - len(row)) for row in rows]
+
+
+def compact_signature_cell(value: str) -> str:
+    return re.sub(r"\s+", "", value).lower()
+
+
+def row_looks_like_header(row: list[str]) -> bool:
+    joined = " ".join(row).lower()
+    normalized = compact_signature_cell(joined)
+    if any(hint in normalized for hint in HEADER_HINTS):
+        return True
+
+    non_empty = [cell for cell in row if cell.strip()]
+    if not non_empty:
+        return False
+
+    numeric_cells = sum(1 for cell in non_empty if numeric_value(cell) is not None)
+    return numeric_cells == 0
+
+
+def part_structure_signature(part: TablePart) -> tuple[str, bool]:
+    rows = normalized_part_rows(part)
+    if not rows:
+        return "", False
+
+    max_cols = max((len(row) for row in rows), default=0)
+    has_header = row_looks_like_header(rows[0])
+    if not has_header:
+        return f"cols={max_cols};data_continuation", False
+
+    header_count = max(guess_header_count(rows), 1)
+    header_rows = rows[: min(header_count, 5)]
+    signature_rows = [
+        "|".join(compact_signature_cell(cell) for cell in row)
+        for row in header_rows
+    ]
+    return f"cols={max_cols};" + "||".join(signature_rows), True
+
+
+def signature_column_count(signature: str) -> int | None:
+    match = re.match(r"cols=(\d+);", signature)
+    return int(match.group(1)) if match else None
+
+
+def split_table_by_part_structure(table: LogicalTable) -> list[LogicalTable]:
+    if len(table.parts) <= 1:
+        return [table]
+
+    groups: list[tuple[str, list[TablePart]]] = []
+    for part in table.parts:
+        signature, has_header = part_structure_signature(part)
+        if not groups:
+            groups.append((signature, [part]))
+            continue
+
+        last_signature, last_parts = groups[-1]
+        if not has_header and signature_column_count(signature) == signature_column_count(last_signature):
+            last_parts.append(part)
+            continue
+
+        if signature == last_signature:
+            last_parts.append(part)
+            continue
+
+        groups.append((signature, [part]))
+
+    if len(groups) <= 1:
+        return [table]
+
+    split_tables: list[LogicalTable] = []
+    for group_index, (_, parts) in enumerate(groups, start=1):
+        split_tables.append(
+            LogicalTable(
+                code=f"{table.code} 표{group_index}",
+                title=f"{table.title} 표 {group_index}",
+                title_en=table.title_en,
+                section_title=table.section_title,
+                section_title_en=table.section_title_en,
+                table_order=table.table_order,
+                parts=parts,
+                notes=list(table.notes),
+                sources=list(table.sources),
+            )
+        )
+    return split_tables
+
+
+def split_tables_by_part_structure(tables: Iterable[LogicalTable]) -> list[LogicalTable]:
+    split_tables: list[LogicalTable] = []
+    for table in tables:
+        split_tables.extend(split_table_by_part_structure(table))
+
+    for table_order, table in enumerate(split_tables, start=1):
+        table.table_order = table_order
+
+    return split_tables
+
+
 def insert_report(
     connection: sqlite3.Connection,
     *,
@@ -319,7 +513,7 @@ def insert_report(
 
     inserted_tables = 0
     inserted_cells = 0
-    for table in parsed_tables:
+    for table in split_tables_by_part_structure(parsed_tables):
         matrix = normalize_matrix(table.parts)
         if not matrix or max((len(row) for row in matrix), default=0) < 2:
             continue

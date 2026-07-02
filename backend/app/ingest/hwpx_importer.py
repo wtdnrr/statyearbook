@@ -222,8 +222,13 @@ def extract_unit_and_base_date(raw_text: str) -> tuple[str, str]:
 
 
 def is_metadata_row(row: list[str]) -> bool:
-    joined = " ".join(cell for cell in row if cell)
-    return "단위" in joined and ("기준" in joined or "As of" in joined)
+    non_empty_cells = [cell.strip() for cell in row if cell.strip()]
+    joined = " ".join(non_empty_cells)
+    if "단위" in joined and ("기준" in joined or "As of" in joined):
+        return True
+    if ("기준" in joined or "As of" in joined) and len(set(non_empty_cells)) <= 2:
+        return True
+    return False
 
 
 def normalize_matrix(parts: Iterable[TablePart]) -> list[list[str]]:
