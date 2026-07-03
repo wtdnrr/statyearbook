@@ -120,7 +120,7 @@ def table_matrix(table: ET.Element) -> list[list[str]]:
         for target_row in range(row_index, row_index + row_span):
             for target_col in range(col_index, col_index + col_span):
                 if target_row < max_row and target_col < max_col and not matrix[target_row][target_col]:
-                    matrix[target_row][target_col] = text
+                    matrix[target_row][target_col] = text if target_col == col_index else ""
 
     return matrix
 
@@ -234,6 +234,8 @@ def is_metadata_row(row: list[str]) -> bool:
 def normalize_matrix(parts: Iterable[TablePart]) -> list[list[str]]:
     rows: list[list[str]] = []
     max_cols = 0
+    seen_data_signatures: set[tuple[str, ...]] = set()
+    data_started = False
 
     for part in parts:
         for row in part.matrix:
@@ -242,6 +244,13 @@ def normalize_matrix(parts: Iterable[TablePart]) -> list[list[str]]:
             if is_metadata_row(row):
                 continue
             cleaned_row = [cell.strip() for cell in row]
+            row_signature = tuple(cleaned_row)
+            if data_started and row_signature in seen_data_signatures:
+                continue
+            if any(numeric_value(cell) is not None for cell in cleaned_row[1:]):
+                data_started = True
+            if data_started:
+                seen_data_signatures.add(row_signature)
             max_cols = max(max_cols, len(cleaned_row))
             rows.append(cleaned_row)
 

@@ -172,9 +172,10 @@ def html_table_matrix(html: str) -> list[list[str]]:
         for cell in source_row:
             apply_pending()
             for offset in range(cell.col_span):
-                row.append(cell.text)
+                text = cell.text if offset == 0 else ""
+                row.append(text)
                 if cell.row_span > 1:
-                    rowspans[col_index + offset] = (cell.text, cell.row_span - 1)
+                    rowspans[col_index + offset] = (text, cell.row_span - 1)
             col_index += cell.col_span
         apply_pending()
         matrix.append(row)
@@ -386,6 +387,7 @@ def normalize_matrix(parts: Iterable[TablePart]) -> list[list[str]]:
     rows: list[list[str]] = []
     max_cols = 0
     header_signature: tuple[str, ...] | None = None
+    seen_data_signatures: set[tuple[str, ...]] = set()
     data_started = False
 
     for part in parts:
@@ -397,12 +399,17 @@ def normalize_matrix(parts: Iterable[TablePart]) -> list[list[str]]:
             row_signature = tuple(cleaned_row)
             if data_started and header_signature and row_signature == header_signature:
                 continue
+            if data_started and row_signature in seen_data_signatures:
+                continue
 
             if header_signature is None:
                 header_signature = row_signature
 
-            if any(numeric_value(cell) is not None for cell in cleaned_row[1:]):
+            has_numeric_data = any(numeric_value(cell) is not None for cell in cleaned_row[1:])
+            if has_numeric_data:
                 data_started = True
+            if data_started:
+                seen_data_signatures.add(row_signature)
 
             max_cols = max(max_cols, len(cleaned_row))
             rows.append(cleaned_row)

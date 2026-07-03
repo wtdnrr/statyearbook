@@ -1,6 +1,8 @@
 from pathlib import Path
 import sqlite3
 
+from app.validation.catalog import REQUIRED_RULE_DEFINITIONS
+
 
 DB_PATH = Path(__file__).with_name("annual_statistics.sqlite")
 
@@ -57,6 +59,16 @@ ON stat_tables(report_id, table_order);
 
 CREATE INDEX IF NOT EXISTS idx_stat_table_cells_table_position
 ON stat_table_cells(table_id, row_index, col_index);
+
+CREATE TABLE IF NOT EXISTS validation_rule_definitions (
+    key TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    default_status TEXT NOT NULL,
+    default_severity TEXT NOT NULL,
+    owner_role TEXT NOT NULL,
+    description TEXT NOT NULL,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
 
 CREATE TABLE IF NOT EXISTS validation_profiles (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -157,4 +169,34 @@ def connect(db_path: Path | None = None) -> sqlite3.Connection:
 
 def init_db(connection: sqlite3.Connection) -> None:
     connection.executescript(SCHEMA_SQL)
+    seed_validation_rule_definitions(connection)
     connection.commit()
+
+
+def seed_validation_rule_definitions(connection: sqlite3.Connection) -> None:
+    connection.executemany(
+        """
+        INSERT INTO validation_rule_definitions (
+            key, name, default_status, default_severity, owner_role, description
+        )
+        VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT(key) DO UPDATE SET
+            name = excluded.name,
+            default_status = excluded.default_status,
+            default_severity = excluded.default_severity,
+            owner_role = excluded.owner_role,
+            description = excluded.description,
+            updated_at = CURRENT_TIMESTAMP
+        """,
+        [
+            (
+                definition.key,
+                definition.name,
+                definition.default_status,
+                definition.default_severity,
+                definition.owner_role,
+                definition.description,
+            )
+            for definition in REQUIRED_RULE_DEFINITIONS
+        ],
+    )

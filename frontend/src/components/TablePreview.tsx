@@ -8,28 +8,13 @@ import {
 } from "lucide-react";
 
 import type { StatTable } from "../types";
+import { resolveIssueLocation } from "../utils/validationLocation";
 import { DataGrid } from "./DataGrid";
 import { StatusBadge } from "./StatusBadge";
 
 interface TablePreviewProps {
   table: StatTable;
   onOpen: () => void;
-}
-
-function splitIssueLocation(location: string) {
-  const parts = location.trim().split(/\s+/);
-
-  if (parts.length >= 2) {
-    return {
-      row: parts.slice(0, -1).join(" "),
-      column: parts.at(-1) ?? location,
-    };
-  }
-
-  return {
-    row: location,
-    column: "검수 대상",
-  };
 }
 
 export function TablePreview({ table, onOpen }: TablePreviewProps) {
@@ -96,7 +81,7 @@ export function TablePreview({ table, onOpen }: TablePreviewProps) {
         {activeIssues.length > 0 ? (
           <div className="review-list">
             {activeIssues.map((issue) => {
-              const issueLocation = splitIssueLocation(issue.location);
+              const issueLocation = resolveIssueLocation(table, issue);
 
               return (
                 <article className="review-item" key={issue.id}>

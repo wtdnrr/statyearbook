@@ -9,10 +9,33 @@ from app.validation.models import (
     ValidationTable,
     clean_display_text,
     format_number,
+    normalize_text,
     parse_numeric_text,
 )
 from app.validation.profiles import ValidationProfile
-from app.validation.rules import ValidationRule, cell_number, cell_text, combined_row_label, column_count
+from app.validation.rules import (
+    ValidationRule,
+    cell_number,
+    cell_text,
+    column_count,
+    combined_row_label,
+    is_total_like,
+    leading_label_columns,
+)
+
+
+def median(values: list[float]) -> float:
+    ordered = sorted(values)
+    midpoint = len(ordered) // 2
+    if len(ordered) % 2:
+        return ordered[midpoint]
+    return (ordered[midpoint - 1] + ordered[midpoint]) / 2
+
+
+def contains_korean_term(text: str, term: str) -> bool:
+    if term == "계":
+        return bool(re.search(r"(^|[\s/·])계($|[\s/·])", text))
+    return term in text
 
 
 class ProfileStateRule(ValidationRule):
@@ -79,7 +102,9 @@ class ProfileSpecRule(ValidationRule):
             if not self._should_execute(spec):
                 continue
             rule_type = spec.get("type")
-            if rule_type == "metadata_required":
+            if rule_type == "unit_required":
+                spec_issues, spec_checks = self._validate_unit(table, profile, spec)
+            elif rule_type == "metadata_required":
                 spec_issues, spec_checks = self._validate_metadata(table, profile, spec)
             elif rule_type == "row_label_required":
                 spec_issues, spec_checks = self._validate_row_labels(table, profile, spec)
@@ -97,6 +122,16 @@ class ProfileSpecRule(ValidationRule):
                 spec_issues, spec_checks = self._validate_row_arithmetic(table, profile, spec)
             elif rule_type == "row_ratio":
                 spec_issues, spec_checks = self._validate_row_ratio(table, profile, spec)
+            elif rule_type == "growth_rate_scan":
+                spec_issues, spec_checks = self._validate_growth_rate_scan(table, profile, spec)
+            elif rule_type == "row_growth_rate":
+                spec_issues, spec_checks = self._validate_row_growth_rate(table, profile, spec)
+            elif rule_type == "outlier_columns":
+                spec_issues, spec_checks = self._validate_outliers(table, profile, spec)
+            elif rule_type == "spelling_static":
+                spec_issues, spec_checks = self._validate_static_spelling(table, profile, spec)
+            elif rule_type == "translation_static":
+                spec_issues, spec_checks = self._validate_static_translation(table, profile, spec)
             else:
                 spec_issues, spec_checks = [], []
 
@@ -112,6 +147,78 @@ class ProfileSpecRule(ValidationRule):
         if spec.get("category") == "template" and confidence < 0.9:
             return False
         return True
+
+    def _check_type(self, spec: dict[str, Any], fallback: str) -> str:
+        return str(spec.get("check_type") or fallback)
+
+    def _failure_status(self, spec: dict[str, Any]) -> str:
+        return str(spec.get("failure_status") or ("오류 의심" if spec.get("severity") == "critical" else "확인 필요"))
+
+    def _status(self, spec: dict[str, Any], passed: bool) -> str:
+        return "정상" if passed else self._failure_status(spec)
+
+    def _severity(self, spec: dict[str, Any], passed: bool) -> str:
+        return "info" if passed else str(spec.get("severity") or "warning")
+
+    def _check_from_pass_fail(
+        self,
+        table: ValidationTable,
+        profile: ValidationProfile,
+        spec: dict[str, Any],
+        *,
+        fallback_check_type: str,
+        location: str,
+        current_value: str,
+        expected_value: str | None,
+        difference: str | None,
+        passed: bool,
+        detail: str,
+        row_index: int | None = None,
+        col_index: int | None = None,
+        formula: str | None = None,
+    ) -> ValidationCheckRecord:
+        return self._check_record(
+            table,
+            profile,
+            spec,
+            check_type=self._check_type(spec, fallback_check_type),
+            location=location,
+            current_value=current_value,
+            expected_value=expected_value,
+            difference=None if passed else difference,
+            status=self._status(spec, passed),
+            severity=self._severity(spec, passed),
+            detail=detail,
+            row_index=row_index,
+            col_index=col_index,
+            formula=formula,
+        )
+
+    def _validate_unit(
+        self,
+        table: ValidationTable,
+        profile: ValidationProfile,
+        spec: dict[str, Any],
+    ) -> tuple[list[ValidationIssueRecord], list[ValidationCheckRecord]]:
+        current = table.unit.strip()
+        expected = str(spec.get("expected_unit") or "").strip()
+        has_unit = bool(current)
+        matches_profile = not expected or normalize_text(current) == normalize_text(expected)
+        passed = has_unit and matches_profile
+        difference = "누락" if not has_unit else "프로파일 단위와 다름"
+        check = self._check_from_pass_fail(
+            table,
+            profile,
+            spec,
+            fallback_check_type="단위 검수",
+            location="메타정보 단위",
+            current_value=current or "없음",
+            expected_value=expected or "단위 입력",
+            difference=difference,
+            passed=passed,
+            detail="단위가 입력되어 있고 저장된 검수 프로파일의 단위 기준과 일치하는지 확인했습니다.",
+        )
+        return ([] if passed else [self._issue_from_check(check)]), [check]
 
     def _validate_metadata(
         self,
@@ -134,13 +241,13 @@ class ProfileSpecRule(ValidationRule):
                 table,
                 profile,
                 spec,
-                check_type="메타정보 확인",
+                check_type=self._check_type(spec, "빈값 검수"),
                 location=f"메타정보 {label}",
                 current_value=str(value).strip() or "없음",
                 expected_value=label,
                 difference=None if passed else "누락",
-                status="정상" if passed else "확인 필요",
-                severity="info" if passed else str(spec.get("severity", "warning")),
+                status=self._status(spec, passed),
+                severity=self._severity(spec, passed),
                 detail=f"{label} 메타데이터가 {'입력되어 있습니다' if passed else '누락되어 있습니다'}.",
             )
             checks.append(check)
@@ -167,13 +274,13 @@ class ProfileSpecRule(ValidationRule):
             table,
             profile,
             spec,
-            check_type="빈값 확인",
+            check_type=self._check_type(spec, "빈값 검수"),
             location="데이터 행 항목명",
             current_value=f"누락 {len(missing_rows)}건",
             expected_value="누락 0건",
             difference=None if passed else f"{len(missing_rows)}건",
-            status="정상" if passed else "확인 필요",
-            severity="info" if passed else str(spec.get("severity", "warning")),
+            status=self._status(spec, passed),
+            severity=self._severity(spec, passed),
             detail="데이터가 있는 행의 항목명 빈값 여부를 확인했습니다.",
             row_index=missing_rows[0] if missing_rows else None,
             col_index=0 if missing_rows else None,
@@ -204,13 +311,13 @@ class ProfileSpecRule(ValidationRule):
             table,
             profile,
             spec,
-            check_type="숫자 형식",
+            check_type=self._check_type(spec, "숫자 형식 검수"),
             location=f"{first[0] + 1}행 {first[1] + 1}열" if first else "전체 숫자 셀",
             current_value=first[2] if first else "정상",
             expected_value="숫자로 해석 가능한 형식",
             difference=None if passed else f"{len(suspicious)}건",
-            status="정상" if passed else "확인 필요",
-            severity="info" if passed else str(spec.get("severity", "warning")),
+            status=self._status(spec, passed),
+            severity=self._severity(spec, passed),
             detail="숫자처럼 보이는 셀이 숫자값으로 해석되는지 확인했습니다.",
             row_index=first[0] if first else None,
             col_index=first[1] if first else None,
@@ -241,13 +348,13 @@ class ProfileSpecRule(ValidationRule):
             table,
             profile,
             spec,
-            check_type="연도 축 확인",
+            check_type=self._check_type(spec, "빈값 검수"),
             location="연도 행/열",
             current_value=", ".join(str(year) for year in unique_years[:8]) + ("..." if len(unique_years) > 8 else ""),
             expected_value=expected,
             difference=None,
-            status="정상" if passed else "확인 필요",
-            severity="info" if passed else str(spec.get("severity", "warning")),
+            status=self._status(spec, passed),
+            severity=self._severity(spec, passed),
             detail="연도별 추이표로 판단된 표에서 연도 축을 인식했습니다.",
         )
         return ([] if passed else [self._issue_from_check(check)]), [check]
@@ -277,7 +384,7 @@ class ProfileSpecRule(ValidationRule):
                 table,
                 profile,
                 spec,
-                check_type="합계 불일치",
+                check_type="합계 검수",
                 row_index=row_index,
                 col_index=target_col,
                 current=current,
@@ -324,7 +431,7 @@ class ProfileSpecRule(ValidationRule):
                 table,
                 profile,
                 spec,
-                check_type="계산식 확인",
+                check_type="합계 검수",
                 row_index=row_index,
                 col_index=target_col,
                 current=current,
@@ -365,7 +472,7 @@ class ProfileSpecRule(ValidationRule):
                 table,
                 profile,
                 spec,
-                check_type="비율 확인",
+                check_type="비율 검수",
                 row_index=row_index,
                 col_index=target_col,
                 current=current,
@@ -376,6 +483,266 @@ class ProfileSpecRule(ValidationRule):
             checks.append(check)
             if not passed:
                 issues.append(self._issue_from_check(check))
+        return issues, checks
+
+    def _validate_growth_rate_scan(
+        self,
+        table: ValidationTable,
+        profile: ValidationProfile,
+        spec: dict[str, Any],
+    ) -> tuple[list[ValidationIssueRecord], list[ValidationCheckRecord]]:
+        keywords = ("증감률", "증감율", "증가율", "감소율")
+        matches: list[tuple[int, int, str]] = []
+        for row_index, row in enumerate(table.matrix):
+            for col_index, cell in enumerate(row):
+                if cell is None:
+                    continue
+                text = clean_display_text(cell.text_value)
+                if any(keyword in normalize_text(text) for keyword in keywords):
+                    matches.append((row_index, col_index, text))
+
+        has_formula_profile = any(check.get("type") == "row_growth_rate" for check in profile.check_specs)
+        passed = not matches or has_formula_profile
+        first = matches[0] if matches else None
+        check = self._check_from_pass_fail(
+            table,
+            profile,
+            spec,
+            fallback_check_type="증감률 검수",
+            location=f"{first[0] + 1}행 {first[1] + 1}열" if first else "전체 표",
+            current_value=f"증감률 후보 {len(matches)}건",
+            expected_value="산식 프로파일 적용" if matches else "증감률 항목 없음",
+            difference=None if passed else "산식 해석 필요",
+            passed=passed,
+            detail="표 안의 증감률 항목 존재 여부와 실행 가능한 증감률 산식 프로파일 유무를 확인했습니다.",
+            row_index=first[0] if first else None,
+            col_index=first[1] if first else None,
+        )
+        return ([] if passed else [self._issue_from_check(check)]), [check]
+
+    def _validate_row_growth_rate(
+        self,
+        table: ValidationTable,
+        profile: ValidationProfile,
+        spec: dict[str, Any],
+    ) -> tuple[list[ValidationIssueRecord], list[ValidationCheckRecord]]:
+        target_col = int(spec.get("target_column", -1))
+        current_col = int(spec.get("current_column", -1))
+        previous_col = int(spec.get("previous_column", -1))
+        if not self._valid_columns(table, [target_col, current_col, previous_col]):
+            return [], []
+
+        issues: list[ValidationIssueRecord] = []
+        checks: list[ValidationCheckRecord] = []
+        multiplier = float(spec.get("multiplier", 100))
+        for row_index, row in table.data_rows():
+            current = cell_number(row, target_col)
+            current_value = cell_number(row, current_col)
+            previous_value = cell_number(row, previous_col)
+            if current is None or current_value is None or previous_value in {None, 0}:
+                continue
+
+            expected = (current_value - previous_value) / previous_value * multiplier
+            passed = abs(current - expected) <= float(spec.get("tolerance", 0.15))
+            check = self._calculation_check(
+                table,
+                profile,
+                spec,
+                check_type="증감률 검수",
+                row_index=row_index,
+                col_index=target_col,
+                current=current,
+                expected=expected,
+                passed=passed,
+                detail="통계표별 검수 기준에 정의된 전년 대비 증감률 산식을 확인했습니다.",
+            )
+            checks.append(check)
+            if not passed:
+                issues.append(self._issue_from_check(check))
+        return issues, checks
+
+    def _validate_outliers(
+        self,
+        table: ValidationTable,
+        profile: ValidationProfile,
+        spec: dict[str, Any],
+    ) -> tuple[list[ValidationIssueRecord], list[ValidationCheckRecord]]:
+        issues: list[ValidationIssueRecord] = []
+        checks: list[ValidationCheckRecord] = []
+        threshold = float(spec.get("mad_multiplier", 8.0))
+        max_findings = int(spec.get("max_findings", 1))
+        candidates: list[tuple[float, int, int, list, float, float]] = []
+
+        for col_index in [int(value) for value in spec.get("columns", [])]:
+            values: list[tuple[int, list, float]] = []
+            for row_index, row in table.data_rows():
+                label = combined_row_label(table, row)
+                if is_total_like(label) or normalize_text(label).startswith("소계"):
+                    continue
+                value = cell_number(row, col_index)
+                if value is not None:
+                    values.append((row_index, row, value))
+            if len(values) < 5:
+                continue
+
+            numeric_values = [value for _, _, value in values]
+            median_value = median(numeric_values)
+            deviations = [abs(value - median_value) for value in numeric_values]
+            mad = median(deviations)
+            if mad == 0:
+                continue
+
+            for row_index, row, value in values:
+                score = abs(value - median_value) / mad
+                if score <= threshold:
+                    continue
+                candidates.append((score, row_index, col_index, row, value, median_value))
+
+        for score, row_index, col_index, row, value, median_value in sorted(candidates, reverse=True)[:max_findings]:
+            check = self._check_from_pass_fail(
+                table,
+                profile,
+                spec,
+                fallback_check_type="이상치 검수",
+                location=f"{combined_row_label(table, row) or f'{row_index + 1}행'} {table.column_text(col_index)}",
+                current_value=format_number(value),
+                expected_value=f"중앙값 {format_number(median_value)} 기준",
+                difference=f"MAD {score:.1f}",
+                passed=False,
+                detail="같은 열의 값 분포에서 중앙값 대비 편차가 큰 값을 확인 대상으로 표시했습니다.",
+                row_index=row_index,
+                col_index=col_index,
+                formula=f"|값-중앙값|/MAD > {threshold:g}",
+            )
+            checks.append(check)
+            issues.append(self._issue_from_check(check))
+
+        if not checks:
+            check = self._check_from_pass_fail(
+                table,
+                profile,
+                spec,
+                fallback_check_type="이상치 검수",
+                location="전체 숫자 열",
+                current_value="이상치 후보 0건",
+                expected_value="급격한 분포 이탈 없음",
+                difference=None,
+                passed=True,
+                detail="검수 대상 숫자 열에서 통계적으로 큰 분포 이탈 후보가 발견되지 않았습니다.",
+            )
+            checks.append(check)
+        return issues, checks
+
+    def _validate_static_spelling(
+        self,
+        table: ValidationTable,
+        profile: ValidationProfile,
+        spec: dict[str, Any],
+    ) -> tuple[list[ValidationIssueRecord], list[ValidationCheckRecord]]:
+        issues: list[ValidationIssueRecord] = []
+        checks: list[ValidationCheckRecord] = []
+        for row_index, row in enumerate(table.matrix):
+            for col_index, cell in enumerate(row):
+                if cell is None or not cell.text_value:
+                    continue
+                for term in spec.get("terms", []):
+                    current = str(term.get("current", ""))
+                    expected = str(term.get("expected", ""))
+                    if not current or current not in cell.text_value:
+                        continue
+                    check = self._check_from_pass_fail(
+                        table,
+                        profile,
+                        spec,
+                        fallback_check_type="오탈자 검수",
+                        location=f"{row_index + 1}행 {col_index + 1}열",
+                        current_value=current,
+                        expected_value=expected,
+                        difference="표기 확인",
+                        passed=False,
+                        detail="정적 오탈자 사전에 등록된 표기 후보를 확인 대상으로 표시했습니다. 실제 서비스에서는 LLM 교정 결과와 담당자 승인값으로 확장됩니다.",
+                        row_index=row_index,
+                        col_index=col_index,
+                    )
+                    checks.append(check)
+                    issues.append(self._issue_from_check(check))
+                    if len(checks) >= 10:
+                        return issues, checks
+
+        if not checks:
+            checks.append(
+                self._check_from_pass_fail(
+                    table,
+                    profile,
+                    spec,
+                    fallback_check_type="오탈자 검수",
+                    location="전체 텍스트 셀",
+                    current_value="오탈자 후보 0건",
+                    expected_value="정적 사전 기준 통과",
+                    difference=None,
+                    passed=True,
+                    detail="정적 오탈자 사전에 등록된 표기 후보가 발견되지 않았습니다.",
+                )
+            )
+        return issues, checks
+
+    def _validate_static_translation(
+        self,
+        table: ValidationTable,
+        profile: ValidationProfile,
+        spec: dict[str, Any],
+    ) -> tuple[list[ValidationIssueRecord], list[ValidationCheckRecord]]:
+        issues: list[ValidationIssueRecord] = []
+        checks: list[ValidationCheckRecord] = []
+        label_columns = set(leading_label_columns(table))
+        for row_index, row in enumerate(table.matrix):
+            for col_index, cell in enumerate(row):
+                if cell is None or not cell.text_value:
+                    continue
+                if row_index >= table.header_count and col_index not in label_columns:
+                    continue
+                text = clean_display_text(cell.text_value)
+                for term in spec.get("terms", []):
+                    source = str(term.get("source", ""))
+                    expected = str(term.get("expected", ""))
+                    if not source or not expected or not contains_korean_term(text, source):
+                        continue
+                    if expected.lower() in text.lower():
+                        continue
+                    check = self._check_from_pass_fail(
+                        table,
+                        profile,
+                        spec,
+                        fallback_check_type="번역 검수",
+                        location=f"{row_index + 1}행 {col_index + 1}열",
+                        current_value=text,
+                        expected_value=expected,
+                        difference="영문 병기 확인",
+                        passed=False,
+                        detail="기본 국문/영문 병기 용어집 기준으로 영문 표기 누락 또는 불일치 후보를 표시했습니다. 실제 서비스에서는 LLM 번역 검수 결과로 확장됩니다.",
+                        row_index=row_index,
+                        col_index=col_index,
+                    )
+                    checks.append(check)
+                    issues.append(self._issue_from_check(check))
+                    if len(checks) >= 10:
+                        return issues, checks
+
+        if not checks:
+            checks.append(
+                self._check_from_pass_fail(
+                    table,
+                    profile,
+                    spec,
+                    fallback_check_type="번역 검수",
+                    location="헤더 및 항목명",
+                    current_value="번역 확인 후보 0건",
+                    expected_value="기본 용어집 기준 통과",
+                    difference=None,
+                    passed=True,
+                    detail="기본 국문/영문 병기 용어집 기준의 번역 확인 후보가 발견되지 않았습니다.",
+                )
+            )
         return issues, checks
 
     def _validate_column_sum(
@@ -413,7 +780,7 @@ class ProfileSpecRule(ValidationRule):
                 table,
                 profile,
                 spec,
-                check_type="합계 불일치",
+                check_type="합계 검수",
                 row_index=target_row,
                 col_index=col_index,
                 current=current,
@@ -444,19 +811,17 @@ class ProfileSpecRule(ValidationRule):
         row_label = combined_row_label(table, row) or table.row_label(row) or f"{row_index + 1}행"
         column_label = table.column_text(col_index)
         difference = current - expected
-        severity = "info" if passed else str(spec.get("severity") or "critical")
-        status = "정상" if passed else ("오류 의심" if severity == "critical" else "확인 필요")
         return self._check_record(
             table,
             profile,
             spec,
-            check_type=check_type,
+            check_type=self._check_type(spec, check_type),
             location=f"{row_label} {column_label}",
             current_value=format_number(current),
             expected_value=format_number(expected),
-            difference=format_number(difference),
-            status=status,
-            severity=severity,
+            difference=None if passed else format_number(difference),
+            status=self._status(spec, passed),
+            severity=self._severity(spec, passed),
             detail=f"{detail} 적용 기준: {spec.get('label', spec.get('id', '검수 기준'))}.",
             row_index=row_index,
             col_index=col_index,

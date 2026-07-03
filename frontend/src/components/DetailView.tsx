@@ -7,7 +7,8 @@ import {
   FileCode2,
 } from "lucide-react";
 
-import type { ColumnDefinition, StatTable, StatTablePart, ValidationIssue } from "../types";
+import type { StatTable, StatTablePart } from "../types";
+import { firstFocusableCheck, resolveIssueLocation } from "../utils/validationLocation";
 import { DataGrid } from "./DataGrid";
 import { StatusBadge } from "./StatusBadge";
 import { VisualPanel } from "./VisualPanel";
@@ -33,37 +34,6 @@ const tabs: Array<{ id: DetailTab; label: string }> = [
   { id: "metadata", label: "출처·메타정보" },
 ];
 
-function normalizeMatchText(value: string | number | undefined) {
-  return String(value ?? "")
-    .replace(/\([^)]*\)/g, "")
-    .replace(/[\s·,._-]/g, "")
-    .toLowerCase();
-}
-
-function inferIssueHighlight(table: StatTable, location: string | undefined) {
-  if (!location) {
-    return undefined;
-  }
-
-  const normalizedLocation = normalizeMatchText(location);
-  const firstColumnKey = table.columns[0]?.key;
-  const rowText = firstColumnKey
-    ? table.rows
-        .map((row) => String(row[firstColumnKey] ?? ""))
-        .filter(Boolean)
-        .sort((a, b) => b.length - a.length)
-        .find((value) => normalizedLocation.includes(normalizeMatchText(value)))
-    : undefined;
-  const columnText = table.columns
-    .filter((column) => column.key !== firstColumnKey)
-    .find((column) => normalizedLocation.includes(normalizeMatchText(column.label)))?.label;
-
-  return {
-    rowText,
-    columnText,
-  };
-}
-
 function rootTableAsPart(table: StatTable): StatTablePart {
   return {
     id: table.id,
@@ -82,71 +52,6 @@ function rootTableAsPart(table: StatTable): StatTablePart {
     visualizations: table.visualizations,
     metadata: table.metadata,
   };
-}
-
-function inferPartIssueHighlight(table: StatTablePart, location: string | undefined) {
-  return inferIssueHighlight(table as StatTable, location);
-}
-
-function displayColumnLabel(column: ColumnDefinition | undefined) {
-  if (!column) {
-    return "";
-  }
-
-  return [column.label, column.label_en].filter(Boolean).join(" ");
-}
-
-function cleanLocationPart(value: string) {
-  return value.replace(/\s+/g, " ").replace(/^[\s/·,-]+|[\s/·,-]+$/g, "").trim();
-}
-
-function stripColumnFromLocation(location: string, column: ColumnDefinition | undefined) {
-  if (!column) {
-    return location;
-  }
-
-  const partsToRemove = [column.label, column.label_en].filter(Boolean) as string[];
-  return cleanLocationPart(partsToRemove.reduce((value, part) => value.replace(part, ""), location));
-}
-
-function resolveIssueLocation(table: StatTablePart, issue: ValidationIssue) {
-  const firstColumnKey = table.columns[0]?.key;
-  const indexedColumn =
-    typeof issue.col_index === "number" && issue.col_index >= 0 ? table.columns[issue.col_index] : undefined;
-  const matchedColumn =
-    indexedColumn ??
-    table.columns
-      .slice(1)
-      .sort((a, b) => displayColumnLabel(b).length - displayColumnLabel(a).length)
-      .find((column) => normalizeMatchText(issue.location).includes(normalizeMatchText(displayColumnLabel(column))));
-  const rowLabelFromText = firstColumnKey
-    ? table.rows
-        .map((row) => String(row[firstColumnKey] ?? ""))
-        .filter(Boolean)
-        .sort((a, b) => b.length - a.length)
-        .find((value) => normalizeMatchText(issue.location).includes(normalizeMatchText(value)))
-    : undefined;
-  const rowLabelFromIndex =
-    typeof issue.row_index === "number" && firstColumnKey ? String(table.rows[issue.row_index]?.[firstColumnKey] ?? "") : "";
-
-  return {
-    row: cleanLocationPart(rowLabelFromText ?? rowLabelFromIndex) || stripColumnFromLocation(issue.location, matchedColumn),
-    column: displayColumnLabel(matchedColumn) || "검수 대상",
-  };
-}
-
-function issueTargetsTable(table: StatTablePart, issue: ValidationIssue) {
-  const firstColumnKey = table.columns[0]?.key;
-  const location = resolveIssueLocation(table, issue);
-  const rowMatchesTable =
-    Boolean(firstColumnKey && location.row) &&
-    table.rows.some((row) => normalizeMatchText(String(row[firstColumnKey] ?? "")).includes(normalizeMatchText(location.row)));
-
-  return location.column !== "검수 대상" || rowMatchesTable;
-}
-
-function firstFocusableCheck(table: StatTablePart, checks: ValidationIssue[]) {
-  return checks.find((check) => issueTargetsTable(table, check)) ?? checks[0];
 }
 
 export function DetailView({ table, onBack }: DetailViewProps) {
@@ -174,7 +79,7 @@ export function DetailView({ table, onBack }: DetailViewProps) {
         rowText: selectedIssueLocation.row,
         columnText: selectedIssueLocation.column === "검수 대상" ? undefined : selectedIssueLocation.column,
       }
-    : inferPartIssueHighlight(activePart, selectedIssue?.location);
+    : undefined;
   const parentHierarchy = table.hierarchy.slice(0, -1);
 
   function selectIssue(issueId: string) {

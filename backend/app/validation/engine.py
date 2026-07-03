@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 import hashlib
 import json
 
+from app.validation.cross_table_rules import DEFAULT_CROSS_TABLE_RULES, AdjacentDuplicateTableRule
 from app.validation.models import ValidationCheckRecord, ValidationIssueRecord, ValidationTable
 from app.validation.profile_rules import ProfileSpecRule, ProfileStateRule
 from app.validation.profiles import ValidationProfile
@@ -23,7 +24,7 @@ class ValidationEngine:
         *,
         profiles: dict[str, ValidationProfile] | None = None,
     ) -> None:
-        self._rules = rules or DEFAULT_RULES
+        self._rules = rules if rules is not None else ([] if profiles is not None else DEFAULT_RULES)
         self._profiles = profiles or {}
         self._profile_rules: list[ValidationRule] = []
         if profiles is not None:
@@ -31,10 +32,14 @@ class ValidationEngine:
                 ProfileStateRule(self._profiles),
                 ProfileSpecRule(self._profiles),
             ]
+        self._cross_table_rules: list[AdjacentDuplicateTableRule] = DEFAULT_CROSS_TABLE_RULES
 
     @property
     def rules_version(self) -> str:
-        rule_ids = ",".join(rule.rule_id for rule in [*self._profile_rules, *self._rules])
+        rule_ids = ",".join(
+            rule.rule_id
+            for rule in [*self._profile_rules, *self._rules, *self._cross_table_rules]
+        )
         profile_payload = {
             code: {
                 "id": profile.id,
@@ -62,6 +67,12 @@ class ValidationEngine:
                     checks.extend(profile_checks)
                 else:
                     issues.extend(rule.validate(table))
+
+        for rule in self._cross_table_rules:
+            result = rule.evaluate(tables)
+            issues.extend(result.issues)
+            checks.extend(result.checks)
+
         return ValidationRunOutcome(issues=dedupe_issues(issues), checks=checks)
 
 

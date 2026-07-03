@@ -6,6 +6,7 @@ import json
 import re
 from typing import Any, Protocol
 
+from app.validation.catalog import rule_definition_payload, rule_spec
 from app.validation.models import ValidationTable, clean_display_text, normalize_text
 from app.validation.rules import (
     REGION_NAMES,
@@ -23,17 +24,14 @@ from app.validation.rules import (
 PROFILE_VERSION = "validation-profile-v1"
 
 COMMON_RULE_IDS = [
-    "metadata.required",
-    "cell.row_label_required",
-    "sum.row_total_column",
-    "sum.column_total_row",
-    "sum.region_total",
-    "formula.header_arithmetic",
-    "formula.explicit_ratio",
-    "formula.change_amount_rate",
-    "formula.row_ratio",
-    "spelling.ko.static",
-    "spelling.en.static",
+    "sum",
+    "ratio",
+    "growth_rate",
+    "outlier",
+    "spelling",
+    "translation",
+    "unit",
+    "empty",
 ]
 
 
@@ -137,6 +135,12 @@ class HeuristicProfileDraftProvider:
             source=self.source,
             rules={
                 "version": PROFILE_VERSION,
+                "roles": {
+                    "llm": "검수 명세 초안 작성자",
+                    "rule_engine": "DB 프로파일에 정의된 검수 명세 실행자",
+                    "owner": "검수 프로파일 및 결과 최종 승인자",
+                },
+                "rule_definitions": rule_definition_payload(),
                 "common_rules": COMMON_RULE_IDS,
                 "templates": templates,
                 "analysis": analysis,
@@ -295,39 +299,71 @@ def infer_profile_checks(
 
     checks.extend(infer_gender_total_rules(table))
     checks.extend(infer_header_formula_rules(table))
+    checks.extend(infer_growth_rate_rules(table))
     checks.extend(infer_total_column_rules(table))
     checks.extend(infer_total_row_rules(table))
+    checks.extend(outlier_check_specs(table))
+    checks.extend(static_spelling_check_specs(table))
+    checks.extend(static_translation_check_specs(table))
 
     return dedupe_check_specs(checks)
 
 
 def common_check_specs(table: ValidationTable) -> list[dict[str, Any]]:
     return [
-        {
-            "id": f"profile.{table.code}.metadata_required",
-            "type": "metadata_required",
-            "category": "common",
-            "label": "단위/기준일/출처 필수",
-            "fields": ["unit", "base_date", "source"],
-            "severity": "warning",
-            "confidence": 1.0,
-        },
-        {
-            "id": f"profile.{table.code}.row_label_required",
-            "type": "row_label_required",
-            "category": "common",
-            "label": "데이터 행 항목명 필수",
-            "severity": "warning",
-            "confidence": 0.95,
-        },
+        rule_spec(
+            "unit",
+            {
+                "id": f"profile.{table.code}.unit_required",
+                "type": "unit_required",
+                "category": "common",
+                "label": "단위 필수 및 프로파일 단위 일치",
+                "expected_unit": table.unit,
+                "confidence": 1.0,
+            },
+        ),
+        rule_spec(
+            "empty",
+            {
+                "id": f"profile.{table.code}.metadata_required",
+                "type": "metadata_required",
+                "category": "common",
+                "label": "기준일/출처 필수",
+                "fields": ["base_date", "source"],
+                "confidence": 1.0,
+            },
+        ),
+        rule_spec(
+            "empty",
+            {
+                "id": f"profile.{table.code}.row_label_required",
+                "type": "row_label_required",
+                "category": "common",
+                "label": "데이터 행 항목명 필수",
+                "confidence": 0.95,
+            },
+        ),
         {
             "id": f"profile.{table.code}.numeric_format",
             "type": "numeric_format",
             "category": "common",
+            "check_type": "숫자 형식 검수",
             "label": "숫자 형식 검수",
+            "fields": [],
             "severity": "warning",
+            "failure_status": "확인 필요",
             "confidence": 0.9,
         },
+        rule_spec(
+            "growth_rate",
+            {
+                "id": f"profile.{table.code}.growth_rate_scan",
+                "type": "growth_rate_scan",
+                "category": "common",
+                "label": "증감률 항목 탐색",
+                "confidence": 0.75,
+            },
+        ),
     ]
 
 
@@ -362,7 +398,9 @@ def region_total_check_specs(table: ValidationTable) -> list[dict[str, Any]]:
         return []
 
     return [
-        {
+        rule_spec(
+            "sum",
+            {
             "id": f"profile.{table.code}.region_total",
             "type": "region_total",
             "category": "template",
@@ -370,10 +408,10 @@ def region_total_check_specs(table: ValidationTable) -> list[dict[str, Any]]:
             "target_row": target_row_index,
             "operand_rows": operand_rows,
             "columns": columns,
-            "severity": "critical",
             "tolerance": 1.0,
             "confidence": 0.95 if len(unique_regions) >= 15 else 0.82,
-        }
+            },
+        )
     ]
 
 
@@ -391,16 +429,18 @@ def year_sequence_check_specs(table: ValidationTable) -> list[dict[str, Any]]:
     if len(year_rows) < 2 and len(year_columns) < 2:
         return []
     return [
-        {
+        rule_spec(
+            "empty",
+            {
             "id": f"profile.{table.code}.year_axis",
             "type": "year_sequence",
             "category": "template",
             "label": "연도 축 인식 및 연속성 확인",
             "row_indices": year_rows,
             "columns": year_columns,
-            "severity": "warning",
             "confidence": 0.75,
-        }
+            },
+        )
     ]
 
 
@@ -426,17 +466,19 @@ def infer_total_column_rules(table: ValidationTable) -> list[dict[str, Any]]:
         if len(operand_columns) < 2:
             continue
         specs.append(
-            {
+            rule_spec(
+                "sum",
+                {
                 "id": f"profile.{table.code}.row_total_c{target_col}",
                 "type": "row_sum",
                 "category": "template",
                 "label": f"{leaf_header(table, target_col)} = 같은 행 세부 열 합계",
                 "target_column": target_col,
                 "operand_columns": operand_columns,
-                "severity": "critical",
                 "tolerance": 1.0,
                 "confidence": 0.82 if parent_key else 0.68,
-            }
+                },
+            )
         )
     return specs
 
@@ -465,7 +507,9 @@ def infer_total_row_rules(table: ValidationTable) -> list[dict[str, Any]]:
         if len(operand_rows) < 2 or not columns:
             continue
         specs.append(
-            {
+            rule_spec(
+                "sum",
+                {
                 "id": f"profile.{table.code}.column_total_r{target_row_index}",
                 "type": "column_sum",
                 "category": "template",
@@ -473,10 +517,10 @@ def infer_total_row_rules(table: ValidationTable) -> list[dict[str, Any]]:
                 "target_row": target_row_index,
                 "operand_rows": operand_rows,
                 "columns": columns,
-                "severity": "critical",
                 "tolerance": 1.0,
                 "confidence": 0.88 if len(operand_rows) >= 8 else 0.62,
-            }
+                },
+            )
         )
         break
     return specs
@@ -534,17 +578,19 @@ def infer_gender_total_rules(table: ValidationTable) -> list[dict[str, Any]]:
         return []
 
     return [
-        {
+        rule_spec(
+            "sum",
+            {
             "id": f"profile.{table.code}.gender_total",
             "type": "row_sum",
             "category": "table",
             "label": "계 = 남성 + 여성",
             "target_column": total_col,
             "operand_columns": [male_col, female_col],
-            "severity": "critical",
             "tolerance": 1.0,
             "confidence": 0.96,
-        }
+            },
+        )
     ]
 
 
@@ -568,17 +614,19 @@ def infer_header_formula_rules(table: ValidationTable) -> list[dict[str, Any]]:
                 continue
             seen.add(key)
             rules.append(
-                {
+                rule_spec(
+                    "sum",
+                    {
                     "id": f"profile.{table.code}.{target_symbol}_arithmetic",
                     "type": "row_arithmetic",
                     "category": "table",
                     "label": f"{target_symbol}={match.group(2).replace(' ', '')}",
                     "target_column": target_col,
                     "terms": terms,
-                    "severity": "critical",
                     "tolerance": 0.5,
                     "confidence": 0.98,
-                }
+                    },
+                )
             )
 
         for match in re.finditer(r"\(([a-z])\s*/\s*([a-z])(?:\s*\*\s*100)?\)", label, re.IGNORECASE):
@@ -593,7 +641,9 @@ def infer_header_formula_rules(table: ValidationTable) -> list[dict[str, Any]]:
                 continue
             seen.add(key)
             rules.append(
-                {
+                rule_spec(
+                    "ratio",
+                    {
                     "id": f"profile.{table.code}.{numerator_symbol}_{denominator_symbol}_ratio",
                     "type": "row_ratio",
                     "category": "table",
@@ -602,13 +652,134 @@ def infer_header_formula_rules(table: ValidationTable) -> list[dict[str, Any]]:
                     "numerator_column": numerator_col,
                     "denominator_column": denominator_col,
                     "multiplier": 100,
-                    "severity": "critical",
                     "tolerance": 0.15,
                     "confidence": 0.98,
-                }
+                    },
+                )
             )
 
     return rules
+
+
+def infer_growth_rate_rules(table: ValidationTable) -> list[dict[str, Any]]:
+    symbol_to_column = symbol_columns(table)
+    current_col = symbol_to_column.get("a")
+    previous_col = symbol_to_column.get("b")
+    if current_col is None or previous_col is None:
+        return []
+
+    rules: list[dict[str, Any]] = []
+    for col_index in range(column_count(table)):
+        label = table.column_text(col_index)
+        normalized = normalize_text(label)
+        if col_index in {current_col, previous_col}:
+            continue
+        if not any(keyword in normalized for keyword in ("증감률", "증감율", "증가율", "감소율", "growthrate", "changerate")):
+            continue
+        rules.append(
+            rule_spec(
+                "growth_rate",
+                {
+                    "id": f"profile.{table.code}.growth_rate_c{col_index}",
+                    "type": "row_growth_rate",
+                    "category": "table",
+                    "label": "증감률 = (현재값-전년값)/전년값*100",
+                    "target_column": col_index,
+                    "current_column": current_col,
+                    "previous_column": previous_col,
+                    "denominator": "previous",
+                    "multiplier": 100,
+                    "tolerance": 0.15,
+                    "confidence": 0.88,
+                },
+            )
+        )
+    return rules
+
+
+def outlier_check_specs(table: ValidationTable) -> list[dict[str, Any]]:
+    label_columns = set(leading_label_columns(table))
+    columns: list[int] = []
+    for col_index in range(column_count(table)):
+        if col_index in label_columns:
+            continue
+        values = []
+        for _, row in table.data_rows():
+            label = combined_row_label(table, row)
+            if is_total_like(label) or infer_row_role(label) == "subtotal":
+                continue
+            value = cell_number(row, col_index)
+            if value is not None:
+                values.append(value)
+        if len(values) >= 5:
+            columns.append(col_index)
+
+    if not columns:
+        return []
+
+    return [
+        rule_spec(
+            "outlier",
+            {
+                "id": f"profile.{table.code}.outlier_columns",
+                "type": "outlier_columns",
+                "category": "common",
+                "label": "열별 이상치 후보",
+                "columns": columns,
+                "mad_multiplier": 20.0,
+                "max_findings": 1,
+                "confidence": 0.7,
+            },
+        )
+    ]
+
+
+def static_spelling_check_specs(table: ValidationTable) -> list[dict[str, Any]]:
+    return [
+        rule_spec(
+            "spelling",
+            {
+                "id": f"profile.{table.code}.spelling_static",
+                "type": "spelling_static",
+                "category": "common",
+                "label": "국문/영문 정적 오탈자 사전",
+                "terms": [
+                    {"current": "잔액율", "expected": "잔액률", "language": "ko"},
+                    {"current": "Claasifi-cation", "expected": "Classification", "language": "en"},
+                    {"current": "Ele7ction", "expected": "Election", "language": "en"},
+                    {"current": "Nuber", "expected": "Number", "language": "en"},
+                ],
+                "confidence": 0.8,
+            },
+        )
+    ]
+
+
+def static_translation_check_specs(table: ValidationTable) -> list[dict[str, Any]]:
+    return [
+        rule_spec(
+            "translation",
+            {
+                "id": f"profile.{table.code}.translation_static",
+                "type": "translation_static",
+                "category": "common",
+                "label": "기본 국문/영문 병기 용어집",
+                "terms": [
+                    {"source": "구분", "expected": "Classification"},
+                    {"source": "지역", "expected": "Region"},
+                    {"source": "합계", "expected": "Total"},
+                    {"source": "계", "expected": "Total"},
+                    {"source": "남성", "expected": "Male"},
+                    {"source": "여성", "expected": "Female"},
+                    {"source": "단위", "expected": "Unit"},
+                    {"source": "잔액률", "expected": "Balance Ratio"},
+                    {"source": "증감률", "expected": "Rate of Change"},
+                ],
+                "scope": "header_and_label_cells",
+                "confidence": 0.65,
+            },
+        )
+    ]
 
 
 def symbol_columns(table: ValidationTable) -> dict[str, int]:
