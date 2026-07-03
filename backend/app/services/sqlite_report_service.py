@@ -23,6 +23,7 @@ from app.models.report import (
     Visualization,
     VisualizationSeries,
 )
+from app.validation.models import restore_hyphenated_line_breaks
 
 
 class SQLiteReportService:
@@ -204,6 +205,7 @@ class SQLiteReportService:
                 source=table_row["source"],
                 base_date=table_row["base_date"] or f"{report['year']} 기준",
                 extracted_at=table_row["extracted_at"],
+                header_count=header_count,
             ),
         )
 
@@ -482,7 +484,7 @@ def header_count_from_cells(cells: list[sqlite3.Row], matrix: list[list[str]]) -
 
 
 def clean_label(text: str) -> str:
-    cleaned = re.sub(r"\s+", " ", text).strip()
+    cleaned = re.sub(r"\s+", " ", restore_hyphenated_line_breaks(text)).strip()
     if not cleaned:
         return ""
 
@@ -496,6 +498,7 @@ def clean_label(text: str) -> str:
 
 
 def english_label(text: str) -> str | None:
+    text = restore_hyphenated_line_breaks(text)
     matches = re.findall(r"[A-Za-z][A-Za-z0-9 /&().,%·･+\-']*", text)
     value = " ".join(item.strip() for item in matches if item.strip())
     return value or None

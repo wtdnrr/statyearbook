@@ -107,8 +107,13 @@ def normalize_text(value: str) -> str:
     return re.sub(r"[\s·,._\-()/%]+", "", value).lower()
 
 
+def restore_hyphenated_line_breaks(value: str) -> str:
+    return re.sub(r"(?<=[A-Za-z])(?:\s+-\s*|-\s+)(?=[A-Za-z])", "", value)
+
+
 def clean_display_text(value: str) -> str:
-    return re.sub(r"\s+", " ", value).strip()
+    restored = restore_hyphenated_line_breaks(value)
+    return re.sub(r"\s+", " ", restored).strip()
 
 
 def parse_numeric_text(value: str) -> float | None:

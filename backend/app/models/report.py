@@ -69,6 +69,7 @@ class TableMetadata(BaseModel):
     source: str
     base_date: str
     extracted_at: str
+    header_count: int = 0
 
 
 class TableHierarchyItem(BaseModel):

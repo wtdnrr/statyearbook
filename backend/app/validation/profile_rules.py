@@ -645,10 +645,11 @@ class ProfileSpecRule(ValidationRule):
             for col_index, cell in enumerate(row):
                 if cell is None or not cell.text_value:
                     continue
+                text = clean_display_text(cell.text_value)
                 for term in spec.get("terms", []):
                     current = str(term.get("current", ""))
                     expected = str(term.get("expected", ""))
-                    if not current or current not in cell.text_value:
+                    if not current or current not in text:
                         continue
                     check = self._check_from_pass_fail(
                         table,
