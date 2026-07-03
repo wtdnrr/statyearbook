@@ -903,6 +903,14 @@ button {
   line-height: 1.2;
 }
 
+.data-grid__footnote {
+  margin-left: 2px;
+  color: var(--muted);
+  font-size: 0.65em;
+  font-weight: 800;
+  vertical-align: super;
+}
+
 .align-left {
   text-align: left;
 }

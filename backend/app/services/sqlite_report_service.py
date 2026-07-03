@@ -146,7 +146,7 @@ class SQLiteReportService:
     ) -> StatTable:
         cells = connection.execute(
             """
-            SELECT row_index, col_index, text_value, numeric_value, is_header
+            SELECT row_index, col_index, text_value, numeric_value, is_header, footnote_marker
             FROM stat_table_cells
             WHERE table_id = ?
             ORDER BY row_index, col_index
@@ -155,9 +155,10 @@ class SQLiteReportService:
         ).fetchall()
 
         matrix = matrix_from_cells(cells)
+        footnote_matrix = footnote_matrix_from_cells(cells)
         header_count = header_count_from_cells(cells, matrix)
         columns = build_columns(matrix, header_count)
-        rows = build_rows(matrix, columns, header_count)
+        rows = build_rows(matrix, columns, header_count, footnote_matrix)
         table_id = f"db-{table_row['id']}"
         checks = build_validation_issues(connection, run_id, table_row["id"])
         status, status_label = status_from_checks(checks)
@@ -459,6 +460,20 @@ def matrix_from_cells(cells: list[sqlite3.Row]) -> list[list[str]]:
     return matrix
 
 
+def footnote_matrix_from_cells(cells: list[sqlite3.Row]) -> list[list[str]]:
+    if not cells:
+        return []
+
+    max_row = max(cell["row_index"] for cell in cells)
+    max_col = max(cell["col_index"] for cell in cells)
+    matrix = [["" for _ in range(max_col + 1)] for _ in range(max_row + 1)]
+
+    for cell in cells:
+        matrix[cell["row_index"]][cell["col_index"]] = cell["footnote_marker"] or ""
+
+    return matrix
+
+
 def header_count_from_cells(cells: list[sqlite3.Row], matrix: list[list[str]]) -> int:
     header_rows = {cell["row_index"] for cell in cells if cell["is_header"]}
     if header_rows:
@@ -524,9 +539,10 @@ def build_rows(
     matrix: list[list[str]],
     columns: list[ColumnDefinition],
     header_count: int,
+    footnote_matrix: list[list[str]] | None = None,
 ) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
-    for source_row in matrix[header_count:]:
+    for matrix_row_index, source_row in enumerate(matrix[header_count:], start=header_count):
         if not any(cell for cell in source_row):
             continue
 
@@ -534,6 +550,13 @@ def build_rows(
         for col_index, column in enumerate(columns):
             value = source_row[col_index] if col_index < len(source_row) else ""
             row[column.key] = coerce_display_value(value)
+            footnote = (
+                footnote_matrix[matrix_row_index][col_index]
+                if footnote_matrix and matrix_row_index < len(footnote_matrix) and col_index < len(footnote_matrix[matrix_row_index])
+                else ""
+            )
+            if footnote:
+                row[f"{column.key}_footnote"] = footnote
         rows.append(row)
 
     return rows

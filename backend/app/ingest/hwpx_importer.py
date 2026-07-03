@@ -12,9 +12,49 @@ import xml.etree.ElementTree as ET
 from zipfile import ZipFile
 
 from app.db.schema import DB_PATH, connect, init_db
+from app.ingest.anomaly import annotate_adjacent_duplicate_tables
+from app.ingest.cell_text import split_cell_text
 
 
 TABLE_CODE_RE = re.compile(r"(?<!\d)(?:[1-9]|1[0-9])-\d{1,2}-\d{1,2}(?:-\d{1,2})?(?![-\d])")
+KOREAN_HEADER_LABELS = {
+    "구분",
+    "분류",
+    "지역",
+    "연도",
+    "기관",
+    "기관명",
+    "항목",
+    "유형",
+    "성별",
+    "직급",
+    "계급",
+}
+ENGLISH_HEADER_LABELS = {
+    "classification",
+    "region",
+    "year",
+    "organization",
+    "institution",
+    "item",
+    "type",
+    "category",
+    "sex",
+    "grade",
+}
+HEADER_LABEL_PAIRS = (
+    ("구분", "classification"),
+    ("분류", "classification"),
+    ("지역", "region"),
+    ("연도", "year"),
+    ("기관", "organization"),
+    ("기관명", "institution"),
+    ("항목", "item"),
+    ("유형", "type"),
+    ("성별", "sex"),
+    ("직급", "grade"),
+    ("계급", "grade"),
+)
 
 DOMAIN_BY_CHAPTER = {
     "1": "조직",
@@ -231,8 +271,9 @@ def is_metadata_row(row: list[str]) -> bool:
     return False
 
 
-def normalize_matrix(parts: Iterable[TablePart]) -> list[list[str]]:
+def normalize_matrix_with_footnotes(parts: Iterable[TablePart]) -> tuple[list[list[str]], list[list[str]]]:
     rows: list[list[str]] = []
+    footnote_rows: list[list[str]] = []
     max_cols = 0
     seen_data_signatures: set[tuple[str, ...]] = set()
     data_started = False
@@ -243,7 +284,9 @@ def normalize_matrix(parts: Iterable[TablePart]) -> list[list[str]]:
                 continue
             if is_metadata_row(row):
                 continue
-            cleaned_row = [cell.strip() for cell in row]
+            parsed_cells = [split_cell_text(cell) for cell in row]
+            cleaned_row = [text for text, _ in parsed_cells]
+            footnote_row = [marker for _, marker in parsed_cells]
             row_signature = tuple(cleaned_row)
             if data_started and row_signature in seen_data_signatures:
                 continue
@@ -253,8 +296,17 @@ def normalize_matrix(parts: Iterable[TablePart]) -> list[list[str]]:
                 seen_data_signatures.add(row_signature)
             max_cols = max(max_cols, len(cleaned_row))
             rows.append(cleaned_row)
+            footnote_rows.append(footnote_row)
 
-    return [row + [""] * (max_cols - len(row)) for row in rows]
+    return (
+        [row + [""] * (max_cols - len(row)) for row in rows],
+        [row + [""] * (max_cols - len(row)) for row in footnote_rows],
+    )
+
+
+def normalize_matrix(parts: Iterable[TablePart]) -> list[list[str]]:
+    matrix, _ = normalize_matrix_with_footnotes(parts)
+    return matrix
 
 
 def numeric_value(text: str) -> float | None:
@@ -268,9 +320,20 @@ def numeric_value(text: str) -> float | None:
 
 def looks_like_data_row(row: list[str]) -> bool:
     first_cell = row[0] if row else ""
-    if re.search(r"구분|분류|지역|연도|기관|Classification|Region|Year|Organization", first_cell):
+    if looks_like_header_label(first_cell):
         return False
     return any(numeric_value(cell) is not None for cell in row[1:])
+
+
+def looks_like_header_label(value: str) -> bool:
+    lines = [line.strip() for line in value.splitlines() if line.strip()]
+    for line in lines:
+        compact_line = re.sub(r"\s+", "", line).lower()
+        if compact_line in KOREAN_HEADER_LABELS or compact_line in ENGLISH_HEADER_LABELS:
+            return True
+
+    compact = re.sub(r"\s+", "", value).lower()
+    return any(f"{ko}{english}" in compact for ko, english in HEADER_LABEL_PAIRS)
 
 
 def guess_header_count(matrix: list[list[str]]) -> int:
@@ -342,8 +405,8 @@ def import_hwpx(
 
         inserted_tables = 0
         inserted_cells = 0
-        for table in parsed_tables:
-            matrix = normalize_matrix(table.parts)
+        for table in annotate_adjacent_duplicate_tables(parsed_tables):
+            matrix, footnote_matrix = normalize_matrix_with_footnotes(table.parts)
             if not matrix or max((len(row) for row in matrix), default=0) < 2:
                 continue
 
@@ -389,9 +452,10 @@ def import_hwpx(
                     connection.execute(
                         """
                         INSERT INTO stat_table_cells (
-                            table_id, row_index, col_index, text_value, numeric_value, is_header
+                            table_id, row_index, col_index, text_value, numeric_value,
+                            is_header, footnote_marker
                         )
-                        VALUES (?, ?, ?, ?, ?, ?)
+                        VALUES (?, ?, ?, ?, ?, ?, ?)
                         """,
                         (
                             table_id,
@@ -400,6 +464,7 @@ def import_hwpx(
                             value,
                             numeric_value(value),
                             1 if row_index < header_count else 0,
+                            footnote_matrix[row_index][col_index],
                         ),
                     )
                     inserted_cells += 1

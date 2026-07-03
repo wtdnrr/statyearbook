@@ -50,6 +50,7 @@ CREATE TABLE IF NOT EXISTS stat_table_cells (
     text_value TEXT NOT NULL DEFAULT '',
     numeric_value REAL,
     is_header INTEGER NOT NULL DEFAULT 0,
+    footnote_marker TEXT NOT NULL DEFAULT '',
     FOREIGN KEY (table_id) REFERENCES stat_tables(id) ON DELETE CASCADE,
     UNIQUE (table_id, row_index, col_index)
 );
@@ -169,8 +170,21 @@ def connect(db_path: Path | None = None) -> sqlite3.Connection:
 
 def init_db(connection: sqlite3.Connection) -> None:
     connection.executescript(SCHEMA_SQL)
+    ensure_column(connection, "stat_table_cells", "footnote_marker", "TEXT NOT NULL DEFAULT ''")
     seed_validation_rule_definitions(connection)
     connection.commit()
+
+
+def ensure_column(
+    connection: sqlite3.Connection,
+    table_name: str,
+    column_name: str,
+    column_definition: str,
+) -> None:
+    columns = {row["name"] for row in connection.execute(f"PRAGMA table_info({table_name})")}
+    if column_name in columns:
+        return
+    connection.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_definition}")
 
 
 def seed_validation_rule_definitions(connection: sqlite3.Connection) -> None:

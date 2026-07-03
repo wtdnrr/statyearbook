@@ -10,6 +10,8 @@ import sqlite3
 from typing import Iterable
 
 from app.db.schema import DB_PATH, connect, init_db
+from app.ingest.anomaly import annotate_adjacent_duplicate_tables
+from app.ingest.cell_text import split_cell_text
 from app.ingest.hwpx_importer import (
     TABLE_CODE_RE,
     append_unique,
@@ -383,8 +385,9 @@ def is_publication_info_table(matrix: list[list[str]]) -> bool:
     )
 
 
-def normalize_matrix(parts: Iterable[TablePart]) -> list[list[str]]:
+def normalize_matrix_with_footnotes(parts: Iterable[TablePart]) -> tuple[list[list[str]], list[list[str]]]:
     rows: list[list[str]] = []
+    footnote_rows: list[list[str]] = []
     max_cols = 0
     header_signature: tuple[str, ...] | None = None
     seen_data_signatures: set[tuple[str, ...]] = set()
@@ -392,7 +395,9 @@ def normalize_matrix(parts: Iterable[TablePart]) -> list[list[str]]:
 
     for part in parts:
         for source_row in part.matrix:
-            cleaned_row = [cell.strip() for cell in source_row]
+            parsed_cells = [split_cell_text(cell) for cell in source_row]
+            cleaned_row = [text for text, _ in parsed_cells]
+            footnote_row = [marker for _, marker in parsed_cells]
             if not any(cleaned_row) or is_metadata_row(cleaned_row):
                 continue
 
@@ -413,8 +418,17 @@ def normalize_matrix(parts: Iterable[TablePart]) -> list[list[str]]:
 
             max_cols = max(max_cols, len(cleaned_row))
             rows.append(cleaned_row)
+            footnote_rows.append(footnote_row)
 
-    return [row + [""] * (max_cols - len(row)) for row in rows]
+    return (
+        [row + [""] * (max_cols - len(row)) for row in rows],
+        [row + [""] * (max_cols - len(row)) for row in footnote_rows],
+    )
+
+
+def normalize_matrix(parts: Iterable[TablePart]) -> list[list[str]]:
+    matrix, _ = normalize_matrix_with_footnotes(parts)
+    return matrix
 
 
 def normalized_part_rows(part: TablePart) -> list[list[str]]:
@@ -422,7 +436,7 @@ def normalized_part_rows(part: TablePart) -> list[list[str]]:
     max_cols = 0
 
     for source_row in part.matrix:
-        cleaned_row = [cell.strip() for cell in source_row]
+        cleaned_row = [split_cell_text(cell)[0] for cell in source_row]
         if not any(cleaned_row) or is_metadata_row(cleaned_row):
             continue
         max_cols = max(max_cols, len(cleaned_row))
@@ -551,8 +565,9 @@ def insert_report(
 
     inserted_tables = 0
     inserted_cells = 0
-    for table in split_tables_by_part_structure(parsed_tables):
-        matrix = normalize_matrix(table.parts)
+    prepared_tables = annotate_adjacent_duplicate_tables(split_tables_by_part_structure(parsed_tables))
+    for table in prepared_tables:
+        matrix, footnote_matrix = normalize_matrix_with_footnotes(table.parts)
         if not matrix or max((len(row) for row in matrix), default=0) < 2:
             continue
 
@@ -598,9 +613,10 @@ def insert_report(
                 connection.execute(
                     """
                     INSERT INTO stat_table_cells (
-                        table_id, row_index, col_index, text_value, numeric_value, is_header
+                        table_id, row_index, col_index, text_value, numeric_value,
+                        is_header, footnote_marker
                     )
-                    VALUES (?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         table_id,
@@ -609,6 +625,7 @@ def insert_report(
                         value,
                         numeric_value(value),
                         1 if row_index < header_count else 0,
+                        footnote_matrix[row_index][col_index],
                     ),
                 )
                 inserted_cells += 1

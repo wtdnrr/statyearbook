@@ -25,8 +25,8 @@ class AdjacentDuplicateTableRule:
     """Detect likely source/import errors across neighboring logical tables."""
 
     rule_id = "structure.adjacent_duplicate_table"
-    check_type = "표 구조 확인"
-    check_label = "인접 표 중복 확인"
+    check_type = "표 제목/본문 확인"
+    check_label = "인접 표 제목-본문 혼합 확인"
 
     def evaluate(self, tables: list[ValidationTable]) -> CrossTableValidationResult:
         issues: list[ValidationIssueRecord] = []
@@ -63,14 +63,15 @@ class AdjacentDuplicateTableRule:
             check_label=self.check_label,
             location="표 전체",
             current_value=f"{previous.code} {previous.title}와 {similarity * 100:.1f}% 유사",
-            expected_value="표 제목과 일치하는 독립 표 데이터",
-            difference="중복 또는 표 경계 오류 의심",
+            expected_value=f"{table.code} {table.title} 제목과 일치하는 독립 표 데이터",
+            difference="제목-본문 혼합 또는 표 경계 오류 의심",
             status="오류 의심",
             severity="critical",
             detail=(
-                f"{table.code} {table.title} 표의 본문이 바로 앞 표인 "
-                f"{previous.code} {previous.title}와 거의 같습니다. 원천 문서 또는 DB에서 "
-                "서로 다른 표 제목에 같은 표 데이터가 연결되었는지 확인하세요."
+                f"{table.code} {table.title} 표의 본문과 헤더가 바로 앞 표인 "
+                f"{previous.code} {previous.title}의 내용과 거의 같습니다. 현재 표 제목은 "
+                f"'{table.title}'이지만 실제 표 항목은 '{previous.title}' 계열로 보이므로, "
+                "원천 문서 또는 DB에서 제목과 표 데이터가 섞였는지 확인하세요."
             ),
             row_index=None,
             col_index=None,

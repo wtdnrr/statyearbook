@@ -102,6 +102,7 @@ export function DataGrid({
                   const columnMatches = textMatches(column.label, highlight?.columnText);
                   const isCellHighlight =
                     rowMatches && (columnMatches || (!hasColumnHighlight && columnIndex === 0));
+                  const footnote = row[`${column.key}_footnote`];
 
                   return (
                     <td
@@ -114,7 +115,10 @@ export function DataGrid({
                       key={column.key}
                       ref={isCellHighlight ? highlightedCellRef : undefined}
                     >
-                      <span>{formatCellValue(row[column.key] ?? "", column.label)}</span>
+                      <span>
+                        {formatCellValue(row[column.key] ?? "", column.label)}
+                        {footnote ? <sup className="data-grid__footnote">{footnote}</sup> : null}
+                      </span>
                       {row[`${column.key}_en`] ? <small>{row[`${column.key}_en`]}</small> : null}
                     </td>
                   );
