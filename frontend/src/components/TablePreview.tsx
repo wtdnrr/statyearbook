@@ -39,23 +39,16 @@ export function TablePreview({ table, onOpen }: TablePreviewProps) {
   return (
     <section className="preview-panel" aria-label="선택 표 요약">
       <div className={`publication-head publication-head--${table.theme}`}>
-        <span>{table.code}</span>
-        <div>
-          <div className="hierarchy-trail">
+        <div className="publication-head__body">
+          <div className="publication-head__meta">
+            <span className="publication-head__code">{table.code}</span>
             {parentHierarchy.map((item) => (
-              <span key={`${item.code}-${item.title}`}>
+              <span className="publication-head__crumb" key={`${item.code}-${item.title}`}>
                 {item.code ? <em>{item.code}</em> : null}
                 <strong>{item.title}</strong>
               </span>
             ))}
           </div>
-          <h2>{table.title}</h2>
-          <p>{table.title_en}</p>
-        </div>
-      </div>
-
-      <div className="preview-title-row">
-        <div>
           <h2>{table.title}</h2>
           <p>{table.title_en}</p>
         </div>
@@ -68,12 +61,12 @@ export function TablePreview({ table, onOpen }: TablePreviewProps) {
           <strong>{table.domain}</strong>
         </span>
         <span className="meta-chip">
-          <em>단위</em>
-          <strong>{table.unit}</strong>
-        </span>
-        <span className="meta-chip">
           <em>기준일</em>
           <strong>{table.metadata.base_date}</strong>
+        </span>
+        <span className="meta-chip">
+          <em>단위</em>
+          <strong>{table.unit}</strong>
         </span>
         {table.parts.length > 0 ? (
           <span className="meta-chip">

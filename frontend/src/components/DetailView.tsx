@@ -152,41 +152,37 @@ export function DetailView({ table, onBack }: DetailViewProps) {
           <ArrowLeft aria-hidden="true" size={19} />
         </button>
         <div className={`detail-title detail-title--${table.theme}`}>
-          <span>{table.code}</span>
-          <div>
+          <div className="detail-title__body">
+            <div className="detail-title__meta">
+              <span className="detail-title__code">{table.code}</span>
+              {parentHierarchy.map((item) => (
+                <span className="detail-title__crumb" key={`${item.code}-${item.title}`}>
+                  {item.code ? <em>{item.code}</em> : null}
+                  <strong>{item.title}</strong>
+                </span>
+              ))}
+            </div>
             <h1>{table.title}</h1>
             <p>{table.title_en}</p>
-            {parentHierarchy.length > 0 ? (
-              <div className="hierarchy-trail hierarchy-trail--detail">
-                {parentHierarchy.map((item) => (
-                  <span key={`${item.code}-${item.title}`}>
-                    {item.code ? <em>{item.code}</em> : null}
-                    <strong>{item.title}</strong>
-                  </span>
-                ))}
-              </div>
-            ) : null}
           </div>
         </div>
-        <StatusBadge status={table.status} label={table.status_label} />
-        <button className="secondary-button detail-download" type="button">
-          <Download aria-hidden="true" size={16} />
-          <span>다운로드</span>
-        </button>
+        <div className="detail-header__actions">
+          <StatusBadge status={table.status} label={table.status_label} />
+          <button className="secondary-button detail-download" type="button">
+            <Download aria-hidden="true" size={16} />
+            <span>다운로드</span>
+          </button>
+        </div>
       </header>
 
       <div className="detail-meta-strip">
-        <span>
-          <em>단위</em>
-          <strong>{activePart.unit}</strong>
-        </span>
         <span>
           <em>기준일</em>
           <strong>{activePart.metadata.base_date}</strong>
         </span>
         <span>
-          <em>수정일</em>
-          <strong>{activePart.updated_at}</strong>
+          <em>단위</em>
+          <strong>{activePart.unit}</strong>
         </span>
         {table.parts.length > 0 ? (
           <span>
@@ -194,6 +190,10 @@ export function DetailView({ table, onBack }: DetailViewProps) {
             <strong>{table.parts.length}개</strong>
           </span>
         ) : null}
+        <span>
+          <em>최종 수정일</em>
+          <strong>{activePart.updated_at}</strong>
+        </span>
       </div>
 
       <div className="detail-workspace">
@@ -394,20 +394,20 @@ export function DetailView({ table, onBack }: DetailViewProps) {
                 </div>
                 <dl className="metadata-grid">
                   <div>
-                    <dt>표 위치</dt>
-                    <dd>{activePart.metadata.cell_range}</dd>
+                    <dt>기준일</dt>
+                    <dd>{activePart.metadata.base_date}</dd>
                   </div>
                   <div>
                     <dt>단위</dt>
                     <dd>{activePart.unit}</dd>
                   </div>
                   <div>
-                    <dt>기준일</dt>
-                    <dd>{activePart.metadata.base_date}</dd>
+                    <dt>표 위치</dt>
+                    <dd>{activePart.metadata.cell_range}</dd>
                   </div>
                   <div>
                     <dt>최종 수정 일자</dt>
-                    <dd>{activePart.metadata.extracted_at}</dd>
+                    <dd>{activePart.updated_at}</dd>
                   </div>
                   <div className="metadata-grid__wide">
                     <dt>출처</dt>
