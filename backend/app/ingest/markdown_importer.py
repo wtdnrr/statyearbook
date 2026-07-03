@@ -76,6 +76,12 @@ class AppendixSection:
     title_en: str
 
 
+@dataclass(frozen=True)
+class OutlineTitle:
+    title: str
+    title_en: str
+
+
 @dataclass
 class ParsedHtmlCell:
     text: str
@@ -272,12 +278,33 @@ def parse_markdown_title_block(
     return None
 
 
+def parent_code_candidates(code: str) -> list[str]:
+    if code.startswith("부록 "):
+        appendix_match = re.match(r"^(부록\s+\d+)-\d+$", code)
+        return [appendix_match.group(1)] if appendix_match else []
+
+    parts = code.split("-")
+    return ["-".join(parts[:length]) for length in range(len(parts) - 1, 0, -1)]
+
+
+def nearest_parent_title(
+    code: str,
+    outline: dict[str, OutlineTitle],
+) -> tuple[str, str, str] | None:
+    for parent_code in parent_code_candidates(code):
+        parent = outline.get(parent_code)
+        if parent:
+            return parent_code, parent.title, parent.title_en
+    return None
+
+
 def parse_markdown(source_path: Path) -> list[LogicalTable]:
     content = source_path.read_text(encoding="utf-8")
     lines = content.splitlines()
     tables: list[LogicalTable] = []
     current: LogicalTable | None = None
     appendix_section: AppendixSection | None = None
+    outline: dict[str, OutlineTitle] = {}
     index = 0
 
     while index < len(lines):
@@ -317,6 +344,10 @@ def parse_markdown(source_path: Path) -> list[LogicalTable]:
                 code, title, title_en, section_title, section_title_en, next_appendix_section = parsed_title
                 if next_appendix_section is not None:
                     appendix_section = next_appendix_section
+                parent_title = nearest_parent_title(code, outline)
+                if parent_title and not section_title:
+                    _, section_title, section_title_en = parent_title
+                outline[code] = OutlineTitle(title=title, title_en=title_en)
                 current = LogicalTable(
                     code=code,
                     title=title,

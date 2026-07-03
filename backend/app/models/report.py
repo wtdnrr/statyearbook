@@ -71,6 +71,30 @@ class TableMetadata(BaseModel):
     extracted_at: str
 
 
+class TableHierarchyItem(BaseModel):
+    code: str
+    title: str
+    title_en: str | None = None
+
+
+class StatTablePart(BaseModel):
+    id: str
+    code: str
+    title: str
+    title_en: str
+    part_label: str
+    unit: str
+    status: TableStatus
+    status_label: str
+    updated_at: str
+    columns: list[ColumnDefinition]
+    rows: list[dict[str, Any]]
+    checks: list[ValidationIssue]
+    changes: list[ChangeItem]
+    visualizations: list[Visualization]
+    metadata: TableMetadata
+
+
 class StatTable(BaseModel):
     id: str
     code: str
@@ -86,6 +110,9 @@ class StatTable(BaseModel):
     year_range: str
     updated_at: str
     theme: Literal["blue", "red", "green"]
+    part_label: str | None = None
+    hierarchy: list[TableHierarchyItem] = Field(default_factory=list)
+    parts: list[StatTablePart] = Field(default_factory=list)
     columns: list[ColumnDefinition]
     rows: list[dict[str, Any]]
     summary: list[str]

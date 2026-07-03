@@ -16,7 +16,9 @@ from app.models.report import (
     ReportPayload,
     ReportSummary,
     StatTable,
+    StatTablePart,
     TableMetadata,
+    TableHierarchyItem,
     ValidationIssue,
     Visualization,
     VisualizationSeries,
@@ -60,45 +62,21 @@ class SQLiteReportService:
                 issue_counts={},
             )
 
-        with connect(self._db_path) as connection:
-            init_db(connection)
-            total = connection.execute(
-                "SELECT COUNT(*) AS count FROM stat_tables WHERE report_id = ?",
-                (report["id"],),
-            ).fetchone()["count"]
-            run_id = self._latest_run_id(connection, report["id"])
-            issue_rows = []
-            if run_id is not None:
-                issue_rows = connection.execute(
-                    """
-                    SELECT table_id, issue_type, severity, status
-                    FROM validation_issues
-                    WHERE run_id = ?
-                    """,
-                    (run_id,),
-                ).fetchall()
-
+        tables = self.list_tables()
         issue_counts: dict[str, int] = {}
-        critical_tables: set[int] = set()
-        warning_tables: set[int] = set()
-        for issue in issue_rows:
-            if issue["status"] == "정상":
-                continue
-            issue_counts[issue["issue_type"]] = issue_counts.get(issue["issue_type"], 0) + 1
-            if issue["severity"] == "critical":
-                critical_tables.add(issue["table_id"])
-            else:
-                warning_tables.add(issue["table_id"])
-
-        warning_tables -= critical_tables
+        for table in tables:
+            for check in table.checks:
+                if check.status == "정상":
+                    continue
+                issue_counts[check.type] = issue_counts.get(check.type, 0) + 1
 
         return ReportSummary(
             file_name=decode_display_text(report["source_file_name"]),
             base_year=str(report["year"]),
-            total_tables=total,
-            normal_count=max(total - len(critical_tables) - len(warning_tables), 0),
-            needs_review_count=len(warning_tables),
-            suspected_error_count=len(critical_tables),
+            total_tables=len(tables),
+            normal_count=sum(1 for table in tables if table.status == "normal"),
+            needs_review_count=sum(1 for table in tables if table.status == "needs_review"),
+            suspected_error_count=sum(1 for table in tables if table.status == "suspected_error"),
             issue_counts=issue_counts,
         )
 
@@ -120,7 +98,8 @@ class SQLiteReportService:
             ).fetchall()
             run_id = self._latest_run_id(connection, report["id"])
 
-            return [self._row_to_table(connection, report, row, run_id) for row in rows]
+            physical_tables = [self._row_to_table(connection, report, row, run_id) for row in rows]
+            return group_table_parts(physical_tables)
 
     def get_table(self, table_id: str) -> StatTable | None:
         return next((table for table in self.list_tables() if table.id == table_id), None)
@@ -198,6 +177,8 @@ class SQLiteReportService:
             year_range=str(report["year"]),
             updated_at=date_only(table_row["extracted_at"]),
             theme=theme_from_code(table_row["code"]),
+            part_label=part_label_from_code(table_row["code"]),
+            hierarchy=build_hierarchy(table_row),
             columns=columns,
             rows=rows,
             summary=build_summary(table_row, rows, columns),
@@ -341,6 +322,127 @@ def status_from_checks(checks: list[ValidationIssue]) -> tuple[str, str]:
     if active_checks:
         return "needs_review", "확인 필요"
     return "normal", "정상"
+
+
+PART_SUFFIX_RE = re.compile(r"\s+표\s*(\d+)$")
+
+
+def base_table_code(code: str) -> str:
+    return PART_SUFFIX_RE.sub("", code)
+
+
+def part_label_from_code(code: str) -> str | None:
+    match = PART_SUFFIX_RE.search(code)
+    return f"표{match.group(1)}" if match else None
+
+
+def strip_part_suffix(value: str) -> str:
+    return PART_SUFFIX_RE.sub("", value).strip()
+
+
+def parent_code_for(code: str) -> str:
+    base_code = base_table_code(code)
+    if base_code.startswith("부록 "):
+        match = re.match(r"^(부록\s+\d+)-\d+$", base_code)
+        return match.group(1) if match else ""
+
+    parts = base_code.split("-")
+    return "-".join(parts[:-1]) if len(parts) > 1 else ""
+
+
+def build_hierarchy(table_row: sqlite3.Row) -> list[TableHierarchyItem]:
+    base_code = base_table_code(table_row["code"])
+    base_title = strip_part_suffix(table_row["title"])
+    base_title_en = table_row["title_en"]
+    hierarchy: list[TableHierarchyItem] = []
+
+    domain = table_row["domain"]
+    if domain and domain != "통계":
+        hierarchy.append(TableHierarchyItem(code=base_code.split("-", 1)[0], title=domain))
+
+    section_title = strip_part_suffix(table_row["section_title"] or "")
+    if section_title and section_title != base_title:
+        hierarchy.append(
+            TableHierarchyItem(
+                code=parent_code_for(base_code),
+                title=section_title,
+                title_en=table_row["section_title_en"] or None,
+            )
+        )
+
+    hierarchy.append(TableHierarchyItem(code=base_code, title=base_title, title_en=base_title_en or None))
+    return hierarchy
+
+
+def table_to_part(table: StatTable) -> StatTablePart:
+    return StatTablePart(
+        id=table.id,
+        code=table.code,
+        title=strip_part_suffix(table.title),
+        title_en=table.title_en,
+        part_label=table.part_label or "표",
+        unit=table.unit,
+        status=table.status,
+        status_label=table.status_label,
+        updated_at=table.updated_at,
+        columns=table.columns,
+        rows=table.rows,
+        checks=table.checks,
+        changes=table.changes,
+        visualizations=table.visualizations,
+        metadata=table.metadata,
+    )
+
+
+def combined_status(tables: list[StatTable]) -> tuple[str, str]:
+    if any(table.status == "suspected_error" for table in tables):
+        return "suspected_error", "오류 의심"
+    if any(table.status == "needs_review" for table in tables):
+        return "needs_review", "확인 필요"
+    return "normal", "정상"
+
+
+def group_table_parts(tables: list[StatTable]) -> list[StatTable]:
+    grouped_tables: list[StatTable] = []
+    groups: dict[str, list[StatTable]] = {}
+    order: list[str] = []
+
+    for table in tables:
+        base_code = base_table_code(table.code)
+        if base_code not in groups:
+            groups[base_code] = []
+            order.append(base_code)
+        groups[base_code].append(table)
+
+    for base_code in order:
+        parts = groups[base_code]
+        if len(parts) == 1:
+            grouped_tables.append(parts[0])
+            continue
+
+        first = parts[0]
+        status, status_label = combined_status(parts)
+        combined_checks = [check for part in parts for check in part.checks]
+        combined_changes = [change for part in parts for change in part.changes]
+        combined_visualizations = [visualization for part in parts for visualization in part.visualizations]
+        grouped_tables.append(
+            first.model_copy(
+                deep=True,
+                update={
+                    "id": f"group-{base_code}",
+                    "code": base_code,
+                    "title": strip_part_suffix(first.title),
+                    "status": status,
+                    "status_label": status_label,
+                    "checks": combined_checks,
+                    "changes": combined_changes,
+                    "visualizations": combined_visualizations,
+                    "parts": [table_to_part(part) for part in parts],
+                },
+            )
+        )
+
+    return grouped_tables
 
 
 def matrix_from_cells(cells: list[sqlite3.Row]) -> list[list[str]]:
