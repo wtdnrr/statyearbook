@@ -34,14 +34,23 @@ function splitIssueLocation(location: string) {
 
 export function TablePreview({ table, onOpen }: TablePreviewProps) {
   const activeIssues = table.checks.filter((check) => check.status !== "정상");
+  const parentHierarchy = table.hierarchy.slice(0, -1);
 
   return (
     <section className="preview-panel" aria-label="선택 표 요약">
       <div className={`publication-head publication-head--${table.theme}`}>
         <span>{table.code}</span>
         <div>
-          <h2>{table.section_title}</h2>
-          <p>{table.section_title_en}</p>
+          <div className="hierarchy-trail">
+            {parentHierarchy.map((item) => (
+              <span key={`${item.code}-${item.title}`}>
+                {item.code ? <em>{item.code}</em> : null}
+                <strong>{item.title}</strong>
+              </span>
+            ))}
+          </div>
+          <h2>{table.title}</h2>
+          <p>{table.title_en}</p>
         </div>
       </div>
 
@@ -66,6 +75,12 @@ export function TablePreview({ table, onOpen }: TablePreviewProps) {
           <em>기준일</em>
           <strong>{table.metadata.base_date}</strong>
         </span>
+        {table.parts.length > 0 ? (
+          <span className="meta-chip">
+            <em>하위 표</em>
+            <strong>{table.parts.length}개</strong>
+          </span>
+        ) : null}
       </div>
 
       <section className="summary-block">

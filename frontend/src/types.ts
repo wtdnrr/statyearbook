@@ -66,6 +66,30 @@ export interface TableMetadata {
   extracted_at: string;
 }
 
+export interface TableHierarchyItem {
+  code: string;
+  title: string;
+  title_en?: string;
+}
+
+export interface StatTablePart {
+  id: string;
+  code: string;
+  title: string;
+  title_en: string;
+  part_label: string;
+  unit: string;
+  status: TableStatus;
+  status_label: string;
+  updated_at: string;
+  columns: ColumnDefinition[];
+  rows: Array<Record<string, string | number>>;
+  checks: ValidationIssue[];
+  changes: ChangeItem[];
+  visualizations: Visualization[];
+  metadata: TableMetadata;
+}
+
 export interface StatTable {
   id: string;
   code: string;
@@ -81,6 +105,9 @@ export interface StatTable {
   year_range: string;
   updated_at: string;
   theme: "blue" | "red" | "green";
+  part_label?: string;
+  hierarchy: TableHierarchyItem[];
+  parts: StatTablePart[];
   columns: ColumnDefinition[];
   rows: Array<Record<string, string | number>>;
   summary: string[];

@@ -69,8 +69,8 @@ export function TableList({
         </div>
         <div className="list-table__body">
           {tables.map((table) => {
-            const reviewCount = table.checks.filter((check) => check.status !== "정상").length;
-            const criticalCount = table.checks.filter((check) => check.severity === "critical").length;
+            const reviewCount = table.checks.filter((check) => check.status === "확인 필요").length;
+            const criticalCount = table.checks.filter((check) => check.status === "오류 의심").length;
 
             return (
               <button
@@ -85,6 +85,7 @@ export function TableList({
                   <span className="list-row__name">
                     <small>{table.code}</small>
                     <strong>{table.title}</strong>
+                    {table.parts.length > 0 ? <em>하위 표 {table.parts.length}개</em> : null}
                   </span>
                 </span>
                 <span className="count-cell">{reviewCount}</span>

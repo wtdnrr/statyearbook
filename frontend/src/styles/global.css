@@ -389,6 +389,13 @@ button {
   font-weight: 900;
 }
 
+.list-row__name em {
+  color: var(--muted);
+  font-size: 11px;
+  font-style: normal;
+  font-weight: 800;
+}
+
 .list-row__title strong {
   overflow: hidden;
   text-overflow: ellipsis;
@@ -496,6 +503,40 @@ button {
   margin: 0 0 3px;
   font-size: 22px;
   line-height: 1.2;
+}
+
+.hierarchy-trail {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+
+.hierarchy-trail span {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 24px;
+  padding: 3px 7px;
+  color: var(--muted);
+  background: rgba(255, 255, 255, 0.68);
+  border: 1px solid var(--line);
+  font-size: 11px;
+  font-weight: 900;
+}
+
+.hierarchy-trail em {
+  color: var(--blue);
+  font-style: normal;
+}
+
+.hierarchy-trail strong {
+  color: var(--text);
+  font-weight: 900;
+}
+
+.hierarchy-trail--detail {
+  margin: 8px 0 0;
 }
 
 .preview-title-row,
@@ -1209,6 +1250,38 @@ button {
   height: 14px;
   margin: 0;
   accent-color: #244c73;
+}
+
+.original-title-group {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.part-tabs {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.part-tabs button {
+  display: inline-flex;
+  align-items: center;
+  min-height: 30px;
+  padding: 0 10px;
+  color: var(--muted);
+  background: var(--surface-muted);
+  border: 1px solid var(--line);
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.part-tabs button.is-active {
+  color: var(--text);
+  background: var(--blue-soft);
+  border-color: #9fc9ef;
 }
 
 .detail-analysis-panel .detail-tabs {

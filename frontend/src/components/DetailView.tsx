@@ -7,7 +7,7 @@ import {
   FileCode2,
 } from "lucide-react";
 
-import type { StatTable } from "../types";
+import type { StatTable, StatTablePart } from "../types";
 import { DataGrid } from "./DataGrid";
 import { StatusBadge } from "./StatusBadge";
 import { VisualPanel } from "./VisualPanel";
@@ -64,22 +64,51 @@ function inferIssueHighlight(table: StatTable, location: string | undefined) {
   };
 }
 
+function rootTableAsPart(table: StatTable): StatTablePart {
+  return {
+    id: table.id,
+    code: table.code,
+    title: table.title,
+    title_en: table.title_en,
+    part_label: "원본 표",
+    unit: table.unit,
+    status: table.status,
+    status_label: table.status_label,
+    updated_at: table.updated_at,
+    columns: table.columns,
+    rows: table.rows,
+    checks: table.checks,
+    changes: table.changes,
+    visualizations: table.visualizations,
+    metadata: table.metadata,
+  };
+}
+
+function inferPartIssueHighlight(table: StatTablePart, location: string | undefined) {
+  return inferIssueHighlight(table as StatTable, location);
+}
+
 export function DetailView({ table, onBack }: DetailViewProps) {
   const [activeTab, setActiveTab] = useState<DetailTab>("checks");
+  const tableParts = useMemo(() => (table.parts.length > 0 ? table.parts : [rootTableAsPart(table)]), [table]);
+  const [activePartId, setActivePartId] = useState<string>(tableParts[0]?.id ?? table.id);
+  const activePart = tableParts.find((part) => part.id === activePartId) ?? tableParts[0];
   const [checkFilter, setCheckFilter] = useState<CheckFilter>("failed");
-  const [selectedCheckId, setSelectedCheckId] = useState<string | undefined>(table.checks[0]?.id);
+  const [selectedCheckId, setSelectedCheckId] = useState<string | undefined>(activePart?.checks[0]?.id);
   const [tableScrollSignal, setTableScrollSignal] = useState(0);
   const [isTableHeaderSticky, setIsTableHeaderSticky] = useState(true);
-  const failedChecks = useMemo(() => table.checks.filter((check) => check.status !== "정상"), [table.checks]);
-  const passedChecks = useMemo(() => table.checks.filter((check) => check.status === "정상"), [table.checks]);
-  const filteredChecks = checkFilter === "failed" ? failedChecks : checkFilter === "passed" ? passedChecks : table.checks;
+  const failedChecks = useMemo(() => activePart.checks.filter((check) => check.status !== "정상"), [activePart.checks]);
+  const passedChecks = useMemo(() => activePart.checks.filter((check) => check.status === "정상"), [activePart.checks]);
+  const filteredChecks =
+    checkFilter === "failed" ? failedChecks : checkFilter === "passed" ? passedChecks : activePart.checks;
   const selectedIssue =
     filteredChecks.find((check) => check.id === selectedCheckId) ??
     filteredChecks[0] ??
-    table.checks.find((check) => check.id === selectedCheckId) ??
-    table.checks[0];
+    activePart.checks.find((check) => check.id === selectedCheckId) ??
+    activePart.checks[0];
   const activeIssueIndex = Math.max(filteredChecks.findIndex((check) => check.id === selectedIssue?.id), 0);
-  const selectedIssueHighlight = inferIssueHighlight(table, selectedIssue?.location);
+  const selectedIssueHighlight = inferPartIssueHighlight(activePart, selectedIssue?.location);
+  const parentHierarchy = table.hierarchy.slice(0, -1);
 
   function selectIssue(issueId: string) {
     setSelectedCheckId(issueId);
@@ -87,9 +116,14 @@ export function DetailView({ table, onBack }: DetailViewProps) {
   }
 
   function selectFilter(filter: CheckFilter) {
-    const nextChecks = filter === "failed" ? failedChecks : filter === "passed" ? passedChecks : table.checks;
+    const nextChecks = filter === "failed" ? failedChecks : filter === "passed" ? passedChecks : activePart.checks;
     setCheckFilter(filter);
     setSelectedCheckId(nextChecks[0]?.id);
+  }
+
+  function selectPart(partId: string) {
+    setActivePartId(partId);
+    setTableScrollSignal(0);
   }
 
   function moveIssue(direction: -1 | 1) {
@@ -102,10 +136,14 @@ export function DetailView({ table, onBack }: DetailViewProps) {
   }
 
   useEffect(() => {
-    const initialChecks = failedChecks.length > 0 ? failedChecks : table.checks;
+    const initialChecks = failedChecks.length > 0 ? failedChecks : activePart.checks;
     setCheckFilter(failedChecks.length > 0 ? "failed" : "all");
     setSelectedCheckId(initialChecks[0]?.id);
-  }, [failedChecks, table.id, table.checks]);
+  }, [activePart.id, activePart.checks, failedChecks]);
+
+  useEffect(() => {
+    setActivePartId(tableParts[0]?.id ?? table.id);
+  }, [table.id, tableParts]);
 
   return (
     <main className="detail-view">
@@ -118,6 +156,16 @@ export function DetailView({ table, onBack }: DetailViewProps) {
           <div>
             <h1>{table.title}</h1>
             <p>{table.title_en}</p>
+            {parentHierarchy.length > 0 ? (
+              <div className="hierarchy-trail hierarchy-trail--detail">
+                {parentHierarchy.map((item) => (
+                  <span key={`${item.code}-${item.title}`}>
+                    {item.code ? <em>{item.code}</em> : null}
+                    <strong>{item.title}</strong>
+                  </span>
+                ))}
+              </div>
+            ) : null}
           </div>
         </div>
         <StatusBadge status={table.status} label={table.status_label} />
@@ -130,24 +178,44 @@ export function DetailView({ table, onBack }: DetailViewProps) {
       <div className="detail-meta-strip">
         <span>
           <em>단위</em>
-          <strong>{table.unit}</strong>
+          <strong>{activePart.unit}</strong>
         </span>
         <span>
           <em>기준일</em>
-          <strong>{table.metadata.base_date}</strong>
+          <strong>{activePart.metadata.base_date}</strong>
         </span>
         <span>
           <em>수정일</em>
-          <strong>{table.updated_at}</strong>
+          <strong>{activePart.updated_at}</strong>
         </span>
+        {table.parts.length > 0 ? (
+          <span>
+            <em>하위 표</em>
+            <strong>{table.parts.length}개</strong>
+          </span>
+        ) : null}
       </div>
 
       <div className="detail-workspace">
         <aside className="original-table-panel">
           <div className="detail-section detail-section--original">
             <div className="content-title-row">
-              <div>
+              <div className="original-title-group">
                 <h2>원본 표</h2>
+                {tableParts.length > 1 ? (
+                  <div className="part-tabs" aria-label="하위 표 선택">
+                    {tableParts.map((part) => (
+                      <button
+                        className={activePart.id === part.id ? "is-active" : ""}
+                        key={part.id}
+                        type="button"
+                        onClick={() => selectPart(part.id)}
+                      >
+                        <span>{part.part_label}</span>
+                      </button>
+                    ))}
+                  </div>
+                ) : null}
               </div>
               <label className="table-option-toggle">
                 <input
@@ -159,8 +227,8 @@ export function DetailView({ table, onBack }: DetailViewProps) {
               </label>
             </div>
             <DataGrid
-              columns={table.columns}
-              rows={table.rows}
+              columns={activePart.columns}
+              rows={activePart.rows}
               theme={table.theme}
               highlight={selectedIssueHighlight}
               scrollSignal={tableScrollSignal}
@@ -199,7 +267,7 @@ export function DetailView({ table, onBack }: DetailViewProps) {
                       ? failedChecks.length
                       : filter.id === "passed"
                         ? passedChecks.length
-                        : table.checks.length;
+                        : activePart.checks.length;
 
                   return (
                     <button
@@ -289,7 +357,7 @@ export function DetailView({ table, onBack }: DetailViewProps) {
                     <span>올해 파일</span>
                     <span>상태</span>
                   </div>
-                  {table.changes.map((change) => (
+                  {activePart.changes.map((change) => (
                     <div className="change-table__row" key={change.id}>
                       <span>{change.category}</span>
                       <strong>{change.item}</strong>
@@ -310,7 +378,7 @@ export function DetailView({ table, onBack }: DetailViewProps) {
                   </div>
                 </div>
                 <div className="visual-grid">
-                  {table.visualizations.map((visualization) => (
+                  {activePart.visualizations.map((visualization) => (
                     <VisualPanel visualization={visualization} key={visualization.id} />
                   ))}
                 </div>
@@ -327,27 +395,27 @@ export function DetailView({ table, onBack }: DetailViewProps) {
                 <dl className="metadata-grid">
                   <div>
                     <dt>표 위치</dt>
-                    <dd>{table.metadata.cell_range}</dd>
+                    <dd>{activePart.metadata.cell_range}</dd>
                   </div>
                   <div>
                     <dt>단위</dt>
-                    <dd>{table.unit}</dd>
+                    <dd>{activePart.unit}</dd>
                   </div>
                   <div>
                     <dt>기준일</dt>
-                    <dd>{table.metadata.base_date}</dd>
+                    <dd>{activePart.metadata.base_date}</dd>
                   </div>
                   <div>
                     <dt>최종 수정 일자</dt>
-                    <dd>{table.metadata.extracted_at}</dd>
+                    <dd>{activePart.metadata.extracted_at}</dd>
                   </div>
                   <div className="metadata-grid__wide">
                     <dt>출처</dt>
-                    <dd>{table.metadata.source}</dd>
+                    <dd>{activePart.metadata.source}</dd>
                   </div>
                   <div className="metadata-grid__wide">
                     <dt>주석</dt>
-                    <dd>{table.metadata.note}</dd>
+                    <dd>{activePart.metadata.note}</dd>
                   </div>
                 </dl>
               </div>
