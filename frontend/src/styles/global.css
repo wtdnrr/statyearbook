@@ -1477,24 +1477,29 @@ button {
   border-color: #a8d9b7;
 }
 
-.check-card__top {
+.check-card__headline {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: space-between;
-  gap: 10px;
+  gap: 14px;
 }
 
-.check-card__top span {
+.check-card__headline > div {
   min-width: 0;
+  display: grid;
+  gap: 6px;
+}
+
+.check-card__headline span {
   overflow: hidden;
-  color: var(--text);
-  font-size: 14px;
+  color: var(--muted);
+  font-size: 12px;
   font-weight: 900;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.check-card__top strong {
+.check-card__headline strong {
   flex: 0 0 auto;
   min-height: 28px;
   padding: 5px 9px;
@@ -1508,9 +1513,43 @@ button {
 .check-card h3 {
   margin: 0;
   color: var(--text);
-  font-size: 22px;
-  line-height: 1.35;
+  font-size: 25px;
+  line-height: 1.25;
   letter-spacing: 0;
+}
+
+.check-card__location {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+}
+
+.check-card__location div {
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr);
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  padding: 9px 11px;
+  background: rgba(255, 255, 255, 0.56);
+  border: 1px solid rgba(216, 224, 234, 0.95);
+}
+
+.check-card__location dt {
+  margin: 0;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 900;
+}
+
+.check-card__location dd {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 900;
+  line-height: 1.35;
 }
 
 .check-card p {

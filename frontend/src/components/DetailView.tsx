@@ -7,7 +7,7 @@ import {
   FileCode2,
 } from "lucide-react";
 
-import type { StatTable, StatTablePart } from "../types";
+import type { ColumnDefinition, StatTable, StatTablePart, ValidationIssue } from "../types";
 import { DataGrid } from "./DataGrid";
 import { StatusBadge } from "./StatusBadge";
 import { VisualPanel } from "./VisualPanel";
@@ -88,6 +88,67 @@ function inferPartIssueHighlight(table: StatTablePart, location: string | undefi
   return inferIssueHighlight(table as StatTable, location);
 }
 
+function displayColumnLabel(column: ColumnDefinition | undefined) {
+  if (!column) {
+    return "";
+  }
+
+  return [column.label, column.label_en].filter(Boolean).join(" ");
+}
+
+function cleanLocationPart(value: string) {
+  return value.replace(/\s+/g, " ").replace(/^[\s/·,-]+|[\s/·,-]+$/g, "").trim();
+}
+
+function stripColumnFromLocation(location: string, column: ColumnDefinition | undefined) {
+  if (!column) {
+    return location;
+  }
+
+  const partsToRemove = [column.label, column.label_en].filter(Boolean) as string[];
+  return cleanLocationPart(partsToRemove.reduce((value, part) => value.replace(part, ""), location));
+}
+
+function resolveIssueLocation(table: StatTablePart, issue: ValidationIssue) {
+  const firstColumnKey = table.columns[0]?.key;
+  const indexedColumn =
+    typeof issue.col_index === "number" && issue.col_index >= 0 ? table.columns[issue.col_index] : undefined;
+  const matchedColumn =
+    indexedColumn ??
+    table.columns
+      .slice(1)
+      .sort((a, b) => displayColumnLabel(b).length - displayColumnLabel(a).length)
+      .find((column) => normalizeMatchText(issue.location).includes(normalizeMatchText(displayColumnLabel(column))));
+  const rowLabelFromText = firstColumnKey
+    ? table.rows
+        .map((row) => String(row[firstColumnKey] ?? ""))
+        .filter(Boolean)
+        .sort((a, b) => b.length - a.length)
+        .find((value) => normalizeMatchText(issue.location).includes(normalizeMatchText(value)))
+    : undefined;
+  const rowLabelFromIndex =
+    typeof issue.row_index === "number" && firstColumnKey ? String(table.rows[issue.row_index]?.[firstColumnKey] ?? "") : "";
+
+  return {
+    row: cleanLocationPart(rowLabelFromText ?? rowLabelFromIndex) || stripColumnFromLocation(issue.location, matchedColumn),
+    column: displayColumnLabel(matchedColumn) || "검수 대상",
+  };
+}
+
+function issueTargetsTable(table: StatTablePart, issue: ValidationIssue) {
+  const firstColumnKey = table.columns[0]?.key;
+  const location = resolveIssueLocation(table, issue);
+  const rowMatchesTable =
+    Boolean(firstColumnKey && location.row) &&
+    table.rows.some((row) => normalizeMatchText(String(row[firstColumnKey] ?? "")).includes(normalizeMatchText(location.row)));
+
+  return location.column !== "검수 대상" || rowMatchesTable;
+}
+
+function firstFocusableCheck(table: StatTablePart, checks: ValidationIssue[]) {
+  return checks.find((check) => issueTargetsTable(table, check)) ?? checks[0];
+}
+
 export function DetailView({ table, onBack }: DetailViewProps) {
   const [activeTab, setActiveTab] = useState<DetailTab>("checks");
   const tableParts = useMemo(() => (table.parts.length > 0 ? table.parts : [rootTableAsPart(table)]), [table]);
@@ -107,7 +168,13 @@ export function DetailView({ table, onBack }: DetailViewProps) {
     activePart.checks.find((check) => check.id === selectedCheckId) ??
     activePart.checks[0];
   const activeIssueIndex = Math.max(filteredChecks.findIndex((check) => check.id === selectedIssue?.id), 0);
-  const selectedIssueHighlight = inferPartIssueHighlight(activePart, selectedIssue?.location);
+  const selectedIssueLocation = selectedIssue ? resolveIssueLocation(activePart, selectedIssue) : undefined;
+  const selectedIssueHighlight = selectedIssueLocation
+    ? {
+        rowText: selectedIssueLocation.row,
+        columnText: selectedIssueLocation.column === "검수 대상" ? undefined : selectedIssueLocation.column,
+      }
+    : inferPartIssueHighlight(activePart, selectedIssue?.location);
   const parentHierarchy = table.hierarchy.slice(0, -1);
 
   function selectIssue(issueId: string) {
@@ -117,8 +184,13 @@ export function DetailView({ table, onBack }: DetailViewProps) {
 
   function selectFilter(filter: CheckFilter) {
     const nextChecks = filter === "failed" ? failedChecks : filter === "passed" ? passedChecks : activePart.checks;
+    const nextIssue = firstFocusableCheck(activePart, nextChecks);
+
     setCheckFilter(filter);
-    setSelectedCheckId(nextChecks[0]?.id);
+    setSelectedCheckId(nextIssue?.id);
+    if (nextIssue) {
+      setTableScrollSignal((value) => value + 1);
+    }
   }
 
   function selectPart(partId: string) {
@@ -285,11 +357,23 @@ export function DetailView({ table, onBack }: DetailViewProps) {
 
               {selectedIssue ? (
                 <article className={`check-card check-card--${selectedIssue.severity}`}>
-                  <div className="check-card__top">
-                    <span>{selectedIssue.type}</span>
+                  <div className="check-card__headline">
+                    <div>
+                      <span>검수 항목</span>
+                      <h3>{selectedIssue.type}</h3>
+                    </div>
                     <strong>{selectedIssue.status}</strong>
                   </div>
-                  <h3>{selectedIssue.location}</h3>
+                  <dl className="check-card__location">
+                    <div>
+                      <dt>행</dt>
+                      <dd>{selectedIssueLocation?.row}</dd>
+                    </div>
+                    <div>
+                      <dt>열</dt>
+                      <dd>{selectedIssueLocation?.column}</dd>
+                    </div>
+                  </dl>
                   <dl className="check-card__values">
                     <div>
                       <dt>현재값</dt>
