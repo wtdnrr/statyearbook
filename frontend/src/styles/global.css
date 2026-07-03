@@ -882,6 +882,17 @@ button {
   box-shadow: inset 0 -3px 0 #d48b1f;
 }
 
+.data-grid th.data-grid__header-cell-highlight {
+  background: #fff1c7 !important;
+  box-shadow: inset 0 0 0 2px #d48b1f;
+}
+
+.data-grid td.data-grid__cell-related-highlight {
+  position: relative;
+  background: #fff8e8 !important;
+  box-shadow: inset 0 0 0 1px #efd6a0;
+}
+
 .data-grid td.data-grid__cell-highlight {
   position: relative;
   background: #fff1c7 !important;
@@ -1413,7 +1424,7 @@ button {
 
 .check-filter-tabs {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 8px;
 }
 
@@ -1534,9 +1545,9 @@ button {
 
 .check-card__location div {
   display: grid;
-  grid-template-columns: 28px minmax(0, 1fr);
+  grid-template-columns: 22px minmax(0, 1fr);
   align-items: center;
-  gap: 6px;
+  gap: 4px;
   min-width: 0;
   padding: 9px 11px;
   background: rgba(255, 255, 255, 0.56);

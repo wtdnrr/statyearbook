@@ -64,6 +64,7 @@ export interface TableMetadata {
   source: string;
   base_date: string;
   extracted_at: string;
+  header_count?: number;
 }
 
 export interface TableHierarchyItem {

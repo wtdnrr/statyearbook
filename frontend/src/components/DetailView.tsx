@@ -7,14 +7,33 @@ import {
   FileCode2,
 } from "lucide-react";
 
-import type { StatTable, StatTablePart } from "../types";
+import type { ColumnDefinition, StatTable, StatTablePart, ValidationIssue } from "../types";
 import { firstFocusableCheck, resolveIssueLocation } from "../utils/validationLocation";
 import { DataGrid } from "./DataGrid";
 import { StatusBadge } from "./StatusBadge";
 import { VisualPanel } from "./VisualPanel";
 
 type DetailTab = "checks" | "changes" | "visuals" | "metadata";
-type CheckFilter = "failed" | "passed" | "all";
+type CheckFilter = "all" | "passed" | "review" | "error";
+
+interface CheckTargetLocation {
+  row: string;
+  column: string;
+  isHeader: boolean;
+}
+
+interface DisplayCheck extends ValidationIssue {
+  checks: ValidationIssue[];
+  targetLocations: CheckTargetLocation[];
+  targetCount: number;
+  rowSummary: string;
+  columnSummary: string;
+}
+
+interface GridHighlightLocation {
+  rowText?: string;
+  columnText?: string;
+}
 
 interface DetailViewProps {
   table: StatTable;
@@ -24,7 +43,8 @@ interface DetailViewProps {
 const checkFilters: Array<{ id: CheckFilter; label: string }> = [
   { id: "all", label: "전체" },
   { id: "passed", label: "통과" },
-  { id: "failed", label: "미통과" },
+  { id: "review", label: "확인 필요" },
+  { id: "error", label: "오류 의심" },
 ];
 
 const tabs: Array<{ id: DetailTab; label: string }> = [
@@ -33,6 +53,211 @@ const tabs: Array<{ id: DetailTab; label: string }> = [
   { id: "visuals", label: "시각화" },
   { id: "metadata", label: "출처·메타정보" },
 ];
+
+function checksForFilter<T extends { status: string }>(
+  filter: CheckFilter,
+  allChecks: T[],
+  passedChecks: T[],
+  reviewChecks: T[],
+  errorChecks: T[],
+) {
+  if (filter === "passed") {
+    return passedChecks;
+  }
+  if (filter === "review") {
+    return reviewChecks;
+  }
+  if (filter === "error") {
+    return errorChecks;
+  }
+  return allChecks;
+}
+
+function groupKeyForCheck(check: ValidationIssue) {
+  return [check.type, check.status, check.severity, check.formula ?? "", check.detail].join("::");
+}
+
+function uniqueValues(values: Array<string | undefined>) {
+  return Array.from(new Set(values.map((value) => value?.trim() ?? "").filter(Boolean)));
+}
+
+function summarizeValues(values: string[], unitLabel: string) {
+  if (values.length === 0) {
+    return "검수 대상";
+  }
+  if (values.length === 1) {
+    return values[0];
+  }
+  if (values.length <= 3) {
+    return values.join(", ");
+  }
+  return `${values.slice(0, 3).join(", ")} 외 ${values.length - 3}개 ${unitLabel}`;
+}
+
+function summarizeRepeatedValues(values: Array<string | undefined>, fallback: string) {
+  const unique = uniqueValues(values);
+  if (unique.length === 0) {
+    return fallback;
+  }
+  return unique.length === 1 ? unique[0] : fallback;
+}
+
+function displayColumnLabel(column: ColumnDefinition | undefined) {
+  if (!column) {
+    return "";
+  }
+  return [column.label, column.label_en].filter(Boolean).join(" ");
+}
+
+function rowLabelFor(part: StatTablePart, row: Record<string, string | number>) {
+  const firstColumnKey = part.columns[0]?.key;
+  return firstColumnKey ? String(row[firstColumnKey] ?? "") : "";
+}
+
+function uniqueHighlightLocations(locations: GridHighlightLocation[]) {
+  const seen = new Set<string>();
+
+  return locations.filter((location) => {
+    const key = `${location.rowText ?? ""}::${location.columnText ?? ""}`;
+    if (seen.has(key)) {
+      return false;
+    }
+    seen.add(key);
+    return Boolean(location.rowText || location.columnText);
+  });
+}
+
+function formulaSymbols(formula: string | undefined) {
+  if (!formula) {
+    return [];
+  }
+  return Array.from(new Set(formula.toLowerCase().match(/[a-z]/g) ?? []));
+}
+
+function directFormulaSymbolsForColumn(column: ColumnDefinition) {
+  const label = displayColumnLabel(column).toLowerCase();
+  const symbols = new Set<string>();
+
+  for (const match of label.matchAll(/(?:^|[\s(])([a-z])\s*\)/g)) {
+    symbols.add(match[1]);
+  }
+
+  for (const match of label.matchAll(/(?:^|[\s(])([a-z])\s*=/g)) {
+    symbols.add(match[1]);
+  }
+
+  for (const match of label.matchAll(/(?:^|[\s(])([a-z])\s+[a-z]\s*[+\-=]/g)) {
+    symbols.add(match[1]);
+  }
+
+  return symbols;
+}
+
+function formulaRelatedTargets(part: StatTablePart, check: DisplayCheck) {
+  if (!["합계", "비율", "증감률"].some((keyword) => check.type.includes(keyword))) {
+    return [];
+  }
+
+  const symbols = formulaSymbols(check.formula);
+  if (symbols.length === 0) {
+    return [];
+  }
+
+  const targetColumnIndexes = new Set(
+    check.checks
+      .map((item) => item.col_index)
+      .filter((value): value is number => typeof value === "number" && value >= 0),
+  );
+  const relatedColumns = part.columns.filter((column, index) => {
+    if (index === 0) {
+      return false;
+    }
+    const directSymbols = directFormulaSymbolsForColumn(column);
+    return targetColumnIndexes.has(index) || symbols.some((symbol) => directSymbols.has(symbol));
+  });
+  const rowLabels = part.rows.map((row) => rowLabelFor(part, row)).filter(Boolean);
+
+  return relatedColumns.flatMap((column) =>
+    rowLabels.map((rowText) => ({
+      rowText,
+      columnText: displayColumnLabel(column),
+    })),
+  );
+}
+
+function highlightForCheck(part: StatTablePart, check: DisplayCheck | undefined) {
+  if (!check) {
+    return undefined;
+  }
+
+  const targetLocations = uniqueHighlightLocations(
+    check.targetLocations
+      .filter((location) => !location.isHeader)
+      .map((location) => ({
+        rowText: location.row,
+        columnText: location.column === "검수 대상" ? undefined : location.column,
+      })),
+  );
+  const headerLocations = uniqueHighlightLocations(
+    check.targetLocations
+      .filter((location) => location.isHeader)
+      .map((location) => ({
+        columnText: location.column === "검수 대상" ? undefined : location.column,
+      })),
+  );
+  const relatedLocations = uniqueHighlightLocations(formulaRelatedTargets(part, check));
+
+  return {
+    targetLocations,
+    headerLocations,
+    relatedLocations,
+  };
+}
+
+function groupChecksForDisplay(part: StatTablePart): DisplayCheck[] {
+  const groups = new Map<string, ValidationIssue[]>();
+  for (const check of part.checks) {
+    const key = groupKeyForCheck(check);
+    groups.set(key, [...(groups.get(key) ?? []), check]);
+  }
+
+  return Array.from(groups.values()).map((checks) => {
+    const first = checks[0];
+    const targetLocations = checks.map((check) => resolveIssueLocation(part, check));
+    const rows = uniqueValues(targetLocations.map((location) => location.row));
+    const columns = uniqueValues(targetLocations.map((location) => location.column));
+    const targetCount = checks.length;
+
+    if (targetCount === 1) {
+      return {
+        ...first,
+        checks,
+        targetLocations,
+        targetCount,
+        rowSummary: rows[0] ?? "검수 대상",
+        columnSummary: columns[0] ?? "검수 대상",
+      };
+    }
+
+    return {
+      ...first,
+      id: `group-${groupKeyForCheck(first)}`,
+      location: `${summarizeValues(rows, "행")} / ${summarizeValues(columns, "열")}`,
+      current_value: `${targetCount}개 셀`,
+      expected_value: summarizeRepeatedValues(
+        checks.map((check) => check.expected_value),
+        first.formula ? "동일 산식 기준" : "동일 검수 기준",
+      ),
+      difference: first.status === "정상" ? undefined : `${targetCount}건`,
+      detail: `${first.detail} 같은 방식으로 ${targetCount}개 셀에 적용된 검수입니다.`,
+      checks,
+      targetLocations,
+      targetCount,
+      rowSummary: summarizeValues(rows, "행"),
+      columnSummary: summarizeValues(columns, "열"),
+    };
+  });
+}
 
 function rootTableAsPart(table: StatTable): StatTablePart {
   return {
@@ -59,27 +284,28 @@ export function DetailView({ table, onBack }: DetailViewProps) {
   const tableParts = useMemo(() => (table.parts.length > 0 ? table.parts : [rootTableAsPart(table)]), [table]);
   const [activePartId, setActivePartId] = useState<string>(tableParts[0]?.id ?? table.id);
   const activePart = tableParts.find((part) => part.id === activePartId) ?? tableParts[0];
-  const [checkFilter, setCheckFilter] = useState<CheckFilter>("failed");
+  const [checkFilter, setCheckFilter] = useState<CheckFilter>("error");
   const [selectedCheckId, setSelectedCheckId] = useState<string | undefined>(activePart?.checks[0]?.id);
   const [tableScrollSignal, setTableScrollSignal] = useState(0);
   const [isTableHeaderSticky, setIsTableHeaderSticky] = useState(true);
-  const failedChecks = useMemo(() => activePart.checks.filter((check) => check.status !== "정상"), [activePart.checks]);
-  const passedChecks = useMemo(() => activePart.checks.filter((check) => check.status === "정상"), [activePart.checks]);
-  const filteredChecks =
-    checkFilter === "failed" ? failedChecks : checkFilter === "passed" ? passedChecks : activePart.checks;
+  const displayChecks = useMemo(() => groupChecksForDisplay(activePart), [activePart]);
+  const passedChecks = useMemo(() => displayChecks.filter((check) => check.status === "정상"), [displayChecks]);
+  const reviewChecks = useMemo(
+    () => displayChecks.filter((check) => check.status === "확인 필요"),
+    [displayChecks],
+  );
+  const errorChecks = useMemo(
+    () => displayChecks.filter((check) => check.status === "오류 의심"),
+    [displayChecks],
+  );
+  const filteredChecks = checksForFilter(checkFilter, displayChecks, passedChecks, reviewChecks, errorChecks);
   const selectedIssue =
     filteredChecks.find((check) => check.id === selectedCheckId) ??
     filteredChecks[0] ??
-    activePart.checks.find((check) => check.id === selectedCheckId) ??
-    activePart.checks[0];
+    displayChecks.find((check) => check.id === selectedCheckId) ??
+    displayChecks[0];
   const activeIssueIndex = Math.max(filteredChecks.findIndex((check) => check.id === selectedIssue?.id), 0);
-  const selectedIssueLocation = selectedIssue ? resolveIssueLocation(activePart, selectedIssue) : undefined;
-  const selectedIssueHighlight = selectedIssueLocation
-    ? {
-        rowText: selectedIssueLocation.row,
-        columnText: selectedIssueLocation.column === "검수 대상" ? undefined : selectedIssueLocation.column,
-      }
-    : undefined;
+  const selectedIssueHighlight = highlightForCheck(activePart, selectedIssue);
   const parentHierarchy = table.hierarchy.slice(0, -1);
 
   function selectIssue(issueId: string) {
@@ -88,7 +314,7 @@ export function DetailView({ table, onBack }: DetailViewProps) {
   }
 
   function selectFilter(filter: CheckFilter) {
-    const nextChecks = filter === "failed" ? failedChecks : filter === "passed" ? passedChecks : activePart.checks;
+    const nextChecks = checksForFilter(filter, displayChecks, passedChecks, reviewChecks, errorChecks);
     const nextIssue = firstFocusableCheck(activePart, nextChecks);
 
     setCheckFilter(filter);
@@ -113,10 +339,11 @@ export function DetailView({ table, onBack }: DetailViewProps) {
   }
 
   useEffect(() => {
-    const initialChecks = failedChecks.length > 0 ? failedChecks : activePart.checks;
-    setCheckFilter(failedChecks.length > 0 ? "failed" : "all");
+    const initialFilter: CheckFilter = errorChecks.length > 0 ? "error" : reviewChecks.length > 0 ? "review" : "all";
+    const initialChecks = checksForFilter(initialFilter, displayChecks, passedChecks, reviewChecks, errorChecks);
+    setCheckFilter(initialFilter);
     setSelectedCheckId(initialChecks[0]?.id);
-  }, [activePart.id, activePart.checks, failedChecks]);
+  }, [activePart.id, displayChecks, errorChecks, passedChecks, reviewChecks]);
 
   useEffect(() => {
     setActivePartId(tableParts[0]?.id ?? table.id);
@@ -239,12 +466,13 @@ export function DetailView({ table, onBack }: DetailViewProps) {
 
               <div className="check-filter-tabs" aria-label="검수 결과 필터">
                 {checkFilters.map((filter) => {
-                  const count =
-                    filter.id === "failed"
-                      ? failedChecks.length
-                      : filter.id === "passed"
-                        ? passedChecks.length
-                        : activePart.checks.length;
+                  const count = checksForFilter(
+                    filter.id,
+                    displayChecks,
+                    passedChecks,
+                    reviewChecks,
+                    errorChecks,
+                  ).length;
 
                   return (
                     <button
@@ -272,11 +500,11 @@ export function DetailView({ table, onBack }: DetailViewProps) {
                   <dl className="check-card__location">
                     <div>
                       <dt>행</dt>
-                      <dd>{selectedIssueLocation?.row}</dd>
+                      <dd>{selectedIssue.rowSummary}</dd>
                     </div>
                     <div>
                       <dt>열</dt>
-                      <dd>{selectedIssueLocation?.column}</dd>
+                      <dd>{selectedIssue.columnSummary}</dd>
                     </div>
                   </dl>
                   <dl className="check-card__values">
