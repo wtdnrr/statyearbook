@@ -82,7 +82,6 @@ class Visualization(BaseModel):
 class TableMetadata(BaseModel):
     original_file: str
     sheet_name: str
-    cell_range: str
     note: str
     source: str
     base_date: str

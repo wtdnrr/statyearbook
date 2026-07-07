@@ -254,19 +254,65 @@ def extract_unit_and_base_date(raw_text: str) -> tuple[str, str]:
     if unit_match:
         unit = unit_match.group(1).strip()
 
-    date_match = re.search(r"(\d{4}\.\s*\d{1,2}\.\s*\d{1,2}\.?)\s*기준", raw_text)
+    date_match = re.search(r"(\d{4}\s*\.\s*\d{1,2}\s*\.\s*\d{1,2}\s*\.?)\s*기준", raw_text)
     if date_match:
-        base_date = re.sub(r"\s+", " ", date_match.group(1)).strip()
+        base_date = normalize_base_date(date_match.group(1))
+    else:
+        period_match = reference_period_match(raw_text)
+        if period_match:
+            base_date = normalize_reference_period(period_match.group(0))
 
     return unit, base_date
+
+
+def reference_period_match(raw_text: str) -> re.Match[str] | None:
+    return re.search(
+        r"\[\s*제\s*\d+\s*기\s*[:：]\s*[’']?\d{2,4}\s*\.\s*\d{1,2}\s*\.?\s*[~∼-]\s*[’']?\d{2,4}\s*\.\s*\d{1,2}\s*\.?\s*\]",
+        raw_text,
+    )
+
+
+def normalize_reference_period(value: str) -> str:
+    match = re.search(
+        r"제\s*(\d+)\s*기\s*[:：]\s*[’']?(\d{2,4})\s*\.\s*(\d{1,2})\s*\.?\s*[~∼-]\s*[’']?(\d{2,4})\s*\.\s*(\d{1,2})",
+        value,
+    )
+    if not match:
+        return re.sub(r"\s+", " ", value.strip("[] ")).strip()
+
+    term, start_year, start_month, end_year, end_month = match.groups()
+    return (
+        f"제{int(term)}기: {normalize_year(start_year)}. {int(start_month)}. "
+        f"~ {normalize_year(end_year)}. {int(end_month)}."
+    )
+
+
+def normalize_year(value: str) -> str:
+    if len(value) == 2:
+        return f"20{value}"
+    return value
+
+
+def normalize_base_date(value: str) -> str:
+    match = re.search(r"(\d{4})\s*\.\s*(\d{1,2})\s*\.\s*(\d{1,2})", value)
+    if not match:
+        return re.sub(r"\s+", " ", value).strip()
+
+    year, month, day = match.groups()
+    return f"{year}. {int(month)}. {int(day)}."
 
 
 def is_metadata_row(row: list[str]) -> bool:
     non_empty_cells = [cell.strip() for cell in row if cell.strip()]
     joined = " ".join(non_empty_cells)
+    has_reference_period = reference_period_match(joined) is not None
     if "단위" in joined and ("기준" in joined or "As of" in joined):
         return True
+    if "단위" in joined and has_reference_period and len(set(non_empty_cells)) <= 2:
+        return True
     if ("기준" in joined or "As of" in joined) and len(set(non_empty_cells)) <= 2:
+        return True
+    if has_reference_period and len(set(non_empty_cells)) <= 2:
         return True
     return False
 
@@ -324,7 +370,29 @@ def looks_like_data_row(row: list[str]) -> bool:
     first_cell = row[0] if row else ""
     if looks_like_header_label(first_cell):
         return False
-    return any(numeric_value(cell) is not None for cell in row[1:])
+    if any(numeric_value(cell) is not None for cell in row[1:]):
+        return True
+    return looks_like_text_data_row(row)
+
+
+def looks_like_text_data_row(row: list[str]) -> bool:
+    non_empty_cells = [cell.strip() for cell in row if cell.strip()]
+    if len(non_empty_cells) < 2:
+        return False
+
+    if any(re.search(r"(?:'\d{2}|’\d{2}|\d{4})[.\-/년]", re.sub(r"\s+", "", cell)) for cell in non_empty_cells):
+        return True
+    first_cell = non_empty_cells[0]
+    if re.search(r"[A-Z][a-z]{2,}\.?\s+\d{1,2}", first_cell):
+        return True
+
+    body_like_cells = [
+        cell
+        for cell in non_empty_cells[1:]
+        if len(re.sub(r"\s+", "", cell)) >= 35
+        and re.search(r"[,，;:]", cell)
+    ]
+    return bool(body_like_cells)
 
 
 def looks_like_header_label(value: str) -> bool:

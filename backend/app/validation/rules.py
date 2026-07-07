@@ -944,7 +944,7 @@ class HeaderFormulaRule(ValidationRule):
 
 class StaticKoreanSpellingRule(ValidationRule):
     rule_id = "spelling.ko.static"
-    issue_type = "국문 표기 확인"
+    issue_type = "용어 제안"
 
     TERMS = {
         "잔액율": "잔액률",
@@ -965,9 +965,9 @@ class StaticKoreanSpellingRule(ValidationRule):
                             location=f"{row_index + 1}행 {col_index + 1}열",
                             current_value=current,
                             expected_value=expected,
-                            difference="표준 표기 확인",
+                            difference="발간 표준 용어 확인",
                             severity="warning",
-                            detail=f"국문 표기 사전에 따르면 '{current}'보다 '{expected}' 표기가 자연스럽습니다. 실제 발간 기준 용어와 일치하는지 확인하세요.",
+                            detail=f"국문 용어집 기준으로 '{current}'보다 '{expected}' 표기를 제안합니다. 실제 발간 기준 용어와 일치하는지 확인하세요.",
                             row_index=row_index,
                             col_index=col_index,
                         )
@@ -980,6 +980,7 @@ class StaticEnglishSpellingRule(ValidationRule):
     issue_type = "영문 표기 확인"
 
     TERMS = {
+        "Claasification": "Classification",
         "Claasifi-cation": "Classification",
         "Ele7ction": "Election",
         "Nuber": "Number",
@@ -1001,8 +1002,8 @@ class StaticEnglishSpellingRule(ValidationRule):
                             current_value=current,
                             expected_value=expected,
                             difference="철자 확인",
-                            severity="warning",
-                            detail=f"영문 표기 사전에서 '{current}'는 '{expected}'로 교정하는 것이 적절합니다. 원문 이미지 또는 표준 영문명을 확인하세요.",
+                            severity="critical",
+                            detail=f"영문 오탈자 사전에서 '{current}'는 '{expected}'로 교정하는 것이 적절합니다. 원문 이미지 또는 표준 영문명을 확인하세요.",
                             row_index=row_index,
                             col_index=col_index,
                         )

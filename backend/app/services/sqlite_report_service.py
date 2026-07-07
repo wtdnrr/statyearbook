@@ -203,7 +203,6 @@ class SQLiteReportService:
             metadata=TableMetadata(
                 original_file=decode_display_text(report["source_file_name"]),
                 sheet_name=table_row["section_file"],
-                cell_range=table_row["cell_range"],
                 note=table_row["note"],
                 source=table_row["source"],
                 base_date=table_row["base_date"] or f"{report['year']} 기준",

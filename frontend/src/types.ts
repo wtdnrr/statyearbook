@@ -75,7 +75,6 @@ export interface Visualization {
 export interface TableMetadata {
   original_file: string;
   sheet_name: string;
-  cell_range: string;
   note: string;
   source: string;
   base_date: string;

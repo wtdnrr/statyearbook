@@ -46,6 +46,7 @@ class LogicalTable:
     parts: list[TablePart] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
     sources: list[str] = field(default_factory=list)
+    metadata_context: str = ""
 
 
 APPENDIX_TITLE_RE = re.compile(r"^부록\s*(\d+)(?:\s*-\s*(\d+))?\s+(.+)$")
@@ -69,6 +70,8 @@ HEADER_HINTS = (
     "type",
     "category",
 )
+HANGUL_RE = re.compile(r"[가-힣]")
+LATIN_RE = re.compile(r"[A-Za-z]")
 
 
 @dataclass(frozen=True)
@@ -182,8 +185,7 @@ def html_table_matrix(html: str) -> list[list[str]]:
         apply_pending()
         matrix.append(row)
 
-    max_cols = max((len(row) for row in matrix), default=0)
-    return [row + [""] * (max_cols - len(row)) for row in matrix if any(cell for cell in row)]
+    return drop_empty_columns(matrix)
 
 
 def split_markdown_row(line: str) -> list[str]:
@@ -218,8 +220,185 @@ def is_markdown_separator(row: list[str]) -> bool:
 def markdown_table_matrix(lines: list[str]) -> list[list[str]]:
     rows = [split_markdown_row(line) for line in lines]
     rows = [row for row in rows if not is_markdown_separator(row)]
+    return drop_empty_columns(rows)
+
+
+def extract_embedded_metadata_rows(
+    matrix: list[list[str]],
+) -> tuple[list[list[str]], list[str], list[str]]:
+    table_rows: list[list[str]] = []
+    notes: list[str] = []
+    sources: list[str] = []
+
+    for row in matrix:
+        metadata_text = single_cell_metadata_text(row)
+        if metadata_text and line_is_source(metadata_text):
+            append_unique(sources, metadata_text)
+            continue
+        if metadata_text and line_is_embedded_note(metadata_text):
+            append_unique(notes, metadata_text)
+            continue
+        table_rows.append(row)
+
+    return table_rows, notes, sources
+
+
+def single_cell_metadata_text(row: list[str]) -> str:
+    non_empty_cells = [cell.strip() for cell in row if cell.strip()]
+    return non_empty_cells[0] if len(non_empty_cells) == 1 else ""
+
+
+def line_is_embedded_note(line: str) -> bool:
+    return line.startswith("#") or line.startswith("* 주") or line.startswith("*주")
+
+
+def append_table_part(
+    table: LogicalTable,
+    matrix: list[list[str]],
+    *,
+    source_kind: str,
+) -> None:
+    matrix, notes, sources = extract_embedded_metadata_rows(matrix)
+    for note in notes:
+        append_unique(table.notes, note)
+    for source in sources:
+        append_unique(table.sources, source)
+    if matrix:
+        table.parts.append(TablePart(matrix=matrix, raw_text=table_raw_text(matrix), source_kind=source_kind))
+
+
+def drop_empty_columns(rows: list[list[str]]) -> list[list[str]]:
+    non_empty_rows = [row for row in rows if any(cell for cell in row)]
+    max_cols = max((len(row) for row in non_empty_rows), default=0)
+    if not max_cols:
+        return []
+
+    padded_rows = [row + [""] * (max_cols - len(row)) for row in non_empty_rows]
+    kept_col_indexes = [
+        col_index
+        for col_index in range(max_cols)
+        if any(row[col_index].strip() for row in padded_rows)
+    ]
+    return [[row[col_index] for col_index in kept_col_indexes] for row in padded_rows]
+
+
+def drop_empty_columns_with_footnotes(
+    rows: list[list[str]],
+    footnote_rows: list[list[str]],
+) -> tuple[list[list[str]], list[list[str]]]:
     max_cols = max((len(row) for row in rows), default=0)
-    return [row + [""] * (max_cols - len(row)) for row in rows if any(cell for cell in row)]
+    if not rows or not max_cols:
+        return [], []
+
+    padded_rows = [row + [""] * (max_cols - len(row)) for row in rows]
+    padded_footnotes = [row + [""] * (max_cols - len(row)) for row in footnote_rows]
+    kept_col_indexes = [
+        col_index
+        for col_index in range(max_cols)
+        if any(row[col_index].strip() for row in padded_rows)
+    ]
+    return (
+        [[row[col_index] for col_index in kept_col_indexes] for row in padded_rows],
+        [[row[col_index] for col_index in kept_col_indexes] for row in padded_footnotes],
+    )
+
+
+def has_hangul(value: str) -> bool:
+    return bool(HANGUL_RE.search(value))
+
+
+def has_latin(value: str) -> bool:
+    return bool(LATIN_RE.search(value))
+
+
+def is_english_label_cell(value: str) -> bool:
+    stripped = value.strip()
+    return bool(stripped) and has_latin(stripped) and not has_hangul(stripped) and numeric_value(stripped) is None
+
+
+def row_has_numeric_values(row: list[str], *, start_col: int = 2) -> bool:
+    return any(numeric_value(cell) is not None for cell in row[start_col:])
+
+
+def should_merge_split_bilingual_label_column(rows: list[list[str]]) -> bool:
+    if len(rows) < 4:
+        return False
+
+    max_cols = max((len(row) for row in rows), default=0)
+    if max_cols < 4:
+        return False
+
+    first_row = rows[0] + [""] * (max_cols - len(rows[0]))
+    if not first_row[0].strip() or first_row[1].strip():
+        return False
+
+    non_empty_second_col = 0
+    english_second_col = 0
+    bilingual_pairs = 0
+    numeric_rows = 0
+
+    for source_row in rows[1:]:
+        row = source_row + [""] * (max_cols - len(source_row))
+        first_value = row[0].strip()
+        second_value = row[1].strip()
+
+        if row_has_numeric_values(row, start_col=2):
+            numeric_rows += 1
+        if not second_value:
+            continue
+
+        non_empty_second_col += 1
+        if is_english_label_cell(second_value):
+            english_second_col += 1
+        if first_value and is_english_label_cell(second_value):
+            bilingual_pairs += 1
+
+    if non_empty_second_col == 0:
+        return False
+
+    english_ratio = english_second_col / non_empty_second_col
+    return bilingual_pairs >= 3 and numeric_rows >= 3 and english_ratio >= 0.7
+
+
+def merge_cell_text(first_value: str, second_value: str) -> str:
+    values = [value.strip() for value in (first_value, second_value) if value.strip()]
+    return "\n".join(values)
+
+
+def merge_footnote_markers(first_value: str, second_value: str) -> str:
+    markers: list[str] = []
+    for value in (first_value, second_value):
+        stripped = value.strip()
+        if stripped and stripped not in markers:
+            markers.append(stripped)
+    return " ".join(markers)
+
+
+def merge_split_bilingual_label_column(
+    rows: list[list[str]],
+    footnote_rows: list[list[str]] | None = None,
+) -> tuple[list[list[str]], list[list[str]]]:
+    if not rows:
+        return [], []
+
+    max_cols = max((len(row) for row in rows), default=0)
+    normalized_rows = [row + [""] * (max_cols - len(row)) for row in rows]
+    normalized_footnotes = (
+        [row + [""] * (max_cols - len(row)) for row in footnote_rows]
+        if footnote_rows is not None
+        else [[""] * max_cols for _ in normalized_rows]
+    )
+
+    if not should_merge_split_bilingual_label_column(normalized_rows):
+        return normalized_rows, normalized_footnotes
+
+    merged_rows: list[list[str]] = []
+    merged_footnotes: list[list[str]] = []
+    for row, footnotes in zip(normalized_rows, normalized_footnotes):
+        merged_rows.append([merge_cell_text(row[0], row[1]), *row[2:]])
+        merged_footnotes.append([merge_footnote_markers(footnotes[0], footnotes[1]), *footnotes[2:]])
+
+    return merged_rows, merged_footnotes
 
 
 def normalize_text_line(line: str) -> str:
@@ -325,7 +504,7 @@ def parse_markdown(source_path: Path) -> list[LogicalTable]:
             html = "\n".join(block)
             matrix = html_table_matrix(html)
             if current and is_data_table(matrix) and not is_publication_info_table(matrix):
-                current.parts.append(TablePart(matrix=matrix, raw_text=table_raw_text(matrix), source_kind="html"))
+                append_table_part(current, matrix, source_kind="html")
             index += 1
             continue
 
@@ -336,9 +515,7 @@ def parse_markdown(source_path: Path) -> list[LogicalTable]:
                 index += 1
             matrix = markdown_table_matrix(block)
             if current and is_data_table(matrix) and not is_publication_info_table(matrix):
-                current.parts.append(
-                    TablePart(matrix=matrix, raw_text=table_raw_text(matrix), source_kind="markdown")
-                )
+                append_table_part(current, matrix, source_kind="markdown")
             continue
 
         if line_is_title_candidate(line):
@@ -420,10 +597,13 @@ def normalize_matrix_with_footnotes(parts: Iterable[TablePart]) -> tuple[list[li
             rows.append(cleaned_row)
             footnote_rows.append(footnote_row)
 
-    return (
-        [row + [""] * (max_cols - len(row)) for row in rows],
-        [row + [""] * (max_cols - len(row)) for row in footnote_rows],
+    padded_rows = [row + [""] * (max_cols - len(row)) for row in rows]
+    padded_footnote_rows = [row + [""] * (max_cols - len(row)) for row in footnote_rows]
+    normalized_rows, normalized_footnotes = drop_empty_columns_with_footnotes(
+        padded_rows,
+        padded_footnote_rows,
     )
+    return merge_split_bilingual_label_column(normalized_rows, normalized_footnotes)
 
 
 def normalize_matrix(parts: Iterable[TablePart]) -> list[list[str]]:
@@ -442,11 +622,14 @@ def normalized_part_rows(part: TablePart) -> list[list[str]]:
         max_cols = max(max_cols, len(cleaned_row))
         rows.append(cleaned_row)
 
-    return [row + [""] * (max_cols - len(row)) for row in rows]
+    normalized_rows = drop_empty_columns([row + [""] * (max_cols - len(row)) for row in rows])
+    merged_rows, _ = merge_split_bilingual_label_column(normalized_rows)
+    return merged_rows
 
 
 def compact_signature_cell(value: str) -> str:
-    return re.sub(r"\s+", "", value).lower()
+    without_count = re.sub(r"\(\s*\d+(?:[.,]\d+)?\s*[가-힣A-Za-z%]*\s*\)", "", value)
+    return re.sub(r"\s+", "", without_count).lower()
 
 
 def row_looks_like_header(row: list[str]) -> bool:
@@ -465,6 +648,17 @@ def row_looks_like_header(row: list[str]) -> bool:
 
 def part_structure_signature(part: TablePart) -> tuple[str, bool]:
     rows = normalized_part_rows(part)
+    return structure_signature_from_rows(rows)
+
+
+def part_continuation_signature(part: TablePart) -> tuple[str, bool]:
+    rows = normalized_part_rows(part)
+    if len(rows) > 1 and row_is_continuation_caption(rows[0]):
+        return structure_signature_from_rows(rows[1:])
+    return structure_signature_from_rows(rows)
+
+
+def structure_signature_from_rows(rows: list[list[str]]) -> tuple[str, bool]:
     if not rows:
         return "", False
 
@@ -482,38 +676,50 @@ def part_structure_signature(part: TablePart) -> tuple[str, bool]:
     return f"cols={max_cols};" + "||".join(signature_rows), True
 
 
+def row_is_continuation_caption(row: list[str]) -> bool:
+    non_empty_cells = [cell.strip() for cell in row if cell.strip()]
+    if len(non_empty_cells) != 1:
+        return False
+    return non_empty_cells[0].startswith("※")
+
+
 def signature_column_count(signature: str) -> int | None:
     match = re.match(r"cols=(\d+);", signature)
     return int(match.group(1)) if match else None
 
 
 def split_table_by_part_structure(table: LogicalTable) -> list[LogicalTable]:
+    shared_metadata_context = table.metadata_context or table_parts_raw_text(table.parts)
+    if not table.metadata_context:
+        table.metadata_context = shared_metadata_context
+
     if len(table.parts) <= 1:
         return [table]
 
-    groups: list[tuple[str, list[TablePart]]] = []
+    groups: list[tuple[str, str, list[TablePart]]] = []
     for part in table.parts:
         signature, has_header = part_structure_signature(part)
+        continuation_signature, _ = part_continuation_signature(part)
         if not groups:
-            groups.append((signature, [part]))
+            groups.append((signature, continuation_signature, [part]))
             continue
 
-        last_signature, last_parts = groups[-1]
+        last_signature, last_continuation_signature, last_parts = groups[-1]
         if not has_header and signature_column_count(signature) == signature_column_count(last_signature):
             last_parts.append(part)
             continue
 
-        if signature == last_signature:
+        if signature == last_signature or signature == last_continuation_signature:
             last_parts.append(part)
             continue
 
-        groups.append((signature, [part]))
+        groups.append((signature, continuation_signature, [part]))
 
     if len(groups) <= 1:
         return [table]
 
     split_tables: list[LogicalTable] = []
-    for group_index, (_, parts) in enumerate(groups, start=1):
+    for group_index, (_, _, parts) in enumerate(groups, start=1):
         split_tables.append(
             LogicalTable(
                 code=f"{table.code} 표{group_index}",
@@ -525,9 +731,32 @@ def split_table_by_part_structure(table: LogicalTable) -> list[LogicalTable]:
                 parts=parts,
                 notes=list(table.notes),
                 sources=list(table.sources),
+                metadata_context=shared_metadata_context,
             )
         )
     return split_tables
+
+
+def table_parts_raw_text(parts: Iterable[TablePart]) -> str:
+    return " ".join(part.raw_text for part in parts)
+
+
+def code_without_part_suffix(code: str) -> str:
+    return re.sub(r"\s+표\s*\d+$", "", code).strip()
+
+
+def immediate_parent_code(code: str) -> str:
+    base_code = code_without_part_suffix(code)
+    if base_code.startswith("부록 "):
+        match = re.match(r"^(부록\s+\d+)-\d+$", base_code)
+        return match.group(1) if match else ""
+
+    parts = base_code.split("-")
+    return "-".join(parts[:-1]) if len(parts) > 1 else ""
+
+
+def metadata_unit_key(unit: str) -> str:
+    return re.sub(r"\s+", "", unit).strip()
 
 
 def split_tables_by_part_structure(tables: Iterable[LogicalTable]) -> list[LogicalTable]:
@@ -566,13 +795,31 @@ def insert_report(
     inserted_tables = 0
     inserted_cells = 0
     prepared_tables = annotate_adjacent_duplicate_tables(split_tables_by_part_structure(parsed_tables))
+    inherited_units: dict[str, set[str]] = {}
+    inherited_base_dates: dict[tuple[str, str], str] = {}
     for table in prepared_tables:
         matrix, footnote_matrix = normalize_matrix_with_footnotes(table.parts)
         if not matrix or max((len(row) for row in matrix), default=0) < 2:
             continue
 
-        raw_text = " ".join(part.raw_text for part in table.parts)
+        raw_text = table_parts_raw_text(table.parts)
+        metadata_text = table.metadata_context or raw_text
         unit, base_date = extract_unit_and_base_date(raw_text)
+        shared_unit, shared_base_date = extract_unit_and_base_date(metadata_text)
+        unit = unit or shared_unit
+        parent_code = immediate_parent_code(table.code)
+        if not unit and parent_code:
+            parent_units = inherited_units.get(parent_code, set())
+            if len(parent_units) == 1:
+                unit = next(iter(parent_units))
+        base_date = base_date or shared_base_date
+        unit_key = metadata_unit_key(unit)
+        if not base_date and parent_code and unit_key:
+            base_date = inherited_base_dates.get((parent_code, unit_key), "")
+        if unit and parent_code:
+            inherited_units.setdefault(parent_code, set()).add(unit)
+        if base_date and parent_code and unit_key:
+            inherited_base_dates[(parent_code, unit_key)] = base_date
         header_count = guess_header_count(matrix)
         source = "\n".join(table.sources)
         note = "\n".join(table.notes)

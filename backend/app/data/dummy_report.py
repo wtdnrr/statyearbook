@@ -122,7 +122,6 @@ TABLES: list[StatTable] = [
         metadata={
             "original_file": ORIGINAL_FILE,
             "sheet_name": "행정_공무원",
-            "cell_range": "A3:D27",
             "note": "지방인사제도과 사무관 최윤주, 지방자치단체 공무원인사통계 및 여성공무원 통계",
             "source": "행정안전부 지방인사제도과",
             "base_date": BASE_DATE,
@@ -247,7 +246,6 @@ TABLES: list[StatTable] = [
         metadata={
             "original_file": ORIGINAL_FILE,
             "sheet_name": "행정_위원회",
-            "cell_range": "A4:H23",
             "note": "지방분권제도과 주무관 박진영",
             "source": "행정안전부 지방분권제도과",
             "base_date": BASE_DATE,
@@ -342,7 +340,6 @@ TABLES: list[StatTable] = [
         metadata={
             "original_file": ORIGINAL_FILE,
             "sheet_name": "안전_보행환경",
-            "cell_range": "A4:C24",
             "note": "안전개선과 주무관 김선영",
             "source": "행정안전부 안전개선과",
             "base_date": BASE_DATE,
@@ -465,7 +462,6 @@ TABLES: list[StatTable] = [
         metadata={
             "original_file": ORIGINAL_FILE,
             "sheet_name": "재정_재해구호기금",
-            "cell_range": "A4:G23",
             "note": "누적 적립기준액은 최근 3년 동안의 지방세법에 따른 보통세 수입결산액 평균액의 1천분의 30",
             "source": "행정안전부 재난구호과",
             "base_date": BASE_DATE,

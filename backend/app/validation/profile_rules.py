@@ -34,8 +34,28 @@ def median(values: list[float]) -> float:
 
 def contains_korean_term(text: str, term: str) -> bool:
     if term == "계":
+        if re.search(r"(통\s*계\s*청|회\s*계|계\s*곡)", text):
+            return False
         return bool(re.search(r"(^|[\s/·])계($|[\s/·])", text))
+    if re.fullmatch(r"[가-힣]+", term):
+        return bool(re.search(rf"(?<![가-힣A-Za-z]){re.escape(term)}(?![가-힣A-Za-z])", text))
     return term in text
+
+
+KNOWN_SPELLING_TYPOS = ("Claasification", "Claasifi-cation", "Ele7ction", "Nuber")
+
+
+def contains_known_spelling_typo(text: str) -> bool:
+    return any(term in text for term in KNOWN_SPELLING_TYPOS)
+
+
+def is_repeated_projected_cell(table: ValidationTable, row_index: int, col_index: int, text: str) -> bool:
+    if row_index <= 0 or col_index >= len(table.matrix[row_index - 1]):
+        return False
+    previous_cell = table.matrix[row_index - 1][col_index]
+    if previous_cell is None:
+        return False
+    return clean_display_text(previous_cell.text_value) == text
 
 
 def displayed_ratio_tolerance(
@@ -54,6 +74,17 @@ def displayed_ratio_tolerance(
     if re.fullmatch(r"[-+]?\d+", text):
         return max(base_tolerance, 0.5)
     return base_tolerance
+
+
+def additive_cell_number(row: list, col_index: int) -> float | None:
+    value = cell_number(row, col_index)
+    if value is not None:
+        return value
+
+    text = clean_display_text(cell_text(row, col_index))
+    if text in {"-", "－", "―"}:
+        return 0.0
+    return None
 
 
 class ProfileStateRule(ValidationRule):
@@ -156,6 +187,8 @@ class ProfileSpecRule(ValidationRule):
                 spec_issues, spec_checks = self._validate_outliers(table, profile, spec)
             elif rule_type == "spelling_static":
                 spec_issues, spec_checks = self._validate_static_spelling(table, profile, spec)
+            elif rule_type == "terminology_static":
+                spec_issues, spec_checks = self._validate_static_terminology(table, profile, spec)
             elif rule_type == "translation_static":
                 spec_issues, spec_checks = self._validate_static_translation(table, profile, spec)
             else:
@@ -232,6 +265,12 @@ class ProfileSpecRule(ValidationRule):
         matches_profile = not expected or normalize_text(current) == normalize_text(expected)
         passed = has_unit and matches_profile
         difference = "누락" if not has_unit else "프로파일 단위와 다름"
+        if not has_unit:
+            detail = "단위 메타데이터가 누락되어 있습니다. 원문 또는 원 시스템 DB의 단위 매핑을 확인하세요."
+        elif not matches_profile:
+            detail = "현재 단위가 저장된 검수 프로파일의 단위 기준과 다릅니다."
+        else:
+            detail = "단위가 입력되어 있고 저장된 검수 프로파일의 단위 기준과 일치합니다."
         check = self._check_from_pass_fail(
             table,
             profile,
@@ -242,7 +281,7 @@ class ProfileSpecRule(ValidationRule):
             expected_value=expected or "단위 입력",
             difference=difference,
             passed=passed,
-            detail="단위가 입력되어 있고 저장된 검수 프로파일의 단위 기준과 일치하는지 확인했습니다.",
+            detail=detail,
         )
         return ([] if passed else [self._issue_from_check(check)]), [check]
 
@@ -337,14 +376,14 @@ class ProfileSpecRule(ValidationRule):
             table,
             profile,
             spec,
-            check_type=self._check_type(spec, "숫자 형식 검수"),
-            location=f"{first[0] + 1}행 {first[1] + 1}열" if first else "전체 숫자 셀",
-            current_value=first[2] if first else "정상",
-            expected_value="숫자로 해석 가능한 형식",
+            check_type=self._check_type(spec, "계산용 숫자 형식 검수"),
+            location=f"{first[0] + 1}행 {first[1] + 1}열" if first else "전체 숫자형 셀",
+            current_value=first[2] if first else "모든 숫자형 셀 정상",
+            expected_value="합계·비율·증감률 계산에 사용할 수 있는 숫자 형식",
             difference=None if passed else f"{len(suspicious)}건",
             status=self._status(spec, passed),
             severity=self._severity(spec, passed),
-            detail="숫자처럼 보이는 셀이 숫자값으로 해석되는지 확인했습니다.",
+            detail="숫자처럼 보이는 값이 실제 계산에 사용할 수 있는 숫자로 파싱되는지 확인했습니다.",
             row_index=first[0] if first else None,
             col_index=first[1] if first else None,
         )
@@ -400,7 +439,7 @@ class ProfileSpecRule(ValidationRule):
         checks: list[ValidationCheckRecord] = []
         for row_index, row in table.data_rows():
             current = cell_number(row, target_col)
-            operands = [cell_number(row, col_index) for col_index in operand_columns]
+            operands = [additive_cell_number(row, col_index) for col_index in operand_columns]
             if current is None or any(value is None for value in operands):
                 continue
 
@@ -444,7 +483,7 @@ class ProfileSpecRule(ValidationRule):
 
             expected = 0.0
             for term in terms:
-                value = cell_number(row, int(term["column"]))
+                value = additive_cell_number(row, int(term["column"]))
                 if value is None:
                     expected = None
                     break
@@ -909,9 +948,12 @@ class ProfileSpecRule(ValidationRule):
                 if cell is None or not cell.text_value:
                     continue
                 text = clean_display_text(cell.text_value)
+                if is_repeated_projected_cell(table, row_index, col_index, text):
+                    continue
                 for term in spec.get("terms", []):
                     current = str(term.get("current", ""))
                     expected = str(term.get("expected", ""))
+                    reason = str(term.get("reason") or "철자 오류")
                     if not current or current not in text:
                         continue
                     check = self._check_from_pass_fail(
@@ -922,9 +964,9 @@ class ProfileSpecRule(ValidationRule):
                         location=f"{row_index + 1}행 {col_index + 1}열",
                         current_value=current,
                         expected_value=expected,
-                        difference="표기 확인",
+                        difference=reason,
                         passed=False,
-                        detail="정적 오탈자 사전에 등록된 표기 후보를 확인 대상으로 표시했습니다. 실제 서비스에서는 LLM 교정 결과와 담당자 승인값으로 확장됩니다.",
+                        detail="명백한 철자 오류 또는 문자 깨짐으로 분류된 항목입니다. 실제 서비스에서는 LLM 교정 결과와 담당자 승인값으로 확장됩니다.",
                         row_index=row_index,
                         col_index=col_index,
                     )
@@ -950,6 +992,61 @@ class ProfileSpecRule(ValidationRule):
             )
         return issues, checks
 
+    def _validate_static_terminology(
+        self,
+        table: ValidationTable,
+        profile: ValidationProfile,
+        spec: dict[str, Any],
+    ) -> tuple[list[ValidationIssueRecord], list[ValidationCheckRecord]]:
+        issues: list[ValidationIssueRecord] = []
+        checks: list[ValidationCheckRecord] = []
+        for row_index, row in enumerate(table.matrix):
+            for col_index, cell in enumerate(row):
+                if cell is None or not cell.text_value:
+                    continue
+                text = clean_display_text(cell.text_value)
+                for term in spec.get("terms", []):
+                    current = str(term.get("current", ""))
+                    expected = str(term.get("expected", ""))
+                    reason = str(term.get("reason") or "표준 용어 확인")
+                    if not current or current not in text:
+                        continue
+                    check = self._check_from_pass_fail(
+                        table,
+                        profile,
+                        spec,
+                        fallback_check_type="용어 제안",
+                        location=f"{row_index + 1}행 {col_index + 1}열",
+                        current_value=current,
+                        expected_value=expected,
+                        difference=reason,
+                        passed=False,
+                        detail="발간 표준 용어 또는 기관 용어집 기준으로 더 적절한 표현 후보를 표시했습니다. 최종 반영 여부는 담당자가 확인해야 합니다.",
+                        row_index=row_index,
+                        col_index=col_index,
+                    )
+                    checks.append(check)
+                    issues.append(self._issue_from_check(check))
+                    if len(checks) >= 10:
+                        return issues, checks
+
+        if not checks:
+            checks.append(
+                self._check_from_pass_fail(
+                    table,
+                    profile,
+                    spec,
+                    fallback_check_type="용어 제안",
+                    location="전체 텍스트 셀",
+                    current_value="용어 제안 후보 0건",
+                    expected_value="정적 용어집 기준 통과",
+                    difference=None,
+                    passed=True,
+                    detail="정적 용어집 기준의 용어 제안 후보가 발견되지 않았습니다.",
+                )
+            )
+        return issues, checks
+
     def _validate_static_translation(
         self,
         table: ValidationTable,
@@ -966,6 +1063,8 @@ class ProfileSpecRule(ValidationRule):
                 if row_index >= table.header_count and col_index not in label_columns:
                     continue
                 text = clean_display_text(cell.text_value)
+                if contains_known_spelling_typo(text):
+                    continue
                 for term in spec.get("terms", []):
                     source = str(term.get("source", ""))
                     expected = str(term.get("expected", ""))
@@ -1032,7 +1131,7 @@ class ProfileSpecRule(ValidationRule):
             for row_index in operand_rows:
                 if row_index >= len(table.matrix):
                     continue
-                value = cell_number(table.matrix[row_index], col_index)
+                value = additive_cell_number(table.matrix[row_index], col_index)
                 if value is not None:
                     values.append(value)
             if current is None or len(values) < 2:

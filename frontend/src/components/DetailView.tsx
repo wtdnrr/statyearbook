@@ -834,10 +834,6 @@ export function DetailView({ table, onBack }: DetailViewProps) {
                     <dd>{activePart.unit}</dd>
                   </div>
                   <div>
-                    <dt>표 위치</dt>
-                    <dd>{activePart.metadata.cell_range}</dd>
-                  </div>
-                  <div>
                     <dt>최종 수정 일자</dt>
                     <dd>{activePart.updated_at}</dd>
                   </div>

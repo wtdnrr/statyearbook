@@ -315,6 +315,17 @@ def cell_text_at(row: list, col_index: int) -> str:
     return clean_display_text(cell.text_value if cell else "")
 
 
+def additive_cell_number(row: list, col_index: int) -> float | None:
+    value = cell_number(row, col_index)
+    if value is not None:
+        return value
+
+    text = cell_text_at(row, col_index)
+    if text in {"-", "－", "―"}:
+        return 0.0
+    return None
+
+
 def is_male_label(leaf: str, full_label: str) -> bool:
     normalized_leaf = normalize_text(leaf)
     return normalized_leaf in {"남", "남성", "male", "man"} or bool(re.search(r"\b(male|man)\b", full_label, re.IGNORECASE))
@@ -356,6 +367,50 @@ def effective_column_text(table: ValidationTable, col_index: int) -> str:
     return " / ".join(parts) or table.column_text(col_index)
 
 
+def effective_header_path(table: ValidationTable, col_index: int) -> list[str]:
+    path: list[str] = []
+    for row_index in range(table.header_count):
+        value = effective_header_value(table, row_index, col_index)
+        if value and (not path or normalize_text(path[-1]) != normalize_text(value)):
+            path.append(value)
+    return path
+
+
+def total_like_header_position(path: list[str]) -> int | None:
+    for index, value in enumerate(path):
+        if total_label_kind(value) is not None:
+            return index
+    return None
+
+
+def aggregate_group_prefix(table: ValidationTable, col_index: int) -> tuple[str, ...]:
+    path = effective_header_path(table, col_index)
+    position = total_like_header_position(path)
+    if position is None:
+        return tuple(path[:-1])
+    return tuple(path[:position])
+
+
+def normalized_path_startswith(path: list[str] | tuple[str, ...], prefix: tuple[str, ...]) -> bool:
+    if not prefix or len(path) < len(prefix):
+        return False
+    return all(normalize_text(path[index]) == normalize_text(value) for index, value in enumerate(prefix))
+
+
+def is_total_column_candidate(table: ValidationTable, col_index: int) -> bool:
+    leaf = leaf_header(table, col_index)
+    if total_label_kind(leaf) is not None:
+        return True
+
+    label = effective_column_text(table, col_index)
+    normalized = normalize_text(label)
+    if normalized.startswith(("총", "총계", "합계")):
+        return True
+    if re.search(r"\b(total|grand\s+total|subtotal)\b", label, re.IGNORECASE):
+        return True
+    return False
+
+
 def is_calculation_row_label(table: ValidationTable, row: list) -> bool:
     label = combined_row_label(table, row) or table.row_label(row)
     return is_ratio_row_label(label) or is_growth_rate_label(label)
@@ -372,7 +427,7 @@ def row_sum_match_ratio(
     passed = 0
     for _, row in table.data_rows():
         current = cell_number(row, target_col)
-        operands = [cell_number(row, col_index) for col_index in operand_columns]
+        operands = [additive_cell_number(row, col_index) for col_index in operand_columns]
         if current is None or any(value is None for value in operands):
             continue
         checked += 1
@@ -398,7 +453,7 @@ def column_sum_match_ratio(
     for col_index in columns:
         current = cell_number(target_matrix_row, col_index)
         values = [
-            cell_number(table.matrix[row_index], col_index)
+            additive_cell_number(table.matrix[row_index], col_index)
             for row_index in operand_rows
             if row_index < len(table.matrix)
         ]
@@ -545,6 +600,7 @@ def infer_profile_checks(
     checks.extend(infer_total_row_rules(table))
     checks.extend(outlier_check_specs(table))
     checks.extend(static_spelling_check_specs(table))
+    checks.extend(static_terminology_check_specs(table))
     checks.extend(static_translation_check_specs(table))
 
     return dedupe_check_specs(checks)
@@ -588,8 +644,8 @@ def common_check_specs(table: ValidationTable) -> list[dict[str, Any]]:
             "id": f"profile.{table.code}.numeric_format",
             "type": "numeric_format",
             "category": "common",
-            "check_type": "숫자 형식 검수",
-            "label": "숫자 형식 검수",
+            "check_type": "계산용 숫자 형식 검수",
+            "label": "계산용 숫자 형식 검수",
             "fields": [],
             "severity": "warning",
             "failure_status": "확인 필요",
@@ -692,17 +748,11 @@ def infer_total_column_rules(table: ValidationTable) -> list[dict[str, Any]]:
     ]
     specs: list[dict[str, Any]] = []
     for target_col in numeric_columns:
-        target_leaf = leaf_header(table, target_col)
-        if total_label_kind(target_leaf) is None:
+        if not is_total_column_candidate(table, target_col):
             continue
-        operand_columns = [
-            col_index
-            for col_index in numeric_columns
-            if col_index != target_col
-            and total_label_kind(leaf_header(table, col_index)) is None
-            and effective_header_parent_key(table, col_index) == effective_header_parent_key(table, target_col)
-        ]
-        if len(operand_columns) < 2:
+
+        operand_columns = best_row_sum_operand_columns(table, target_col, numeric_columns)
+        if not operand_columns:
             continue
         passed_ratio, checked_count = row_sum_match_ratio(table, target_col, operand_columns, tolerance=1.0)
         if checked_count < 3 or passed_ratio < 0.8:
@@ -714,7 +764,7 @@ def infer_total_column_rules(table: ValidationTable) -> list[dict[str, Any]]:
                 "id": f"profile.{table.code}.row_total_c{target_col}",
                 "type": "row_sum",
                 "category": "template",
-                "label": f"{leaf_header(table, target_col)} = 같은 행 세부 열 합계",
+                "label": row_sum_rule_label(table, target_col, operand_columns),
                 "target_column": target_col,
                 "operand_columns": operand_columns,
                 "tolerance": 1.0,
@@ -723,6 +773,84 @@ def infer_total_column_rules(table: ValidationTable) -> list[dict[str, Any]]:
             )
         )
     return specs
+
+
+def best_row_sum_operand_columns(
+    table: ValidationTable,
+    target_col: int,
+    numeric_columns: list[int],
+) -> list[int]:
+    candidates: list[list[int]] = []
+
+    exact_parent_operands = [
+        col_index
+        for col_index in numeric_columns
+        if col_index != target_col
+        and not is_total_column_candidate(table, col_index)
+        and effective_header_parent_key(table, col_index) == effective_header_parent_key(table, target_col)
+    ]
+    if len(exact_parent_operands) >= 2:
+        candidates.append(exact_parent_operands)
+
+    group_prefix = aggregate_group_prefix(table, target_col)
+    if group_prefix:
+        group_operands = [
+            col_index
+            for col_index in numeric_columns
+            if col_index != target_col
+            and not is_total_column_candidate(table, col_index)
+            and normalized_path_startswith(effective_header_path(table, col_index), group_prefix)
+        ]
+        if len(group_operands) >= 2:
+            candidates.append(group_operands)
+
+    child_total_operands = [
+        col_index
+        for col_index in numeric_columns
+        if col_index != target_col and is_total_column_candidate(table, col_index)
+    ]
+    if len(child_total_operands) >= 2:
+        candidates.append(child_total_operands)
+
+    all_leaf_operands = [
+        col_index
+        for col_index in numeric_columns
+        if col_index != target_col and not is_total_column_candidate(table, col_index)
+    ]
+    if len(all_leaf_operands) >= 2:
+        candidates.append(all_leaf_operands)
+
+    scored_candidates: list[tuple[float, int, int, list[int]]] = []
+    seen: set[tuple[int, ...]] = set()
+    for operand_columns in candidates:
+        key = tuple(operand_columns)
+        if key in seen:
+            continue
+        seen.add(key)
+        passed_ratio, checked_count = row_sum_match_ratio(table, target_col, operand_columns, tolerance=1.0)
+        if checked_count < 3 or passed_ratio < 0.8:
+            continue
+        scored_candidates.append((passed_ratio, checked_count, -len(operand_columns), operand_columns))
+
+    if not scored_candidates:
+        return []
+
+    return max(scored_candidates)[3]
+
+
+def row_sum_rule_label(table: ValidationTable, target_col: int, operand_columns: list[int]) -> str:
+    target_label = leaf_header(table, target_col)
+    if total_label_kind(target_label) is None:
+        target_label = effective_column_text(table, target_col)
+    leaf_labels = [leaf_header(table, col_index) for col_index in operand_columns]
+    operand_labels = (
+        [effective_column_text(table, col_index) for col_index in operand_columns]
+        if len(set(normalize_text(label) for label in leaf_labels)) < len(leaf_labels)
+        else leaf_labels
+    )
+    if len(operand_labels) <= 3:
+        return f"{target_label} = {' + '.join(operand_labels)}"
+    return f"{target_label} = 같은 행 세부 열 {len(operand_labels)}개 합계"
 
 
 def infer_total_row_rules(table: ValidationTable) -> list[dict[str, Any]]:
@@ -1628,14 +1756,37 @@ def static_spelling_check_specs(table: ValidationTable) -> list[dict[str, Any]]:
                 "id": f"profile.{table.code}.spelling_static",
                 "type": "spelling_static",
                 "category": "common",
-                "label": "국문/영문 정적 오탈자 사전",
+                "label": "국문/영문 명백 오탈자 사전",
                 "terms": [
-                    {"current": "잔액율", "expected": "잔액률", "language": "ko"},
-                    {"current": "Claasifi-cation", "expected": "Classification", "language": "en"},
-                    {"current": "Ele7ction", "expected": "Election", "language": "en"},
-                    {"current": "Nuber", "expected": "Number", "language": "en"},
+                    {"current": "Claasification", "expected": "Classification", "language": "en", "reason": "영문 철자 오류"},
+                    {"current": "Claasifi-cation", "expected": "Classification", "language": "en", "reason": "영문 철자 오류"},
+                    {"current": "Ele7ction", "expected": "Election", "language": "en", "reason": "숫자 혼입"},
+                    {"current": "Nuber", "expected": "Number", "language": "en", "reason": "영문 철자 누락"},
                 ],
-                "confidence": 0.8,
+                "failure_status": "오류 의심",
+                "severity": "critical",
+                "confidence": 0.9,
+            },
+        )
+    ]
+
+
+def static_terminology_check_specs(table: ValidationTable) -> list[dict[str, Any]]:
+    return [
+        rule_spec(
+            "translation",
+            {
+                "id": f"profile.{table.code}.terminology_static",
+                "type": "terminology_static",
+                "category": "common",
+                "check_type": "용어 제안",
+                "label": "국문 표준 용어 제안",
+                "terms": [
+                    {"current": "잔액율", "expected": "잔액률", "language": "ko", "reason": "발간 표준 용어 확인"},
+                ],
+                "failure_status": "확인 필요",
+                "severity": "warning",
+                "confidence": 0.75,
             },
         )
     ]
@@ -1652,7 +1803,6 @@ def static_translation_check_specs(table: ValidationTable) -> list[dict[str, Any
                 "label": "기본 국문/영문 병기 용어집",
                 "terms": [
                     {"source": "구분", "expected": "Classification"},
-                    {"source": "지역", "expected": "Region"},
                     {"source": "합계", "expected": "Total"},
                     {"source": "계", "expected": "Total"},
                     {"source": "남성", "expected": "Male"},
@@ -1662,6 +1812,8 @@ def static_translation_check_specs(table: ValidationTable) -> list[dict[str, Any
                     {"source": "증감률", "expected": "Rate of Change"},
                 ],
                 "scope": "header_and_label_cells",
+                "failure_status": "확인 필요",
+                "severity": "warning",
                 "confidence": 0.65,
             },
         )

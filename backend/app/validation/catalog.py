@@ -56,10 +56,10 @@ REQUIRED_RULE_DEFINITIONS: tuple[ValidationRuleDefinition, ...] = (
     ValidationRuleDefinition(
         key="spelling",
         name="오탈자 검수",
-        default_status=REVIEW_STATUS,
-        default_severity="warning",
+        default_status=ERROR_STATUS,
+        default_severity="critical",
         owner_role="LLM/담당자",
-        description="국문·영문 정적 사전 또는 향후 LLM 교정 결과를 기준으로 표기 오류 후보를 확인합니다.",
+        description="국문·영문 정적 사전 또는 향후 LLM 교정 결과를 기준으로 명백한 철자 오류와 문자 깨짐 후보를 확인합니다.",
     ),
     ValidationRuleDefinition(
         key="translation",
