@@ -7,7 +7,13 @@ import {
   FileCode2,
 } from "lucide-react";
 
-import type { ColumnDefinition, StatTable, StatTablePart, ValidationIssue } from "../types";
+import type {
+  StatTable,
+  StatTablePart,
+  ValidationHighlightCell,
+  ValidationHighlightRow,
+  ValidationIssue,
+} from "../types";
 import { firstFocusableCheck, resolveIssueLocation } from "../utils/validationLocation";
 import { DataGrid } from "./DataGrid";
 import { StatusBadge } from "./StatusBadge";
@@ -28,6 +34,9 @@ interface DisplayCheck extends ValidationIssue {
   targetCount: number;
   rowSummary: string;
   columnSummary: string;
+  highlight_cells: ValidationHighlightCell[];
+  highlight_rows: ValidationHighlightRow[];
+  focus_cell?: ValidationHighlightCell | null;
 }
 
 interface GridHighlightLocation {
@@ -74,7 +83,17 @@ function checksForFilter<T extends { status: string }>(
 }
 
 function groupKeyForCheck(check: ValidationIssue) {
-  return [check.type, check.status, check.severity, check.formula ?? "", check.detail].join("::");
+  return [check.rule_id ?? check.id, check.type, check.status, check.formula ?? "", check.detail].join("::");
+}
+
+function aggregateStatus(checks: ValidationIssue[]) {
+  if (checks.some((check) => check.status === "오류 의심")) {
+    return { status: "오류 의심", severity: "critical" as const };
+  }
+  if (checks.some((check) => check.status === "확인 필요")) {
+    return { status: "확인 필요", severity: "warning" as const };
+  }
+  return { status: "정상", severity: "info" as const };
 }
 
 function uniqueValues(values: Array<string | undefined>) {
@@ -102,16 +121,86 @@ function summarizeRepeatedValues(values: Array<string | undefined>, fallback: st
   return unique.length === 1 ? unique[0] : fallback;
 }
 
-function displayColumnLabel(column: ColumnDefinition | undefined) {
+function columnLabelAt(part: StatTablePart, colIndex: number | undefined) {
+  if (colIndex === undefined || colIndex < 0) {
+    return "열 정보 없음";
+  }
+  const column = part.columns[colIndex];
   if (!column) {
-    return "";
+    return `${colIndex + 1}열`;
   }
   return [column.label, column.label_en].filter(Boolean).join(" ");
 }
 
-function rowLabelFor(part: StatTablePart, row: Record<string, string | number>) {
+function rowForMatrixIndex(part: StatTablePart, rowIndex: number | undefined) {
+  if (rowIndex === undefined) {
+    return undefined;
+  }
+  return part.rows.find((row) => Number(row._row_index) === rowIndex);
+}
+
+function rowLabelAt(part: StatTablePart, rowIndex: number | undefined) {
+  if (rowIndex === undefined || rowIndex < 0) {
+    return "행 정보 없음";
+  }
+  const headerCount = part.metadata.header_count ?? 0;
+  if (rowIndex < headerCount) {
+    return "헤더";
+  }
+  const row = rowForMatrixIndex(part, rowIndex);
   const firstColumnKey = part.columns[0]?.key;
-  return firstColumnKey ? String(row[firstColumnKey] ?? "") : "";
+  const label = firstColumnKey ? String(row?.[firstColumnKey] ?? "").trim() : "";
+  return label || `${rowIndex + 1}행`;
+}
+
+function cellValueAt(part: StatTablePart, rowIndex: number | undefined, colIndex: number | undefined) {
+  if (rowIndex === undefined || colIndex === undefined || colIndex < 0) {
+    return "";
+  }
+  const headerCount = part.metadata.header_count ?? 0;
+  if (rowIndex < headerCount) {
+    return columnLabelAt(part, colIndex);
+  }
+  const row = rowForMatrixIndex(part, rowIndex);
+  const column = part.columns[colIndex];
+  if (!row || !column) {
+    return "";
+  }
+  return String(row[column.key] ?? "").trim();
+}
+
+function cellDescription(part: StatTablePart, cell: ValidationHighlightCell) {
+  const value = cellValueAt(part, cell.row_index, cell.col_index);
+  return {
+    key: `${cell.row_index}:${cell.col_index}`,
+    row: rowLabelAt(part, cell.row_index),
+    column: columnLabelAt(part, cell.col_index),
+    value,
+  };
+}
+
+function targetCellForCheck(check: ValidationIssue): ValidationHighlightCell | undefined {
+  return (
+    check.highlight_cells?.find((cell) => cell.role === "target") ??
+    (check.row_index !== undefined && check.col_index !== undefined
+      ? { row_index: check.row_index, col_index: check.col_index, role: "target" }
+      : undefined)
+  );
+}
+
+function relatedCellsForCheck(check: ValidationIssue) {
+  const target = targetCellForCheck(check);
+  const targetKey = target ? highlightCellKey(target) : "";
+  const seen = new Set<string>();
+
+  return (check.highlight_cells ?? []).filter((cell) => {
+    const key = highlightCellKey(cell);
+    if (cell.role !== "related" || key === targetKey || seen.has(key)) {
+      return false;
+    }
+    seen.add(key);
+    return true;
+  });
 }
 
 function uniqueHighlightLocations(locations: GridHighlightLocation[]) {
@@ -127,67 +216,97 @@ function uniqueHighlightLocations(locations: GridHighlightLocation[]) {
   });
 }
 
-function formulaSymbols(formula: string | undefined) {
-  if (!formula) {
-    return [];
-  }
-  return Array.from(new Set(formula.toLowerCase().match(/[a-z]/g) ?? []));
+function highlightCellKey(cell: ValidationHighlightCell) {
+  return `${cell.row_index}:${cell.col_index}`;
 }
 
-function directFormulaSymbolsForColumn(column: ColumnDefinition) {
-  const label = displayColumnLabel(column).toLowerCase();
-  const symbols = new Set<string>();
-
-  for (const match of label.matchAll(/(?:^|[\s(])([a-z])\s*\)/g)) {
-    symbols.add(match[1]);
-  }
-
-  for (const match of label.matchAll(/(?:^|[\s(])([a-z])\s*=/g)) {
-    symbols.add(match[1]);
-  }
-
-  for (const match of label.matchAll(/(?:^|[\s(])([a-z])\s+[a-z]\s*[+\-=]/g)) {
-    symbols.add(match[1]);
-  }
-
-  return symbols;
+function highlightRowKey(row: ValidationHighlightRow) {
+  return String(row.row_index);
 }
 
-function formulaRelatedTargets(part: StatTablePart, check: DisplayCheck) {
-  if (!["합계", "비율", "증감률"].some((keyword) => check.type.includes(keyword))) {
-    return [];
-  }
+function normalizeHighlightRole<T extends ValidationHighlightCell | ValidationHighlightRow>(
+  item: T,
+  _status: string,
+): T {
+  return {
+    ...item,
+    role: item.role,
+  };
+}
 
-  const symbols = formulaSymbols(check.formula);
-  if (symbols.length === 0) {
-    return [];
-  }
+function mergeHighlightCells(checks: ValidationIssue[]) {
+  const hasFailure = checks.some((check) => check.status !== "정상");
+  const cellsByKey = new Map<string, ValidationHighlightCell>();
 
-  const targetColumnIndexes = new Set(
-    check.checks
-      .map((item) => item.col_index)
-      .filter((value): value is number => typeof value === "number" && value >= 0),
-  );
-  const relatedColumns = part.columns.filter((column, index) => {
-    if (index === 0) {
-      return false;
+  for (const check of checks) {
+    for (const cell of check.highlight_cells ?? []) {
+      const normalizedCell = normalizeHighlightRole(
+        cell,
+        hasFailure && check.status === "정상" ? "정상" : check.status,
+      );
+      const key = highlightCellKey(normalizedCell);
+      const current = cellsByKey.get(key);
+      if (!current || normalizedCell.role === "target") {
+        cellsByKey.set(key, normalizedCell);
+      }
     }
-    const directSymbols = directFormulaSymbolsForColumn(column);
-    return targetColumnIndexes.has(index) || symbols.some((symbol) => directSymbols.has(symbol));
-  });
-  const rowLabels = part.rows.map((row) => rowLabelFor(part, row)).filter(Boolean);
+  }
 
-  return relatedColumns.flatMap((column) =>
-    rowLabels.map((rowText) => ({
-      rowText,
-      columnText: displayColumnLabel(column),
-    })),
-  );
+  return Array.from(cellsByKey.values());
 }
 
-function highlightForCheck(part: StatTablePart, check: DisplayCheck | undefined) {
+function mergeHighlightRows(checks: ValidationIssue[]) {
+  const hasFailure = checks.some((check) => check.status !== "정상");
+  const rowsByKey = new Map<string, ValidationHighlightRow>();
+
+  for (const check of checks) {
+    for (const row of check.highlight_rows ?? []) {
+      const normalizedRow = normalizeHighlightRole(
+        row,
+        hasFailure && check.status === "정상" ? "정상" : check.status,
+      );
+      const key = highlightRowKey(normalizedRow);
+      const current = rowsByKey.get(key);
+      if (!current || normalizedRow.role === "target") {
+        rowsByKey.set(key, normalizedRow);
+      }
+    }
+  }
+
+  return Array.from(rowsByKey.values());
+}
+
+function focusCellForChecks(checks: ValidationIssue[], cells: ValidationHighlightCell[]) {
+  const failedTarget = checks
+    .filter((check) => check.status !== "정상")
+    .flatMap((check) => check.highlight_cells ?? [])
+    .find((cell) => cell.role === "target");
+
+  return failedTarget ?? cells.find((cell) => cell.role === "target") ?? cells[0] ?? null;
+}
+
+function highlightToneForStatus(status: string): "pass" | "review" | "error" {
+  if (status === "오류 의심") {
+    return "error";
+  }
+  if (status === "확인 필요") {
+    return "review";
+  }
+  return "pass";
+}
+
+function highlightForCheck(_part: StatTablePart, check: DisplayCheck | undefined) {
   if (!check) {
     return undefined;
+  }
+
+  if (check.highlight_cells.length > 0 || check.highlight_rows.length > 0) {
+    return {
+      tone: highlightToneForStatus(check.status),
+      highlightCells: check.highlight_cells,
+      highlightRows: check.highlight_rows,
+      focusCell: check.focus_cell,
+    };
   }
 
   const targetLocations = uniqueHighlightLocations(
@@ -205,24 +324,30 @@ function highlightForCheck(part: StatTablePart, check: DisplayCheck | undefined)
         columnText: location.column === "검수 대상" ? undefined : location.column,
       })),
   );
-  const relatedLocations = uniqueHighlightLocations(formulaRelatedTargets(part, check));
 
   return {
+    tone: highlightToneForStatus(check.status),
     targetLocations,
     headerLocations,
-    relatedLocations,
+    relatedLocations: [],
   };
 }
 
-function groupChecksForDisplay(part: StatTablePart): DisplayCheck[] {
+function groupChecksForDisplay(part: StatTablePart, sourceChecks: ValidationIssue[]): DisplayCheck[] {
   const groups = new Map<string, ValidationIssue[]>();
-  for (const check of part.checks) {
+  for (const check of sourceChecks) {
     const key = groupKeyForCheck(check);
     groups.set(key, [...(groups.get(key) ?? []), check]);
   }
 
   return Array.from(groups.values()).map((checks) => {
     const first = checks[0];
+    const failedChecks = checks.filter((check) => check.status !== "정상");
+    const representative = failedChecks[0] ?? first;
+    const aggregated = aggregateStatus(checks);
+    const highlightCells = mergeHighlightCells(checks);
+    const highlightRows = mergeHighlightRows(checks);
+    const focusCell = focusCellForChecks(checks, highlightCells);
     const targetLocations = checks.map((check) => resolveIssueLocation(part, check));
     const rows = uniqueValues(targetLocations.map((location) => location.row));
     const columns = uniqueValues(targetLocations.map((location) => location.column));
@@ -230,31 +355,41 @@ function groupChecksForDisplay(part: StatTablePart): DisplayCheck[] {
 
     if (targetCount === 1) {
       return {
-        ...first,
+        ...representative,
+        status: aggregated.status,
+        severity: aggregated.severity,
         checks,
         targetLocations,
         targetCount,
         rowSummary: rows[0] ?? "검수 대상",
         columnSummary: columns[0] ?? "검수 대상",
+        highlight_cells: highlightCells,
+        highlight_rows: highlightRows,
+        focus_cell: focusCell,
       };
     }
 
     return {
-      ...first,
+      ...representative,
       id: `group-${groupKeyForCheck(first)}`,
       location: `${summarizeValues(rows, "행")} / ${summarizeValues(columns, "열")}`,
-      current_value: `${targetCount}개 셀`,
+      current_value: failedChecks.length > 0 ? representative.current_value : `${targetCount}개 셀`,
       expected_value: summarizeRepeatedValues(
         checks.map((check) => check.expected_value),
         first.formula ? "동일 산식 기준" : "동일 검수 기준",
       ),
-      difference: first.status === "정상" ? undefined : `${targetCount}건`,
+      difference: failedChecks.length > 0 ? `${failedChecks.length}건` : undefined,
+      status: aggregated.status,
+      severity: aggregated.severity,
       detail: `${first.detail} 같은 방식으로 ${targetCount}개 셀에 적용된 검수입니다.`,
       checks,
       targetLocations,
       targetCount,
       rowSummary: summarizeValues(rows, "행"),
       columnSummary: summarizeValues(columns, "열"),
+      highlight_cells: highlightCells,
+      highlight_rows: highlightRows,
+      focus_cell: focusCell,
     };
   });
 }
@@ -279,6 +414,80 @@ function rootTableAsPart(table: StatTable): StatTablePart {
   };
 }
 
+function CalculationUsageList({ part, check }: { part: StatTablePart; check: DisplayCheck }) {
+  return (
+    <section className="calculation-usage" aria-label="검수 적용 내역">
+      <div className="calculation-usage__header">
+        <span>검수 적용 내역</span>
+        <strong>{check.checks.length}건</strong>
+      </div>
+      <div className="calculation-usage__list">
+        {check.checks.map((rawCheck) => {
+          const targetCell = targetCellForCheck(rawCheck);
+          const target = targetCell ? cellDescription(part, targetCell) : undefined;
+          const relatedCells = relatedCellsForCheck(rawCheck).map((cell) => cellDescription(part, cell));
+
+          return (
+            <article className="calculation-usage__item" key={rawCheck.id}>
+              <div className="calculation-usage__item-head">
+                <span>{rawCheck.status}</span>
+                <strong>{rawCheck.type}</strong>
+              </div>
+
+              <dl className="calculation-usage__target">
+                <div>
+                  <dt>대상 행</dt>
+                  <dd>{target?.row ?? "행 정보 없음"}</dd>
+                </div>
+                <div>
+                  <dt>대상 열</dt>
+                  <dd>{target?.column ?? "열 정보 없음"}</dd>
+                </div>
+                <div>
+                  <dt>현재값</dt>
+                  <dd>{rawCheck.current_value}</dd>
+                </div>
+                <div>
+                  <dt>검수값</dt>
+                  <dd>{rawCheck.expected_value ?? "-"}</dd>
+                </div>
+                <div>
+                  <dt>차이</dt>
+                  <dd>{rawCheck.difference ?? "-"}</dd>
+                </div>
+              </dl>
+
+              {rawCheck.formula ? (
+                <div className="calculation-usage__formula">
+                  <FileCode2 aria-hidden="true" size={14} />
+                  <span>{rawCheck.formula}</span>
+                </div>
+              ) : null}
+
+              <div className="calculation-usage__cells">
+                <span>연산에 사용한 셀</span>
+                {relatedCells.length > 0 ? (
+                  <ul>
+                    {relatedCells.map((cell) => (
+                      <li key={cell.key}>
+                        <strong>{cell.row}</strong>
+                        <em>{cell.column}</em>
+                        {cell.value ? <small>{cell.value}</small> : null}
+                      </li>
+                    ))}
+                  </ul>
+                ) : (
+                  <p>별도 참조 셀 없이 대상 셀 자체를 확인했습니다.</p>
+                )}
+              </div>
+            </article>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
 export function DetailView({ table, onBack }: DetailViewProps) {
   const [activeTab, setActiveTab] = useState<DetailTab>("checks");
   const tableParts = useMemo(() => (table.parts.length > 0 ? table.parts : [rootTableAsPart(table)]), [table]);
@@ -288,15 +497,19 @@ export function DetailView({ table, onBack }: DetailViewProps) {
   const [selectedCheckId, setSelectedCheckId] = useState<string | undefined>(activePart?.checks[0]?.id);
   const [tableScrollSignal, setTableScrollSignal] = useState(0);
   const [isTableHeaderSticky, setIsTableHeaderSticky] = useState(true);
-  const displayChecks = useMemo(() => groupChecksForDisplay(activePart), [activePart]);
-  const passedChecks = useMemo(() => displayChecks.filter((check) => check.status === "정상"), [displayChecks]);
+  const allRawChecks = activePart.checks;
+  const passedRawChecks = useMemo(() => allRawChecks.filter((check) => check.status === "정상"), [allRawChecks]);
+  const reviewRawChecks = useMemo(() => allRawChecks.filter((check) => check.status === "확인 필요"), [allRawChecks]);
+  const errorRawChecks = useMemo(() => allRawChecks.filter((check) => check.status === "오류 의심"), [allRawChecks]);
+  const displayChecks = useMemo(() => groupChecksForDisplay(activePart, allRawChecks), [activePart, allRawChecks]);
+  const passedChecks = useMemo(() => groupChecksForDisplay(activePart, passedRawChecks), [activePart, passedRawChecks]);
   const reviewChecks = useMemo(
-    () => displayChecks.filter((check) => check.status === "확인 필요"),
-    [displayChecks],
+    () => groupChecksForDisplay(activePart, reviewRawChecks),
+    [activePart, reviewRawChecks],
   );
   const errorChecks = useMemo(
-    () => displayChecks.filter((check) => check.status === "오류 의심"),
-    [displayChecks],
+    () => groupChecksForDisplay(activePart, errorRawChecks),
+    [activePart, errorRawChecks],
   );
   const filteredChecks = checksForFilter(checkFilter, displayChecks, passedChecks, reviewChecks, errorChecks);
   const selectedIssue =
@@ -437,6 +650,7 @@ export function DetailView({ table, onBack }: DetailViewProps) {
               highlight={selectedIssueHighlight}
               scrollSignal={tableScrollSignal}
               stickyHeader={isTableHeaderSticky}
+              headerCount={activePart.metadata.header_count ?? 0}
             />
           </div>
         </aside>
@@ -528,6 +742,7 @@ export function DetailView({ table, onBack }: DetailViewProps) {
                       <span>{selectedIssue.formula}</span>
                     </div>
                   ) : null}
+                  <CalculationUsageList part={activePart} check={selectedIssue} />
                 </article>
               ) : (
                 <p className="empty-copy">이 분류에 해당하는 검수 결과가 없습니다.</p>

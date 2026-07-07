@@ -17,8 +17,20 @@ export interface ColumnDefinition {
   width?: string;
 }
 
+export interface ValidationHighlightCell {
+  row_index: number;
+  col_index: number;
+  role: "target" | "related";
+}
+
+export interface ValidationHighlightRow {
+  row_index: number;
+  role: "target" | "related";
+}
+
 export interface ValidationIssue {
   id: string;
+  rule_id?: string;
   type: string;
   location: string;
   row_index?: number;
@@ -30,6 +42,10 @@ export interface ValidationIssue {
   severity: Severity;
   detail: string;
   formula?: string;
+  highlight_scope?: "none" | "metadata" | "cell" | "header" | "row" | "column";
+  highlight_cells?: ValidationHighlightCell[];
+  highlight_rows?: ValidationHighlightRow[];
+  focus_cell?: ValidationHighlightCell | null;
 }
 
 export interface ChangeItem {

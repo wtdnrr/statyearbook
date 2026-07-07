@@ -5,6 +5,8 @@ from pydantic import BaseModel, Field
 
 TableStatus = Literal["normal", "needs_review", "suspected_error"]
 Severity = Literal["info", "warning", "critical"]
+HighlightRole = Literal["target", "related"]
+HighlightScope = Literal["none", "metadata", "cell", "header", "row", "column"]
 
 
 class Metric(BaseModel):
@@ -22,8 +24,20 @@ class ColumnDefinition(BaseModel):
     width: str | None = None
 
 
+class ValidationHighlightCell(BaseModel):
+    row_index: int
+    col_index: int
+    role: HighlightRole = "related"
+
+
+class ValidationHighlightRow(BaseModel):
+    row_index: int
+    role: HighlightRole = "related"
+
+
 class ValidationIssue(BaseModel):
     id: str
+    rule_id: str | None = None
     type: str
     location: str
     row_index: int | None = None
@@ -35,6 +49,10 @@ class ValidationIssue(BaseModel):
     severity: Severity = "warning"
     detail: str
     formula: str | None = None
+    highlight_scope: HighlightScope = "none"
+    highlight_cells: list[ValidationHighlightCell] = Field(default_factory=list)
+    highlight_rows: list[ValidationHighlightRow] = Field(default_factory=list)
+    focus_cell: ValidationHighlightCell | None = None
 
 
 class ChangeItem(BaseModel):

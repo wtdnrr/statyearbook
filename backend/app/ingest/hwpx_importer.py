@@ -311,6 +311,8 @@ def normalize_matrix(parts: Iterable[TablePart]) -> list[list[str]]:
 
 def numeric_value(text: str) -> float | None:
     cleaned = text.strip().replace(",", "").replace("%", "")
+    if re.fullmatch(r"\([-+]?\d+(?:\.\d+)?\)", cleaned):
+        cleaned = cleaned[1:-1]
     if not cleaned or cleaned in {"-", "－", "―"}:
         return None
     if re.fullmatch(r"[-+]?\d+(?:\.\d+)?", cleaned):

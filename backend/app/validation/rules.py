@@ -9,6 +9,7 @@ from app.validation.models import (
     clean_display_text,
     format_number,
     normalize_text,
+    parse_numeric_text,
 )
 
 
@@ -49,6 +50,11 @@ NON_ADDITIVE_KEYWORDS = (
     "ratio",
     "percent",
     "percentage",
+    "1인당",
+    "perperson",
+    "percapita",
+    "eachworker",
+    "assignedtoeach",
 )
 
 
@@ -63,7 +69,11 @@ def cell_text(row: list, col_index: int) -> str:
 
 def cell_number(row: list, col_index: int) -> float | None:
     cell = row[col_index] if col_index < len(row) else None
-    return cell.numeric_value if cell else None
+    if cell is None:
+        return None
+    if cell.numeric_value is not None:
+        return cell.numeric_value
+    return parse_numeric_text(cell.text_value)
 
 
 def leading_label_columns(table: ValidationTable) -> list[int]:
@@ -111,9 +121,15 @@ def is_ratio_like(value: str) -> bool:
 
 def is_additive_column_label(value: str) -> bool:
     normalized = normalize_text(value)
-    if any(keyword in normalized for keyword in ("평균", "비율", "비중", "증감률", "잔액율", "잔액률", "율")):
+    if any(keyword in normalized for keyword in ("평균", "비율", "비중", "증감률", "잔액율", "잔액률", "율", "1인당")):
         return False
-    return not bool(re.search(r"\b(rate|average|ratio|percent|percentage)\b", value, re.IGNORECASE))
+    return not bool(
+        re.search(
+            r"\b(rate|average|ratio|percent|percentage|per\s+person|per\s+capita|each\s+worker|assigned\s+to\s+each)\b",
+            value,
+            re.IGNORECASE,
+        )
+    )
 
 
 def header_stack(table: ValidationTable, col_index: int) -> list[str]:

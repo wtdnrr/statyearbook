@@ -236,7 +236,7 @@ def analyze_table(table: ValidationTable) -> dict[str, Any]:
                 "index": row_index,
                 "label": clean_display_text(label),
                 "role": infer_row_role(label),
-                "numeric_cells": sum(1 for cell in row if cell and cell.numeric_value is not None),
+                "numeric_cells": sum(1 for col_index in range(len(row)) if cell_number(row, col_index) is not None),
             }
         )
 
@@ -283,6 +283,241 @@ def infer_row_role(label: str) -> str:
     return "item"
 
 
+def total_label_kind(value: str) -> str | None:
+    normalized = normalize_text(value)
+    if not normalized:
+        return None
+    if normalized.startswith("소계") or "subtotal" in normalized:
+        return "subtotal"
+    if normalized in {"계", "total", "합계", "총계"}:
+        return "total"
+    if normalized.startswith(("계", "합계", "총계")):
+        return "total"
+    return None
+
+
+def row_total_kind(table: ValidationTable, row: list) -> str | None:
+    kinds: list[str] = []
+    for col_index in leading_label_columns(table):
+        value = cell_text_at(row, col_index)
+        kind = total_label_kind(value)
+        if kind:
+            kinds.append(kind)
+    if "subtotal" in kinds:
+        return "subtotal"
+    if "total" in kinds:
+        return "total"
+    return None
+
+
+def cell_text_at(row: list, col_index: int) -> str:
+    cell = row[col_index] if col_index < len(row) else None
+    return clean_display_text(cell.text_value if cell else "")
+
+
+def is_male_label(leaf: str, full_label: str) -> bool:
+    normalized_leaf = normalize_text(leaf)
+    return normalized_leaf in {"남", "남성", "male", "man"} or bool(re.search(r"\b(male|man)\b", full_label, re.IGNORECASE))
+
+
+def is_female_label(leaf: str, full_label: str) -> bool:
+    normalized_leaf = normalize_text(leaf)
+    return normalized_leaf in {"여", "여성", "female", "woman"} or bool(re.search(r"\b(female|woman)\b", full_label, re.IGNORECASE))
+
+
+def effective_header_value(table: ValidationTable, header_row_index: int, col_index: int) -> str:
+    if header_row_index >= len(table.matrix):
+        return ""
+    row = table.matrix[header_row_index]
+    value = cell_text_at(row, col_index)
+    if value:
+        return value
+    for left_col_index in range(col_index - 1, -1, -1):
+        left_value = cell_text_at(row, left_col_index)
+        if left_value:
+            return left_value
+    return ""
+
+
+def effective_header_parent_key(table: ValidationTable, col_index: int) -> tuple[str, ...]:
+    values = [
+        effective_header_value(table, row_index, col_index)
+        for row_index in range(max(table.header_count - 1, 0))
+    ]
+    return tuple(value for value in values if value)
+
+
+def effective_column_text(table: ValidationTable, col_index: int) -> str:
+    parts: list[str] = []
+    for row_index in range(table.header_count):
+        value = effective_header_value(table, row_index, col_index)
+        if value and value not in parts:
+            parts.append(value)
+    return " / ".join(parts) or table.column_text(col_index)
+
+
+def is_calculation_row_label(table: ValidationTable, row: list) -> bool:
+    label = combined_row_label(table, row) or table.row_label(row)
+    return is_ratio_row_label(label) or is_growth_rate_label(label)
+
+
+def row_sum_match_ratio(
+    table: ValidationTable,
+    target_col: int,
+    operand_columns: list[int],
+    *,
+    tolerance: float,
+) -> tuple[float, int]:
+    checked = 0
+    passed = 0
+    for _, row in table.data_rows():
+        current = cell_number(row, target_col)
+        operands = [cell_number(row, col_index) for col_index in operand_columns]
+        if current is None or any(value is None for value in operands):
+            continue
+        checked += 1
+        expected = sum(value for value in operands if value is not None)
+        if abs(current - expected) <= tolerance:
+            passed += 1
+    return (passed / checked if checked else 0.0, checked)
+
+
+def column_sum_match_ratio(
+    table: ValidationTable,
+    target_row: int,
+    operand_rows: list[int],
+    columns: list[int],
+    *,
+    tolerance: float,
+) -> tuple[float, int]:
+    if target_row >= len(table.matrix):
+        return 0.0, 0
+    checked = 0
+    passed = 0
+    target_matrix_row = table.matrix[target_row]
+    for col_index in columns:
+        current = cell_number(target_matrix_row, col_index)
+        values = [
+            cell_number(table.matrix[row_index], col_index)
+            for row_index in operand_rows
+            if row_index < len(table.matrix)
+        ]
+        numeric_values = [value for value in values if value is not None]
+        if current is None or len(numeric_values) < 2:
+            continue
+        checked += 1
+        if abs(current - sum(numeric_values)) <= tolerance:
+            passed += 1
+    return (passed / checked if checked else 0.0, checked)
+
+
+def same_row_ratio_match_ratio(
+    table: ValidationTable,
+    target_col: int,
+    numerator_col: int,
+    denominator_col: int,
+    *,
+    multiplier: float,
+    tolerance: float,
+) -> tuple[float, int]:
+    checked = 0
+    passed = 0
+    for _, row in table.data_rows():
+        current = cell_number(row, target_col)
+        numerator = cell_number(row, numerator_col)
+        denominator = cell_number(row, denominator_col)
+        if current is None or numerator is None or denominator in {None, 0}:
+            continue
+        checked += 1
+        expected = numerator / denominator * multiplier
+        if abs(current - expected) <= tolerance:
+            passed += 1
+    return (passed / checked if checked else 0.0, checked)
+
+
+def column_share_ratio_match_ratio(
+    table: ValidationTable,
+    target_col: int,
+    numerator_col: int,
+    denominator_row: int,
+    denominator_col: int,
+    *,
+    multiplier: float,
+    tolerance: float,
+) -> tuple[float, int]:
+    if denominator_row >= len(table.matrix):
+        return 0.0, 0
+    denominator = cell_number(table.matrix[denominator_row], denominator_col)
+    if denominator in {None, 0}:
+        return 0.0, 0
+
+    checked = 0
+    passed = 0
+    for row_index, row in table.data_rows():
+        if row_index == denominator_row:
+            continue
+        current = cell_number(row, target_col)
+        numerator = cell_number(row, numerator_col)
+        if current is None or numerator is None:
+            continue
+        checked += 1
+        expected = numerator / denominator * multiplier
+        if abs(current - expected) <= tolerance:
+            passed += 1
+    return (passed / checked if checked else 0.0, checked)
+
+
+def row_ratio_by_rows_match_ratio(
+    table: ValidationTable,
+    target_row: int,
+    numerator_row: int,
+    denominator_row: int,
+    columns: list[int],
+    *,
+    multiplier: float,
+    tolerance: float,
+) -> tuple[float, int]:
+    if not all(row_index < len(table.matrix) for row_index in (target_row, numerator_row, denominator_row)):
+        return 0.0, 0
+
+    checked = 0
+    passed = 0
+    for col_index in columns:
+        target_value = cell_number(table.matrix[target_row], col_index)
+        numerator = cell_number(table.matrix[numerator_row], col_index)
+        denominator = cell_number(table.matrix[denominator_row], col_index)
+        if target_value is None or numerator is None or denominator in {None, 0}:
+            continue
+        checked += 1
+        expected = numerator / denominator * multiplier
+        if abs(target_value - expected) <= tolerance:
+            passed += 1
+    return (passed / checked if checked else 0.0, checked)
+
+
+def numeric_cell_count(table: ValidationTable, col_index: int) -> int:
+    return sum(1 for _, row in table.data_rows() if cell_number(row, col_index) is not None)
+
+
+def target_ratio_tolerance(table: ValidationTable, target_col: int, multiplier: float) -> float:
+    if multiplier != 100:
+        return 0.001
+
+    decimal_places: list[int] = []
+    for _, row in table.data_rows():
+        cell = row[target_col] if target_col < len(row) else None
+        if cell is None or cell_number(row, target_col) is None:
+            continue
+        text = clean_display_text(cell.text_value).replace(",", "").replace("%", "")
+        match = re.fullmatch(r"[-+]?\d+(?:\.(\d+))?", text)
+        if match:
+            decimal_places.append(len(match.group(1) or ""))
+
+    if decimal_places and max(decimal_places) == 0:
+        return 0.5
+    return 0.15
+
+
 def infer_profile_checks(
     table: ValidationTable,
     *,
@@ -299,7 +534,13 @@ def infer_profile_checks(
 
     checks.extend(infer_gender_total_rules(table))
     checks.extend(infer_header_formula_rules(table))
+    checks.extend(infer_same_row_ratio_rules(table))
+    checks.extend(infer_column_share_ratio_rules(table))
     checks.extend(infer_growth_rate_rules(table))
+    checks.extend(infer_year_rows_change_rate_rules(table))
+    checks.extend(infer_named_row_ratio_rules(table))
+    checks.extend(infer_row_based_ratio_rules(table))
+    checks.extend(infer_row_based_growth_rate_rules(table))
     checks.extend(infer_total_column_rules(table))
     checks.extend(infer_total_row_rules(table))
     checks.extend(outlier_check_specs(table))
@@ -354,34 +595,32 @@ def common_check_specs(table: ValidationTable) -> list[dict[str, Any]]:
             "failure_status": "확인 필요",
             "confidence": 0.9,
         },
-        rule_spec(
-            "growth_rate",
-            {
-                "id": f"profile.{table.code}.growth_rate_scan",
-                "type": "growth_rate_scan",
-                "category": "common",
-                "label": "증감률 항목 탐색",
-                "confidence": 0.75,
-            },
-        ),
     ]
 
 
 def region_total_check_specs(table: ValidationTable) -> list[dict[str, Any]]:
     rows = table.data_rows()
     target_item = next(
-        ((row_index, row) for row_index, row in rows[:5] if is_total_like(combined_row_label(table, row))),
+        ((row_index, row) for row_index, row in rows[:5] if row_total_kind(table, row) == "total"),
         None,
     )
     if target_item is None:
         return []
 
     target_row_index, _ = target_item
-    operand_rows = [
+    subtotal_rows = [
         row_index
         for row_index, row in rows
-        if row_index != target_row_index and clean_display_text(combined_row_label(table, row))[:2] in REGION_NAMES
+        if row_index != target_row_index and row_total_kind(table, row) == "subtotal"
     ]
+    region_rows = [
+        row_index
+        for row_index, row in rows
+        if row_index != target_row_index
+        and row_total_kind(table, row) is None
+        and clean_display_text(combined_row_label(table, row))[:2] in REGION_NAMES
+    ]
+    operand_rows = subtotal_rows if len(subtotal_rows) >= 2 else region_rows
     unique_regions = {
         clean_display_text(combined_row_label(table, table.matrix[row_index]))[:2]
         for row_index in operand_rows
@@ -453,17 +692,20 @@ def infer_total_column_rules(table: ValidationTable) -> list[dict[str, Any]]:
     ]
     specs: list[dict[str, Any]] = []
     for target_col in numeric_columns:
-        if infer_column_role(table, target_col) != "total":
+        target_leaf = leaf_header(table, target_col)
+        if total_label_kind(target_leaf) is None:
             continue
-        parent_key = header_parent_key(table, target_col)
         operand_columns = [
             col_index
             for col_index in numeric_columns
             if col_index != target_col
-            and infer_column_role(table, col_index) != "total"
-            and header_parent_key(table, col_index) == parent_key
+            and total_label_kind(leaf_header(table, col_index)) is None
+            and effective_header_parent_key(table, col_index) == effective_header_parent_key(table, target_col)
         ]
         if len(operand_columns) < 2:
+            continue
+        passed_ratio, checked_count = row_sum_match_ratio(table, target_col, operand_columns, tolerance=1.0)
+        if checked_count < 3 or passed_ratio < 0.8:
             continue
         specs.append(
             rule_spec(
@@ -476,7 +718,7 @@ def infer_total_column_rules(table: ValidationTable) -> list[dict[str, Any]]:
                 "target_column": target_col,
                 "operand_columns": operand_columns,
                 "tolerance": 1.0,
-                "confidence": 0.82 if parent_key else 0.68,
+                "confidence": 0.95 if passed_ratio >= 0.95 else 0.9,
                 },
             )
         )
@@ -495,16 +737,42 @@ def infer_total_row_rules(table: ValidationTable) -> list[dict[str, Any]]:
         if col_index not in label_columns and is_additive_column_label(table.column_text(col_index))
     ]
     specs: list[dict[str, Any]] = []
-    for position, (target_row_index, row) in enumerate(rows[:8]):
+    for position, (target_row_index, row) in enumerate(rows):
         row_label = combined_row_label(table, row)
-        if not is_total_like(row_label):
+        kind = row_total_kind(table, row)
+        if kind is None:
             continue
-        operand_rows = [
-            row_index
-            for row_index, operand_row in rows[position + 1 :]
-            if not is_total_like(combined_row_label(table, operand_row))
-        ]
+        window: list[tuple[int, list]] = []
+        for row_index, operand_row in rows[position + 1 :]:
+            operand_kind = row_total_kind(table, operand_row)
+            if kind == "subtotal" and operand_kind is not None:
+                break
+            if kind == "total" and operand_kind == "total":
+                break
+            window.append((row_index, operand_row))
+
+        if kind == "total":
+            subtotal_rows = [row_index for row_index, operand_row in window if row_total_kind(table, operand_row) == "subtotal"]
+            operand_rows = (
+                subtotal_rows
+                if len(subtotal_rows) >= 2
+                else [
+                    row_index
+                    for row_index, operand_row in window
+                    if row_total_kind(table, operand_row) is None and not is_calculation_row_label(table, operand_row)
+                ]
+            )
+        else:
+            operand_rows = [
+                row_index
+                for row_index, operand_row in window
+                if row_total_kind(table, operand_row) is None and not is_calculation_row_label(table, operand_row)
+            ]
+
         if len(operand_rows) < 2 or not columns:
+            continue
+        passed_ratio, checked_count = column_sum_match_ratio(table, target_row_index, operand_rows, columns, tolerance=1.0)
+        if checked_count < 2 or passed_ratio < 0.8:
             continue
         specs.append(
             rule_spec(
@@ -518,11 +786,10 @@ def infer_total_row_rules(table: ValidationTable) -> list[dict[str, Any]]:
                 "operand_rows": operand_rows,
                 "columns": columns,
                 "tolerance": 1.0,
-                "confidence": 0.88 if len(operand_rows) >= 8 else 0.62,
+                "confidence": 0.96 if passed_ratio >= 0.95 else 0.9,
                 },
             )
         )
-        break
     return specs
 
 
@@ -533,9 +800,18 @@ def dedupe_check_specs(checks: list[dict[str, Any]]) -> list[dict[str, Any]]:
         key = (
             check.get("type"),
             check.get("target_column"),
+            check.get("value_column"),
+            check.get("rate_column"),
+            check.get("change_column"),
             tuple(check.get("operand_columns", [])),
+            check.get("denominator_column"),
+            tuple(check.get("denominator_columns", [])),
             check.get("target_row"),
+            check.get("source_row"),
+            check.get("numerator_row"),
+            check.get("denominator_row"),
             tuple(check.get("columns", [])),
+            tuple(check.get("row_indices", [])),
             tuple(check.get("operand_rows", [])),
         )
         if key in seen:
@@ -568,30 +844,55 @@ def infer_table_rules(table: ValidationTable) -> list[dict[str, Any]]:
 
 
 def infer_gender_total_rules(table: ValidationTable) -> list[dict[str, Any]]:
-    total_col = find_column(table, lambda normalized, raw: ("계total" in normalized or normalized.endswith("계")) and "구분" not in normalized)
-    male_col = find_column(table, lambda normalized, raw: "남성" in normalized or "male" in raw.lower())
-    female_col = find_column(table, lambda normalized, raw: "여성" in normalized or "female" in raw.lower())
-
-    if total_col is None or male_col is None or female_col is None:
-        return []
-    if len({total_col, male_col, female_col}) != 3:
-        return []
-
-    return [
-        rule_spec(
-            "sum",
-            {
-            "id": f"profile.{table.code}.gender_total",
-            "type": "row_sum",
-            "category": "table",
-            "label": "계 = 남성 + 여성",
-            "target_column": total_col,
-            "operand_columns": [male_col, female_col],
-            "tolerance": 1.0,
-            "confidence": 0.96,
-            },
+    label_columns = set(leading_label_columns(table))
+    specs: list[dict[str, Any]] = []
+    for target_col in range(column_count(table)):
+        if target_col in label_columns or total_label_kind(leaf_header(table, target_col)) is None:
+            continue
+        parent_key = effective_header_parent_key(table, target_col)
+        male_col = next(
+            (
+                col_index
+                for col_index in range(column_count(table))
+                if col_index not in label_columns
+                and col_index != target_col
+                and effective_header_parent_key(table, col_index) == parent_key
+                and is_male_label(leaf_header(table, col_index), table.column_text(col_index))
+            ),
+            None,
         )
-    ]
+        female_col = next(
+            (
+                col_index
+                for col_index in range(column_count(table))
+                if col_index not in label_columns
+                and col_index != target_col
+                and effective_header_parent_key(table, col_index) == parent_key
+                and is_female_label(leaf_header(table, col_index), table.column_text(col_index))
+            ),
+            None,
+        )
+        if male_col is None or female_col is None or len({target_col, male_col, female_col}) != 3:
+            continue
+        passed_ratio, checked_count = row_sum_match_ratio(table, target_col, [male_col, female_col], tolerance=1.0)
+        if checked_count < 3 or passed_ratio < 0.8:
+            continue
+        specs.append(
+            rule_spec(
+                "sum",
+                {
+                    "id": f"profile.{table.code}.gender_total_c{target_col}",
+                    "type": "row_sum",
+                    "category": "table",
+                    "label": f"{leaf_header(table, target_col)} = {leaf_header(table, male_col)} + {leaf_header(table, female_col)}",
+                    "target_column": target_col,
+                    "operand_columns": [male_col, female_col],
+                    "tolerance": 1.0,
+                    "confidence": 0.97 if passed_ratio >= 0.95 else 0.9,
+                },
+            )
+        )
+    return specs
 
 
 def infer_header_formula_rules(table: ValidationTable) -> list[dict[str, Any]]:
@@ -658,7 +959,276 @@ def infer_header_formula_rules(table: ValidationTable) -> list[dict[str, Any]]:
                 )
             )
 
+        for match in re.finditer(r"([a-z])\s*/\s*\(([a-z](?:\s*\+\s*[a-z])+)\)", label, re.IGNORECASE):
+            numerator_symbol = match.group(1).lower()
+            denominator_expression = match.group(2).lower().replace(" ", "")
+            numerator_col = symbol_to_column.get(numerator_symbol)
+            denominator_columns = [
+                symbol_to_column[symbol]
+                for symbol in re.findall(r"[a-z]", denominator_expression)
+                if symbol in symbol_to_column
+            ]
+            if numerator_col is None or len(denominator_columns) < 2:
+                continue
+            key = ("ratio", col_index)
+            if key in seen:
+                continue
+            seen.add(key)
+            rules.append(
+                rule_spec(
+                    "ratio",
+                    {
+                    "id": f"profile.{table.code}.{numerator_symbol}_sum_ratio_c{col_index}",
+                    "type": "row_ratio",
+                    "category": "table",
+                    "label": f"{numerator_symbol}/({denominator_expression})*100",
+                    "target_column": col_index,
+                    "numerator_column": numerator_col,
+                    "denominator_columns": denominator_columns,
+                    "multiplier": 100,
+                    "tolerance": target_ratio_tolerance(table, col_index, 100),
+                    "confidence": 0.98,
+                    },
+                )
+            )
+
     return rules
+
+
+def infer_same_row_ratio_rules(table: ValidationTable) -> list[dict[str, Any]]:
+    label_columns = set(leading_label_columns(table))
+    numeric_counts = {col_index: numeric_cell_count(table, col_index) for col_index in range(column_count(table))}
+    source_columns = [
+        col_index
+        for col_index in range(column_count(table))
+        if numeric_counts[col_index] >= 1
+    ]
+    target_columns = [
+        col_index
+        for col_index in source_columns
+        if col_index not in label_columns
+    ]
+    specs: list[dict[str, Any]] = []
+
+    for target_col in target_columns:
+        target_label = effective_column_text(table, target_col)
+        if not is_same_row_ratio_column_label(target_label):
+            continue
+
+        candidates: list[tuple[float, int, int, int, int, int, float]] = []
+        for numerator_col in source_columns:
+            if numerator_col == target_col:
+                continue
+            for denominator_col in source_columns:
+                if denominator_col in {target_col, numerator_col}:
+                    continue
+                for multiplier in (100.0, 1.0):
+                    tolerance = target_ratio_tolerance(table, target_col, multiplier)
+                    passed_ratio, checked_count = same_row_ratio_match_ratio(
+                        table,
+                        target_col,
+                        numerator_col,
+                        denominator_col,
+                        multiplier=multiplier,
+                        tolerance=tolerance,
+                    )
+                    semantic_score = same_row_ratio_candidate_score(
+                        table,
+                        target_col=target_col,
+                        numerator_col=numerator_col,
+                        denominator_col=denominator_col,
+                    )
+                    minimum_checked = 1 if numeric_counts[target_col] == 1 and semantic_score >= 6 else 3
+                    if checked_count < minimum_checked or passed_ratio < 0.8:
+                        continue
+                    distance_score = abs(target_col - numerator_col) + abs(target_col - denominator_col)
+                    candidates.append(
+                        (
+                            passed_ratio,
+                            checked_count,
+                            semantic_score,
+                            -distance_score,
+                            numerator_col,
+                            denominator_col,
+                            multiplier,
+                        )
+                    )
+
+        if not candidates:
+            continue
+
+        passed_ratio, checked_count, _, _, numerator_col, denominator_col, multiplier = max(candidates)
+        specs.append(
+            rule_spec(
+                "ratio",
+                {
+                    "id": f"profile.{table.code}.same_row_ratio_c{target_col}",
+                    "type": "row_ratio",
+                    "category": "table",
+                    "label": f"{leaf_header(table, target_col)} = {leaf_header(table, numerator_col)} / {leaf_header(table, denominator_col)} * {multiplier:g}",
+                    "target_column": target_col,
+                    "numerator_column": numerator_col,
+                    "denominator_column": denominator_col,
+                    "multiplier": multiplier,
+                    "tolerance": target_ratio_tolerance(table, target_col, multiplier),
+                    "confidence": 0.97 if passed_ratio >= 0.95 else 0.9,
+                    "matched_rows": checked_count,
+                },
+            )
+        )
+
+    return specs
+
+
+def infer_column_share_ratio_rules(table: ValidationTable) -> list[dict[str, Any]]:
+    label_columns = set(leading_label_columns(table))
+    numeric_counts = {col_index: numeric_cell_count(table, col_index) for col_index in range(column_count(table))}
+    source_columns = [col_index for col_index in range(column_count(table)) if numeric_counts[col_index] >= 3]
+    target_columns = [col_index for col_index in source_columns if col_index not in label_columns]
+    total_rows = [row_index for row_index, row in table.data_rows() if row_total_kind(table, row) == "total"]
+    if not total_rows:
+        return []
+
+    specs: list[dict[str, Any]] = []
+    for target_col in target_columns:
+        if not is_same_row_ratio_column_label(effective_column_text(table, target_col)):
+            continue
+        candidates: list[tuple[float, int, int, int, int, int]] = []
+        for numerator_col in source_columns:
+            if numerator_col == target_col:
+                continue
+            for denominator_row in total_rows:
+                tolerance = target_ratio_tolerance(table, target_col, 100)
+                passed_ratio, checked_count = column_share_ratio_match_ratio(
+                    table,
+                    target_col,
+                    numerator_col,
+                    denominator_row,
+                    numerator_col,
+                    multiplier=100,
+                    tolerance=tolerance,
+                )
+                if checked_count < 3 or passed_ratio < 0.8:
+                    continue
+                semantic_score = same_row_ratio_candidate_score(
+                    table,
+                    target_col=target_col,
+                    numerator_col=numerator_col,
+                    denominator_col=numerator_col,
+                )
+                distance_score = abs(target_col - numerator_col)
+                candidates.append((passed_ratio, checked_count, semantic_score, -distance_score, numerator_col, denominator_row))
+
+        if not candidates:
+            continue
+
+        passed_ratio, checked_count, _, _, numerator_col, denominator_row = max(candidates)
+        specs.append(
+            rule_spec(
+                "ratio",
+                {
+                    "id": f"profile.{table.code}.share_ratio_c{target_col}",
+                    "type": "column_share_ratio",
+                    "category": "table",
+                    "label": f"{leaf_header(table, target_col)} = {leaf_header(table, numerator_col)} / 총계 {leaf_header(table, numerator_col)} * 100",
+                    "target_column": target_col,
+                    "numerator_column": numerator_col,
+                    "denominator_row": denominator_row,
+                    "denominator_column": numerator_col,
+                    "multiplier": 100,
+                    "tolerance": target_ratio_tolerance(table, target_col, 100),
+                    "confidence": 0.95 if passed_ratio >= 0.95 else 0.9,
+                    "matched_rows": checked_count,
+                },
+            )
+        )
+
+    return specs
+
+
+def infer_named_row_ratio_rules(table: ValidationTable) -> list[dict[str, Any]]:
+    rows = table.data_rows()
+    specs: list[dict[str, Any]] = []
+    denominator_candidates = [
+        (row_index, row)
+        for row_index, row in rows
+        if row_denominator_score(table, row) >= 2
+    ]
+    if not denominator_candidates:
+        return []
+
+    for target_position, (target_row_index, target_row) in enumerate(rows):
+        target_label = combined_row_label(table, target_row) or table.row_label(target_row)
+        if not is_ratio_row_label(target_label) or is_growth_rate_label(target_label):
+            continue
+
+        target_leaf = normalize_text(row_leaf_label(table, target_row))
+        if not target_leaf:
+            continue
+
+        numerator_item = next(
+            (
+                (row_index, row)
+                for row_index, row in rows[:target_position]
+                if normalize_text(row_leaf_label(table, row)) == target_leaf
+                and not is_ratio_row_label(combined_row_label(table, row) or table.row_label(row))
+            ),
+            None,
+        )
+        if numerator_item is None:
+            continue
+
+        numerator_row_index, numerator_row = numerator_item
+        denominator_item = max(
+            (
+                (row_denominator_score(table, row), row_index, row)
+                for row_index, row in denominator_candidates
+                if row_index < target_row_index and row_index != numerator_row_index
+            ),
+            default=None,
+        )
+        if denominator_item is None:
+            continue
+
+        _, denominator_row_index, denominator_row = denominator_item
+        columns = shared_numeric_columns(table, [target_row, numerator_row, denominator_row])
+        if len(columns) < 2:
+            continue
+
+        tolerance = 0.15
+        passed_ratio, checked_count = row_ratio_by_rows_match_ratio(
+            table,
+            target_row_index,
+            numerator_row_index,
+            denominator_row_index,
+            columns,
+            multiplier=100,
+            tolerance=tolerance,
+        )
+        if checked_count < 2 or passed_ratio < 0.8:
+            continue
+
+        specs.append(
+            rule_spec(
+                "ratio",
+                {
+                    "id": f"profile.{table.code}.named_row_ratio_r{target_row_index}",
+                    "type": "row_ratio_by_rows",
+                    "category": "table",
+                    "label": f"{clean_display_text(target_label)} = {clean_display_text(combined_row_label(table, numerator_row))} / {clean_display_text(combined_row_label(table, denominator_row))} * 100",
+                    "target_row": target_row_index,
+                    "numerator_row": numerator_row_index,
+                    "denominator_row": denominator_row_index,
+                    "columns": columns,
+                    "multiplier": 100,
+                    "tolerance": tolerance,
+                    "confidence": 0.96 if passed_ratio >= 0.95 else 0.9,
+                    "matched_columns": checked_count,
+                },
+            )
+        )
+
+    return specs
 
 
 def infer_growth_rate_rules(table: ValidationTable) -> list[dict[str, Any]]:
@@ -695,6 +1265,322 @@ def infer_growth_rate_rules(table: ValidationTable) -> list[dict[str, Any]]:
             )
         )
     return rules
+
+
+def infer_year_rows_change_rate_rules(table: ValidationTable) -> list[dict[str, Any]]:
+    rows = table.data_rows()
+    year_rows: list[tuple[int, list]] = []
+    for row_index, row in rows:
+        label = combined_row_label(table, row) or table.row_label(row)
+        if re.fullmatch(r"\d{4}", normalize_text(label)):
+            year_rows.append((row_index, row))
+
+    if len(year_rows) < 3:
+        return []
+
+    label_columns = set(leading_label_columns(table))
+    rate_col = next(
+        (
+            col_index
+            for col_index in range(column_count(table))
+            if col_index not in label_columns and is_year_row_change_rate_label(table.column_text(col_index))
+        ),
+        None,
+    )
+    if rate_col is None:
+        return []
+
+    change_col = next(
+        (
+            col_index
+            for col_index in range(column_count(table))
+            if col_index not in label_columns
+            and col_index != rate_col
+            and is_change_amount_label(table.column_text(col_index))
+        ),
+        None,
+    )
+    value_columns = [
+        col_index
+        for col_index in range(column_count(table))
+        if col_index not in label_columns
+        and col_index not in {rate_col, change_col}
+        and sum(1 for _, row in year_rows if cell_number(row, col_index) is not None) >= 3
+    ]
+    if not value_columns:
+        return []
+
+    value_col = value_columns[0]
+    row_indices = [
+        row_index
+        for row_index, row in year_rows
+        if cell_number(row, value_col) is not None and cell_number(row, rate_col) is not None
+    ]
+    if len(row_indices) < 3:
+        return []
+
+    label = f"{leaf_header(table, rate_col)} = ({leaf_header(table, value_col)} 당해연도 - 전년도) / 전년도 * 100"
+    if change_col is not None:
+        label = f"{leaf_header(table, change_col)} = 당해연도 - 전년도, {label}"
+
+    return [
+        rule_spec(
+            "growth_rate",
+            {
+                "id": f"profile.{table.code}.year_rows_change_rate_c{rate_col}",
+                "type": "year_rows_change_rate",
+                "category": "table",
+                "label": label,
+                "value_column": value_col,
+                "change_column": change_col,
+                "rate_column": rate_col,
+                "row_indices": row_indices,
+                "multiplier": 100,
+                "change_tolerance": 1.0,
+                "rate_tolerance": 0.15,
+                "confidence": 0.94 if change_col is not None else 0.9,
+            },
+        )
+    ]
+
+
+def infer_row_based_ratio_rules(table: ValidationTable) -> list[dict[str, Any]]:
+    rows = table.data_rows()
+    specs: list[dict[str, Any]] = []
+    for position, (target_row_index, row) in enumerate(rows):
+        label = combined_row_label(table, row) or table.row_label(row)
+        if not is_ratio_row_label(label) or is_growth_rate_label(label):
+            continue
+
+        numerator_item = previous_value_row(table, rows, position)
+        if numerator_item is None:
+            continue
+        denominator_item = previous_value_row(table, rows, numerator_item[0])
+        if denominator_item is None:
+            continue
+
+        numerator_position, numerator_row_index, numerator_row = numerator_item
+        _, denominator_row_index, denominator_row = denominator_item
+        numerator_label = combined_row_label(table, numerator_row)
+        denominator_label = combined_row_label(table, denominator_row)
+        confidence = row_ratio_confidence(label, numerator_label, denominator_label)
+        if confidence < 0.9:
+            continue
+
+        columns = shared_numeric_columns(table, [row, numerator_row, denominator_row])
+        if len(columns) < 2:
+            continue
+
+        specs.append(
+            rule_spec(
+                "ratio",
+                {
+                    "id": f"profile.{table.code}.row_ratio_r{target_row_index}",
+                    "type": "row_ratio_by_rows",
+                    "category": "table",
+                    "label": f"{clean_display_text(label)} = {clean_display_text(combined_row_label(table, numerator_row))} / {clean_display_text(combined_row_label(table, denominator_row))} * 100",
+                    "target_row": target_row_index,
+                    "numerator_row": numerator_row_index,
+                    "denominator_row": denominator_row_index,
+                    "columns": columns,
+                    "multiplier": 100,
+                    "tolerance": 0.15,
+                    "confidence": confidence if position - numerator_position <= 2 else min(confidence, 0.82),
+                },
+            )
+        )
+    return specs
+
+
+def infer_row_based_growth_rate_rules(table: ValidationTable) -> list[dict[str, Any]]:
+    rows = table.data_rows()
+    specs: list[dict[str, Any]] = []
+    for position, (target_row_index, row) in enumerate(rows):
+        label = combined_row_label(table, row) or table.row_label(row)
+        if not is_growth_rate_label(label):
+            continue
+
+        source_item = previous_value_row(table, rows, position)
+        if source_item is None:
+            continue
+        source_position, source_row_index, source_row = source_item
+        columns = shared_numeric_columns(table, [row, source_row])
+        if len(columns) < 2:
+            continue
+
+        specs.append(
+            rule_spec(
+                "growth_rate",
+                {
+                    "id": f"profile.{table.code}.row_yoy_growth_r{target_row_index}",
+                    "type": "row_year_over_year_rate",
+                    "category": "table",
+                    "label": f"{clean_display_text(label)} = ({clean_display_text(combined_row_label(table, source_row))} 당해연도 - 전년도) / 전년도 * 100",
+                    "target_row": target_row_index,
+                    "source_row": source_row_index,
+                    "columns": columns,
+                    "multiplier": 100,
+                    "tolerance": 0.15,
+                    "confidence": 0.92 if position - source_position <= 2 else 0.82,
+                },
+            )
+        )
+    return specs
+
+
+def is_growth_rate_label(label: str) -> bool:
+    normalized = normalize_text(label)
+    return any(keyword in normalized for keyword in ("증감률", "증감율", "증가율", "감소율", "rateofgrowth", "rateofincrease", "changerate", "growthrate"))
+
+
+def is_same_row_ratio_column_label(label: str) -> bool:
+    normalized = normalize_text(label)
+    if is_growth_rate_label(label):
+        return False
+    if any(keyword in normalized for keyword in ("법률", "법령", "law", "laws")) and not any(
+        keyword in normalized for keyword in ("비율", "비중", "ratio", "rate", "percent", "percentage")
+    ):
+        return False
+    if any(keyword in normalized for keyword in ("비율", "비중", "이용률", "사용률", "활용률", "참여율", "잔액율", "잔액률", "률", "율")):
+        return True
+    return bool(re.search(r"\b(rate|ratio|percent|percentage)\b", clean_display_text(label), re.IGNORECASE))
+
+
+def same_row_ratio_candidate_score(
+    table: ValidationTable,
+    *,
+    target_col: int,
+    numerator_col: int,
+    denominator_col: int,
+) -> int:
+    target_label = normalize_text(effective_column_text(table, target_col))
+    numerator_label = normalize_text(effective_column_text(table, numerator_col))
+    denominator_label = normalize_text(effective_column_text(table, denominator_col))
+    score = 0
+
+    if numerator_col == target_col - 1:
+        score += 4
+    if denominator_col < numerator_col:
+        score += 1
+    if total_label_kind(leaf_header(table, denominator_col)) == "total" or any(
+        keyword in denominator_label for keyword in ("계", "합계", "총계", "total")
+    ):
+        score += 5
+    if any(keyword in denominator_label for keyword in ("대상", "기준", "전체", "인구", "신고", "접수", "base", "target", "population", "total")):
+        score += 2
+    if any(keyword in denominator_label for keyword in ("gdp", "총", "전체", "계")):
+        score += 2
+    if any(keyword in target_label for keyword in ("이용", "사용", "활용")) and any(
+        keyword in numerator_label for keyword in ("이용", "사용", "활용", "usage", "use")
+    ):
+        score += 3
+    if any(keyword in target_label for keyword in ("참여", "가입", "채택", "확보", "비축", "수용")) and any(
+        keyword in numerator_label for keyword in ("참여", "가입", "채택", "확보", "비축", "수용", "adoption", "insured", "secured", "reserve")
+    ):
+        score += 3
+    shared_topic_keywords = (
+        "조세",
+        "국세",
+        "지방세",
+        "재정",
+        "복구",
+        "정비",
+        "내진",
+        "대피",
+        "방독면",
+        "시설",
+        "보험",
+        "보조금",
+    )
+    if any(keyword in target_label and keyword in numerator_label for keyword in shared_topic_keywords):
+        score += 3
+    if numerator_label == denominator_label:
+        score -= 4
+
+    return score
+
+
+def is_year_row_change_rate_label(label: str) -> bool:
+    normalized = normalize_text(label)
+    if any(keyword in normalized for keyword in ("증감률", "증감율", "증가율", "감소율", "percentagechange", "changerate", "rateofincrease", "rateofdecrease")):
+        return True
+    return "rateofgrowth" in normalized and any(keyword in normalized for keyword in ("증감", "증가", "감소"))
+
+
+def is_change_amount_label(label: str) -> bool:
+    normalized = normalize_text(label)
+    return any(keyword in normalized for keyword in ("증감", "증가", "감소", "increase", "decrease", "change")) and not is_growth_rate_label(label)
+
+
+def is_ratio_row_label(label: str) -> bool:
+    normalized = normalize_text(label)
+    if any(keyword in normalized for keyword in ("비율", "비중", "참여율", "잔액율", "잔액률", "율")):
+        return True
+    return bool(re.search(r"\b(rate|ratio|percent|percentage)\b", clean_display_text(label), re.IGNORECASE))
+
+
+def row_ratio_confidence(target_label: str, numerator_label: str, denominator_label: str) -> float:
+    target = normalize_text(target_label)
+    numerator = normalize_text(numerator_label)
+    denominator = normalize_text(denominator_label)
+    if "참여율" in target and any(keyword in numerator for keyword in ("참여", "volunteer")) and any(
+        keyword in denominator for keyword in ("인구", "population")
+    ):
+        return 0.94
+    return 0.0
+
+
+def row_label_parts(table: ValidationTable, row: list) -> list[str]:
+    parts: list[str] = []
+    for col_index in leading_label_columns(table):
+        value = cell_text_at(row, col_index)
+        if value:
+            parts.append(value)
+    return parts
+
+
+def row_leaf_label(table: ValidationTable, row: list) -> str:
+    parts = row_label_parts(table, row)
+    return parts[-1] if parts else table.row_label(row)
+
+
+def row_denominator_score(table: ValidationTable, row: list) -> int:
+    label = normalize_text(combined_row_label(table, row) or table.row_label(row))
+    score = 0
+    if "gdp" in label:
+        score += 4
+    if any(keyword in label for keyword in ("계", "합계", "총계", "전체", "대상", "기준", "인구", "total", "base", "target", "population")):
+        score += 2
+    if is_ratio_row_label(label) or is_growth_rate_label(label):
+        score -= 4
+    return score
+
+
+def previous_value_row(
+    table: ValidationTable,
+    rows: list[tuple[int, list]],
+    before_position: int,
+) -> tuple[int, int, list] | None:
+    for position in range(before_position - 1, -1, -1):
+        row_index, row = rows[position]
+        label = combined_row_label(table, row) or table.row_label(row)
+        if is_ratio_row_label(label) or is_growth_rate_label(label):
+            continue
+        if sum(1 for col_index in range(len(row)) if cell_number(row, col_index) is not None) < 2:
+            continue
+        return position, row_index, row
+    return None
+
+
+def shared_numeric_columns(table: ValidationTable, rows: list[list]) -> list[int]:
+    label_columns = set(leading_label_columns(table))
+    columns: list[int] = []
+    for col_index in range(column_count(table)):
+        if col_index in label_columns:
+            continue
+        if all(cell_number(row, col_index) is not None for row in rows):
+            columns.append(col_index)
+    return columns
 
 
 def outlier_check_specs(table: ValidationTable) -> list[dict[str, Any]]:

@@ -118,6 +118,8 @@ def clean_display_text(value: str) -> str:
 
 def parse_numeric_text(value: str) -> float | None:
     cleaned = value.strip().replace(",", "").replace("%", "")
+    if re.fullmatch(r"\([-+]?\d+(?:\.\d+)?\)", cleaned):
+        cleaned = cleaned[1:-1]
     if not cleaned or cleaned in {"-", "－", "―"}:
         return None
     if re.fullmatch(r"[-+]?\d+(?:\.\d+)?", cleaned):

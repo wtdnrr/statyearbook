@@ -35,7 +35,7 @@ REQUIRED_RULE_DEFINITIONS: tuple[ValidationRuleDefinition, ...] = (
         default_status=ERROR_STATUS,
         default_severity="critical",
         owner_role="규칙 엔진",
-        description="비율, 비중, 잔액율 등 분자/분모 산식으로 재계산 가능한 값을 확인합니다.",
+        description="비율, 비중, 잔액율 등 분자/분모 산식으로 재계산 가능한 값을 확인합니다. 명시 산식, 같은 행의 분자/분모 열, 같은 열의 분자/분모 행을 포함합니다.",
     ),
     ValidationRuleDefinition(
         key="growth_rate",
@@ -43,7 +43,7 @@ REQUIRED_RULE_DEFINITIONS: tuple[ValidationRuleDefinition, ...] = (
         default_status=ERROR_STATUS,
         default_severity="critical",
         owner_role="규칙 엔진",
-        description="전년 대비 증감액과 증감률 계산값을 확인합니다.",
+        description="전년 대비 증감액과 증감률 계산값을 확인합니다. 연도 열이 나란히 있는 표의 증감률 행과 연도 행이 나란히 있는 표의 증감/증감률 열을 모두 확인합니다.",
     ),
     ValidationRuleDefinition(
         key="outlier",

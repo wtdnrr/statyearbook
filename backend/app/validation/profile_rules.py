@@ -38,6 +38,24 @@ def contains_korean_term(text: str, term: str) -> bool:
     return term in text
 
 
+def displayed_ratio_tolerance(
+    row: list,
+    col_index: int,
+    *,
+    base_tolerance: float,
+    multiplier: float,
+) -> float:
+    if multiplier != 100 or base_tolerance > 0.15 or col_index >= len(row):
+        return base_tolerance
+    cell = row[col_index]
+    if cell is None:
+        return base_tolerance
+    text = clean_display_text(cell.text_value).replace(",", "").replace("%", "")
+    if re.fullmatch(r"[-+]?\d+", text):
+        return max(base_tolerance, 0.5)
+    return base_tolerance
+
+
 class ProfileStateRule(ValidationRule):
     rule_id = "profile.state"
     issue_type = "검수 프로파일 확인"
@@ -122,10 +140,18 @@ class ProfileSpecRule(ValidationRule):
                 spec_issues, spec_checks = self._validate_row_arithmetic(table, profile, spec)
             elif rule_type == "row_ratio":
                 spec_issues, spec_checks = self._validate_row_ratio(table, profile, spec)
+            elif rule_type == "column_share_ratio":
+                spec_issues, spec_checks = self._validate_column_share_ratio(table, profile, spec)
+            elif rule_type == "row_ratio_by_rows":
+                spec_issues, spec_checks = self._validate_row_ratio_by_rows(table, profile, spec)
             elif rule_type == "growth_rate_scan":
                 spec_issues, spec_checks = self._validate_growth_rate_scan(table, profile, spec)
             elif rule_type == "row_growth_rate":
                 spec_issues, spec_checks = self._validate_row_growth_rate(table, profile, spec)
+            elif rule_type == "row_year_over_year_rate":
+                spec_issues, spec_checks = self._validate_row_year_over_year_rate(table, profile, spec)
+            elif rule_type == "year_rows_change_rate":
+                spec_issues, spec_checks = self._validate_year_rows_change_rate(table, profile, spec)
             elif rule_type == "outlier_columns":
                 spec_issues, spec_checks = self._validate_outliers(table, profile, spec)
             elif rule_type == "spelling_static":
@@ -452,8 +478,11 @@ class ProfileSpecRule(ValidationRule):
     ) -> tuple[list[ValidationIssueRecord], list[ValidationCheckRecord]]:
         target_col = int(spec.get("target_column", -1))
         numerator_col = int(spec.get("numerator_column", -1))
+        denominator_columns = [int(col_index) for col_index in spec.get("denominator_columns", [])]
         denominator_col = int(spec.get("denominator_column", -1))
-        if not self._valid_columns(table, [target_col, numerator_col, denominator_col]):
+        if not denominator_columns and denominator_col >= 0:
+            denominator_columns = [denominator_col]
+        if not denominator_columns or not self._valid_columns(table, [target_col, numerator_col, *denominator_columns]):
             return [], []
 
         issues: list[ValidationIssueRecord] = []
@@ -462,12 +491,21 @@ class ProfileSpecRule(ValidationRule):
         for row_index, row in table.data_rows():
             current = cell_number(row, target_col)
             numerator = cell_number(row, numerator_col)
-            denominator = cell_number(row, denominator_col)
-            if current is None or numerator is None or denominator in {None, 0}:
+            denominator_values = [cell_number(row, col_index) for col_index in denominator_columns]
+            if current is None or numerator is None or any(value is None for value in denominator_values):
+                continue
+            denominator = sum(value for value in denominator_values if value is not None)
+            if denominator == 0:
                 continue
 
             expected = numerator / denominator * multiplier
-            passed = abs(current - expected) <= float(spec.get("tolerance", 0.15))
+            tolerance = displayed_ratio_tolerance(
+                row,
+                target_col,
+                base_tolerance=float(spec.get("tolerance", 0.15)),
+                multiplier=multiplier,
+            )
+            passed = abs(current - expected) <= tolerance
             check = self._calculation_check(
                 table,
                 profile,
@@ -479,6 +517,59 @@ class ProfileSpecRule(ValidationRule):
                 expected=expected,
                 passed=passed,
                 detail="통계표별 검수 기준에 정의된 비율 산식을 확인했습니다.",
+            )
+            checks.append(check)
+            if not passed:
+                issues.append(self._issue_from_check(check))
+        return issues, checks
+
+    def _validate_column_share_ratio(
+        self,
+        table: ValidationTable,
+        profile: ValidationProfile,
+        spec: dict[str, Any],
+    ) -> tuple[list[ValidationIssueRecord], list[ValidationCheckRecord]]:
+        target_col = int(spec.get("target_column", -1))
+        numerator_col = int(spec.get("numerator_column", -1))
+        denominator_row = int(spec.get("denominator_row", -1))
+        denominator_col = int(spec.get("denominator_column", numerator_col))
+        if not self._valid_columns(table, [target_col, numerator_col, denominator_col]) or not self._valid_rows(table, [denominator_row]):
+            return [], []
+
+        denominator = cell_number(table.matrix[denominator_row], denominator_col)
+        if denominator in {None, 0}:
+            return [], []
+
+        issues: list[ValidationIssueRecord] = []
+        checks: list[ValidationCheckRecord] = []
+        multiplier = float(spec.get("multiplier", 100))
+        for row_index, row in table.data_rows():
+            if row_index == denominator_row:
+                continue
+            current = cell_number(row, target_col)
+            numerator = cell_number(row, numerator_col)
+            if current is None or numerator is None:
+                continue
+
+            expected = numerator / denominator * multiplier
+            tolerance = displayed_ratio_tolerance(
+                row,
+                target_col,
+                base_tolerance=float(spec.get("tolerance", 0.15)),
+                multiplier=multiplier,
+            )
+            passed = abs(current - expected) <= tolerance
+            check = self._calculation_check(
+                table,
+                profile,
+                spec,
+                check_type="비율 검수",
+                row_index=row_index,
+                col_index=target_col,
+                current=current,
+                expected=expected,
+                passed=passed,
+                detail="통계표별 검수 기준에 정의된 전체 대비 비율 산식을 확인했습니다.",
             )
             checks.append(check)
             if not passed:
@@ -501,7 +592,10 @@ class ProfileSpecRule(ValidationRule):
                 if any(keyword in normalize_text(text) for keyword in keywords):
                     matches.append((row_index, col_index, text))
 
-        has_formula_profile = any(check.get("type") == "row_growth_rate" for check in profile.check_specs)
+        has_formula_profile = any(
+            check.get("type") in {"row_growth_rate", "row_year_over_year_rate", "year_rows_change_rate"}
+            for check in profile.check_specs
+        )
         passed = not matches or has_formula_profile
         first = matches[0] if matches else None
         check = self._check_from_pass_fail(
@@ -559,6 +653,175 @@ class ProfileSpecRule(ValidationRule):
             checks.append(check)
             if not passed:
                 issues.append(self._issue_from_check(check))
+        return issues, checks
+
+    def _validate_row_ratio_by_rows(
+        self,
+        table: ValidationTable,
+        profile: ValidationProfile,
+        spec: dict[str, Any],
+    ) -> tuple[list[ValidationIssueRecord], list[ValidationCheckRecord]]:
+        target_row = int(spec.get("target_row", -1))
+        numerator_row = int(spec.get("numerator_row", -1))
+        denominator_row = int(spec.get("denominator_row", -1))
+        columns = [int(col_index) for col_index in spec.get("columns", [])]
+        if not columns or not self._valid_rows(table, [target_row, numerator_row, denominator_row]):
+            return [], []
+
+        issues: list[ValidationIssueRecord] = []
+        checks: list[ValidationCheckRecord] = []
+        multiplier = float(spec.get("multiplier", 100))
+        for col_index in columns:
+            if not self._valid_columns(table, [col_index]):
+                continue
+            target_value = cell_number(table.matrix[target_row], col_index)
+            numerator = cell_number(table.matrix[numerator_row], col_index)
+            denominator = cell_number(table.matrix[denominator_row], col_index)
+            if target_value is None or numerator is None or denominator in {None, 0}:
+                continue
+
+            expected = numerator / denominator * multiplier
+            target_row_values = table.matrix[target_row]
+            tolerance = displayed_ratio_tolerance(
+                target_row_values,
+                col_index,
+                base_tolerance=float(spec.get("tolerance", 0.15)),
+                multiplier=multiplier,
+            )
+            passed = abs(target_value - expected) <= tolerance
+            check = self._calculation_check(
+                table,
+                profile,
+                spec,
+                check_type="비율 검수",
+                row_index=target_row,
+                col_index=col_index,
+                current=target_value,
+                expected=expected,
+                passed=passed,
+                detail="같은 연도 열에서 분자 행과 분모 행으로 계산한 비율을 확인했습니다.",
+            )
+            checks.append(check)
+            if not passed:
+                issues.append(self._issue_from_check(check))
+        return issues, checks
+
+    def _validate_row_year_over_year_rate(
+        self,
+        table: ValidationTable,
+        profile: ValidationProfile,
+        spec: dict[str, Any],
+    ) -> tuple[list[ValidationIssueRecord], list[ValidationCheckRecord]]:
+        target_row = int(spec.get("target_row", -1))
+        source_row = int(spec.get("source_row", -1))
+        columns = [int(col_index) for col_index in spec.get("columns", [])]
+        if len(columns) < 2 or not self._valid_rows(table, [target_row, source_row]):
+            return [], []
+
+        issues: list[ValidationIssueRecord] = []
+        checks: list[ValidationCheckRecord] = []
+        multiplier = float(spec.get("multiplier", 100))
+        ordered_columns = sorted(columns)
+        for previous_col, current_col in zip(ordered_columns, ordered_columns[1:]):
+            if not self._valid_columns(table, [previous_col, current_col]):
+                continue
+            target_value = cell_number(table.matrix[target_row], current_col)
+            current_value = cell_number(table.matrix[source_row], current_col)
+            previous_value = cell_number(table.matrix[source_row], previous_col)
+            if target_value is None or current_value is None or previous_value in {None, 0}:
+                continue
+
+            expected = (current_value - previous_value) / previous_value * multiplier
+            passed = abs(target_value - expected) <= float(spec.get("tolerance", 0.15))
+            check = self._calculation_check(
+                table,
+                profile,
+                spec,
+                check_type="증감률 검수",
+                row_index=target_row,
+                col_index=current_col,
+                current=target_value,
+                expected=expected,
+                passed=passed,
+                detail="같은 원자료 행에서 전년도 열과 당해연도 열을 비교해 증감률을 확인했습니다.",
+            )
+            checks.append(check)
+            if not passed:
+                issues.append(self._issue_from_check(check))
+        return issues, checks
+
+    def _validate_year_rows_change_rate(
+        self,
+        table: ValidationTable,
+        profile: ValidationProfile,
+        spec: dict[str, Any],
+    ) -> tuple[list[ValidationIssueRecord], list[ValidationCheckRecord]]:
+        value_col = int(spec.get("value_column", -1))
+        rate_col = int(spec.get("rate_column", -1))
+        change_col_raw = spec.get("change_column")
+        change_col = int(change_col_raw) if change_col_raw is not None else None
+        row_indices = [int(row_index) for row_index in spec.get("row_indices", [])]
+        required_columns = [value_col, rate_col] + ([] if change_col is None else [change_col])
+        if len(row_indices) < 2 or not self._valid_rows(table, row_indices) or not self._valid_columns(table, required_columns):
+            return [], []
+
+        issues: list[ValidationIssueRecord] = []
+        checks: list[ValidationCheckRecord] = []
+        multiplier = float(spec.get("multiplier", 100))
+        change_tolerance = float(spec.get("change_tolerance", 1.0))
+        rate_tolerance = float(spec.get("rate_tolerance", 0.15))
+
+        for previous_row_index, current_row_index in zip(row_indices, row_indices[1:]):
+            previous_row = table.matrix[previous_row_index]
+            current_row = table.matrix[current_row_index]
+            previous_value = cell_number(previous_row, value_col)
+            current_value = cell_number(current_row, value_col)
+            if previous_value in {None, 0} or current_value is None:
+                continue
+
+            expected_change = current_value - previous_value
+            if change_col is not None:
+                current_change = cell_number(current_row, change_col)
+                if current_change is not None:
+                    passed = abs(current_change - expected_change) <= change_tolerance
+                    check = self._calculation_check(
+                        table,
+                        profile,
+                        spec,
+                        check_type="증감률 검수",
+                        row_index=current_row_index,
+                        col_index=change_col,
+                        current=current_change,
+                        expected=expected_change,
+                        passed=passed,
+                        detail="전년도 값과 당해연도 값을 비교해 증감 값을 확인했습니다.",
+                    )
+                    checks.append(check)
+                    if not passed:
+                        issues.append(self._issue_from_check(check))
+
+            current_rate = cell_number(current_row, rate_col)
+            if current_rate is None:
+                continue
+
+            expected_rate = expected_change / previous_value * multiplier
+            passed = abs(current_rate - expected_rate) <= rate_tolerance
+            check = self._calculation_check(
+                table,
+                profile,
+                spec,
+                check_type="증감률 검수",
+                row_index=current_row_index,
+                col_index=rate_col,
+                current=current_rate,
+                expected=expected_rate,
+                passed=passed,
+                detail="전년도 값과 당해연도 값을 비교해 증감률을 확인했습니다.",
+            )
+            checks.append(check)
+            if not passed:
+                issues.append(self._issue_from_check(check))
+
         return issues, checks
 
     def _validate_outliers(
@@ -920,3 +1183,6 @@ class ProfileSpecRule(ValidationRule):
     def _valid_columns(self, table: ValidationTable, columns: list[int]) -> bool:
         max_cols = column_count(table)
         return all(0 <= col_index < max_cols for col_index in columns)
+
+    def _valid_rows(self, table: ValidationTable, rows: list[int]) -> bool:
+        return all(0 <= row_index < len(table.matrix) for row_index in rows)

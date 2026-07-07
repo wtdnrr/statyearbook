@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+import json
 from pathlib import Path
 import re
 import sqlite3
@@ -19,6 +20,8 @@ from app.models.report import (
     StatTablePart,
     TableMetadata,
     TableHierarchyItem,
+    ValidationHighlightCell,
+    ValidationHighlightRow,
     ValidationIssue,
     Visualization,
     VisualizationSeries,
@@ -161,7 +164,7 @@ class SQLiteReportService:
         columns = build_columns(matrix, header_count)
         rows = build_rows(matrix, columns, header_count, footnote_matrix)
         table_id = f"db-{table_row['id']}"
-        checks = build_validation_issues(connection, run_id, table_row["id"])
+        checks = build_validation_issues(connection, run_id, table_row["id"], header_count)
         status, status_label = status_from_checks(checks)
 
         return StatTable(
@@ -227,6 +230,7 @@ def build_validation_issues(
     connection: sqlite3.Connection,
     run_id: int | None,
     table_id: int,
+    header_count: int,
 ) -> list[ValidationIssue]:
     if run_id is None:
         return []
@@ -257,9 +261,11 @@ def build_validation_issues(
     ).fetchall()
 
     if check_rows:
+        specs_by_rule_id = load_rule_specs_by_id(connection, check_rows)
         return [
             ValidationIssue(
                 id=f"check-{row['id']}",
+                rule_id=row["rule_id"],
                 type=row["check_type"],
                 location=row["location"],
                 row_index=row["row_index"],
@@ -271,6 +277,10 @@ def build_validation_issues(
                 severity=row["severity"],
                 detail=row["detail"],
                 formula=row["formula"],
+                highlight_scope=highlight_scope_for(row, specs_by_rule_id.get(row["rule_id"]), header_count),
+                highlight_cells=highlight_cells_for(row, specs_by_rule_id.get(row["rule_id"])),
+                highlight_rows=highlight_rows_for(row, specs_by_rule_id.get(row["rule_id"])),
+                focus_cell=focus_cell_for(row, specs_by_rule_id.get(row["rule_id"])),
             )
             for row in check_rows
         ]
@@ -297,6 +307,7 @@ def build_validation_issues(
     return [
         ValidationIssue(
             id=f"issue-{row['id']}",
+            rule_id=row["rule_id"],
             type=row["issue_type"],
             location=row["location"],
             row_index=row["row_index"],
@@ -308,9 +319,293 @@ def build_validation_issues(
             severity=row["severity"],
             detail=row["detail"],
             formula=row["formula"],
+            highlight_scope=fallback_highlight_scope(row, header_count),
+            highlight_cells=fallback_highlight_cells(row),
+            highlight_rows=fallback_highlight_rows(row),
+            focus_cell=fallback_focus_cell(row),
         )
         for row in rows
     ]
+
+
+def load_rule_specs_by_id(
+    connection: sqlite3.Connection,
+    check_rows: list[sqlite3.Row],
+) -> dict[str, dict[str, Any]]:
+    profile_ids = sorted(
+        {
+            int(row["profile_id"])
+            for row in check_rows
+            if row["profile_id"] is not None
+        }
+    )
+    if not profile_ids:
+        return {}
+
+    placeholders = ", ".join("?" for _ in profile_ids)
+    profile_rows = connection.execute(
+        f"""
+        SELECT id, rules_json
+        FROM validation_profiles
+        WHERE id IN ({placeholders})
+        """,
+        profile_ids,
+    ).fetchall()
+
+    specs: dict[str, dict[str, Any]] = {}
+    for profile_row in profile_rows:
+        try:
+            rules = json.loads(profile_row["rules_json"] or "{}")
+        except json.JSONDecodeError:
+            continue
+        checks = rules.get("checks", [])
+        if not isinstance(checks, list):
+            continue
+        for spec in checks:
+            if not isinstance(spec, dict) or not spec.get("id"):
+                continue
+            specs[str(spec["id"])] = spec
+    return specs
+
+
+def int_or_none(value: Any) -> int | None:
+    return int(value) if value is not None else None
+
+
+def highlight_cell(row_index: int | None, col_index: int | None, role: str) -> ValidationHighlightCell | None:
+    if row_index is None or col_index is None or row_index < 0 or col_index < 0:
+        return None
+    return ValidationHighlightCell(row_index=row_index, col_index=col_index, role=role)
+
+
+def highlight_row(row_index: int | None, role: str) -> ValidationHighlightRow | None:
+    if row_index is None or row_index < 0:
+        return None
+    return ValidationHighlightRow(row_index=row_index, role=role)
+
+
+def unique_highlight_cells(cells: list[ValidationHighlightCell | None]) -> list[ValidationHighlightCell]:
+    merged: dict[tuple[int, int], ValidationHighlightCell] = {}
+    for cell in cells:
+        if cell is None:
+            continue
+        key = (cell.row_index, cell.col_index)
+        current = merged.get(key)
+        if current is None or cell.role == "target":
+            merged[key] = cell
+    return list(merged.values())
+
+
+def spec_columns(spec: dict[str, Any] | None, key: str) -> list[int]:
+    if not spec:
+        return []
+    return [int(value) for value in spec.get(key, []) if value is not None]
+
+
+def spec_rows(spec: dict[str, Any] | None, key: str) -> list[int]:
+    if not spec:
+        return []
+    return [int(value) for value in spec.get(key, []) if value is not None]
+
+
+def formula_previous_column(spec: dict[str, Any] | None, current_col: int | None) -> int | None:
+    if spec is None or current_col is None:
+        return None
+    ordered_columns = sorted(spec_columns(spec, "columns"))
+    previous_columns = [col_index for col_index in ordered_columns if col_index < current_col]
+    return previous_columns[-1] if previous_columns else None
+
+
+def highlight_cells_for(row: sqlite3.Row, spec: dict[str, Any] | None) -> list[ValidationHighlightCell]:
+    row_index = int_or_none(row["row_index"])
+    col_index = int_or_none(row["col_index"])
+    if spec is None:
+        return fallback_highlight_cells(row)
+
+    rule_type = str(spec.get("type") or "")
+    cells: list[ValidationHighlightCell | None] = []
+
+    if rule_type == "row_sum":
+        target_col = int(spec.get("target_column", col_index if col_index is not None else -1))
+        cells.append(highlight_cell(row_index, target_col, "target"))
+        cells.extend(highlight_cell(row_index, col, "related") for col in spec_columns(spec, "operand_columns"))
+    elif rule_type == "row_arithmetic":
+        target_col = int(spec.get("target_column", col_index if col_index is not None else -1))
+        cells.append(highlight_cell(row_index, target_col, "target"))
+        term_columns = [
+            int(term.get("column", -1))
+            for term in spec.get("terms", [])
+            if isinstance(term, dict) and term.get("column") is not None
+        ]
+        cells.extend(highlight_cell(row_index, col, "related") for col in term_columns)
+    elif rule_type == "row_ratio":
+        target_col = int(spec.get("target_column", col_index if col_index is not None else -1))
+        numerator_col = int(spec.get("numerator_column", -1))
+        denominator_columns = spec_columns(spec, "denominator_columns")
+        denominator_col = int(spec.get("denominator_column", -1))
+        if not denominator_columns and denominator_col >= 0:
+            denominator_columns = [denominator_col]
+        cells.extend(
+            [
+                highlight_cell(row_index, target_col, "target"),
+                highlight_cell(row_index, numerator_col, "related"),
+            ]
+        )
+        cells.extend(highlight_cell(row_index, denominator_col, "related") for denominator_col in denominator_columns)
+    elif rule_type == "column_share_ratio":
+        target_col = int(spec.get("target_column", col_index if col_index is not None else -1))
+        numerator_col = int(spec.get("numerator_column", -1))
+        denominator_row = int(spec.get("denominator_row", -1))
+        denominator_col = int(spec.get("denominator_column", numerator_col))
+        cells.extend(
+            [
+                highlight_cell(row_index, target_col, "target"),
+                highlight_cell(row_index, numerator_col, "related"),
+                highlight_cell(denominator_row, denominator_col, "related"),
+            ]
+        )
+    elif rule_type == "row_growth_rate":
+        target_col = int(spec.get("target_column", col_index if col_index is not None else -1))
+        current_col = int(spec.get("current_column", -1))
+        previous_col = int(spec.get("previous_column", -1))
+        cells.extend(
+            [
+                highlight_cell(row_index, target_col, "target"),
+                highlight_cell(row_index, current_col, "related"),
+                highlight_cell(row_index, previous_col, "related"),
+            ]
+        )
+    elif rule_type in {"column_sum", "region_total"}:
+        target_row = int(spec.get("target_row", row_index if row_index is not None else -1))
+        cells.append(highlight_cell(target_row, col_index, "target"))
+        cells.extend(highlight_cell(operand_row, col_index, "related") for operand_row in spec_rows(spec, "operand_rows"))
+    elif rule_type == "row_ratio_by_rows":
+        target_row = int(spec.get("target_row", row_index if row_index is not None else -1))
+        numerator_row = int(spec.get("numerator_row", -1))
+        denominator_row = int(spec.get("denominator_row", -1))
+        cells.extend(
+            [
+                highlight_cell(target_row, col_index, "target"),
+                highlight_cell(numerator_row, col_index, "related"),
+                highlight_cell(denominator_row, col_index, "related"),
+            ]
+        )
+    elif rule_type == "row_year_over_year_rate":
+        target_row = int(spec.get("target_row", row_index if row_index is not None else -1))
+        source_row = int(spec.get("source_row", -1))
+        previous_col = formula_previous_column(spec, col_index)
+        cells.extend(
+            [
+                highlight_cell(target_row, col_index, "target"),
+                highlight_cell(source_row, col_index, "related"),
+                highlight_cell(source_row, previous_col, "related"),
+            ]
+        )
+    elif rule_type == "year_rows_change_rate":
+        value_col = int(spec.get("value_column", -1))
+        change_col = spec.get("change_column")
+        change_col_value = int(change_col) if change_col is not None else None
+        rate_col = int(spec.get("rate_column", -1))
+        row_indices = sorted(spec_rows(spec, "row_indices"))
+        previous_rows = [candidate for candidate in row_indices if row_index is not None and candidate < row_index]
+        previous_row = previous_rows[-1] if previous_rows else None
+        if change_col_value is not None and col_index == change_col_value:
+            cells.append(highlight_cell(row_index, change_col_value, "target"))
+        elif col_index == rate_col:
+            cells.append(highlight_cell(row_index, rate_col, "target"))
+        else:
+            cells.append(highlight_cell(row_index, col_index, "target"))
+        cells.extend(
+            [
+                highlight_cell(row_index, value_col, "related"),
+                highlight_cell(previous_row, value_col, "related"),
+            ]
+        )
+    elif rule_type in {
+        "spelling_static",
+        "translation_static",
+        "numeric_format",
+        "row_label_required",
+        "growth_rate_scan",
+        "year_sequence",
+    }:
+        cells.append(highlight_cell(row_index, col_index, "target"))
+    else:
+        cells.append(highlight_cell(row_index, col_index, "target"))
+
+    return unique_highlight_cells(cells)
+
+
+def highlight_rows_for(row: sqlite3.Row, spec: dict[str, Any] | None) -> list[ValidationHighlightRow]:
+    if spec is None:
+        return fallback_highlight_rows(row)
+
+    rule_type = str(spec.get("type") or "")
+    if rule_type in {
+        "row_sum",
+        "row_arithmetic",
+        "row_ratio",
+        "column_share_ratio",
+        "row_growth_rate",
+        "column_sum",
+        "region_total",
+        "row_ratio_by_rows",
+        "row_year_over_year_rate",
+        "year_rows_change_rate",
+    }:
+        return []
+
+    return []
+
+
+def focus_cell_for(row: sqlite3.Row, spec: dict[str, Any] | None) -> ValidationHighlightCell | None:
+    cells = highlight_cells_for(row, spec)
+    target = next((cell for cell in cells if cell.role == "target"), None)
+    return target or next(iter(cells), None)
+
+
+def highlight_scope_for(row: sqlite3.Row, spec: dict[str, Any] | None, header_count: int) -> str:
+    row_index = int_or_none(row["row_index"])
+    if spec is None:
+        return fallback_highlight_scope(row, header_count)
+
+    rule_type = str(spec.get("type") or "")
+    if rule_type in {"unit_required", "metadata_required"}:
+        return "metadata"
+    if row_index is not None and row_index < header_count:
+        return "header"
+    if rule_type in {"row_sum", "row_arithmetic", "row_ratio", "column_share_ratio", "row_growth_rate"}:
+        return "row"
+    if rule_type in {"column_sum", "region_total", "row_ratio_by_rows"}:
+        return "column"
+    if rule_type in {"spelling_static", "translation_static"}:
+        return "header" if row_index is not None and row_index < header_count else "cell"
+    return "cell" if row_index is not None and row["col_index"] is not None else "none"
+
+
+def fallback_highlight_cells(row: sqlite3.Row) -> list[ValidationHighlightCell]:
+    cell = highlight_cell(int_or_none(row["row_index"]), int_or_none(row["col_index"]), "target")
+    return [cell] if cell else []
+
+
+def fallback_highlight_rows(row: sqlite3.Row) -> list[ValidationHighlightRow]:
+    row_highlight = highlight_row(int_or_none(row["row_index"]), "target")
+    return [row_highlight] if row_highlight else []
+
+
+def fallback_focus_cell(row: sqlite3.Row) -> ValidationHighlightCell | None:
+    cells = fallback_highlight_cells(row)
+    return cells[0] if cells else None
+
+
+def fallback_highlight_scope(row: sqlite3.Row, header_count: int) -> str:
+    row_index = int_or_none(row["row_index"])
+    col_index = int_or_none(row["col_index"])
+    if row_index is None or col_index is None:
+        return "none"
+    if row_index < header_count:
+        return "header"
+    return "cell"
 
 
 def decode_display_text(value: str) -> str:
@@ -550,6 +845,7 @@ def build_rows(
             continue
 
         row: dict[str, Any] = {}
+        row["_row_index"] = matrix_row_index
         for col_index, column in enumerate(columns):
             value = source_row[col_index] if col_index < len(source_row) else ""
             row[column.key] = coerce_display_value(value)

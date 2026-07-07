@@ -1,6 +1,6 @@
 import { useEffect, useRef } from "react";
 
-import type { ColumnDefinition } from "../types";
+import type { ColumnDefinition, ValidationHighlightCell, ValidationHighlightRow } from "../types";
 import { formatCellValue } from "../utils/formatters";
 
 interface HighlightLocation {
@@ -14,14 +14,19 @@ interface DataGridProps {
   theme: "blue" | "red" | "green";
   maxRows?: number;
   highlight?: {
+    tone?: "pass" | "review" | "error";
     rowText?: string;
     columnText?: string;
+    highlightCells?: ValidationHighlightCell[];
+    highlightRows?: ValidationHighlightRow[];
+    focusCell?: ValidationHighlightCell | null;
     targetLocations?: HighlightLocation[];
     headerLocations?: HighlightLocation[];
     relatedLocations?: HighlightLocation[];
   };
   scrollSignal?: number;
   stickyHeader?: boolean;
+  headerCount?: number;
 }
 
 function normalizeText(value: string | number | undefined) {
@@ -46,6 +51,10 @@ function columnMatches(column: ColumnDefinition, target: string | undefined) {
   return textMatches([column.label, column.label_en].filter(Boolean).join(" "), target);
 }
 
+function cellKey(rowIndex: number, colIndex: number) {
+  return `${rowIndex}:${colIndex}`;
+}
+
 export function DataGrid({
   columns,
   rows,
@@ -54,8 +63,18 @@ export function DataGrid({
   highlight,
   scrollSignal = 0,
   stickyHeader = false,
+  headerCount = 0,
 }: DataGridProps) {
   const visibleRows = maxRows ? rows.slice(0, maxRows) : rows;
+  const exactHighlightCells = highlight?.highlightCells ?? [];
+  const exactHighlightRows = highlight?.highlightRows ?? [];
+  const hasExactHighlights = exactHighlightCells.length > 0 || exactHighlightRows.length > 0;
+  const exactHighlightMap = new Map(
+    exactHighlightCells.map((cell) => [cellKey(cell.row_index, cell.col_index), cell.role]),
+  );
+  const exactRowHighlightMap = new Map(exactHighlightRows.map((row) => [row.row_index, row.role]));
+  const focusCell = highlight?.focusCell ?? exactHighlightCells.find((cell) => cell.role === "target") ?? exactHighlightCells[0];
+  const focusKey = focusCell ? cellKey(focusCell.row_index, focusCell.col_index) : "";
   const primaryTargets = highlight
     ? (highlight.targetLocations ?? [{ rowText: highlight.rowText, columnText: highlight.columnText }])
     : [];
@@ -99,8 +118,19 @@ export function DataGrid({
     });
   }, [scrollSignal]);
 
+  const highlightTone = highlight?.tone ?? "review";
+
   return (
-    <div className={`data-grid data-grid--${theme} ${stickyHeader ? "data-grid--sticky-header" : ""}`}>
+    <div
+      className={[
+        "data-grid",
+        `data-grid--${theme}`,
+        `data-grid--highlight-${highlightTone}`,
+        stickyHeader ? "data-grid--sticky-header" : "",
+      ]
+        .filter(Boolean)
+        .join(" ")}
+    >
       <table>
         <colgroup>
           {columns.map((column) => (
@@ -109,8 +139,17 @@ export function DataGrid({
         </colgroup>
         <thead>
           <tr>
-            {columns.map((column) => {
-              const isHeaderHighlight = headerTargets.some((target) => columnMatches(column, target.columnText));
+            {columns.map((column, columnIndex) => {
+              const exactHeaderRole = exactHighlightCells
+                .filter((cell) => cell.row_index < headerCount && cell.col_index === columnIndex)
+                .some((cell) => cell.role === "target")
+                ? "target"
+                : exactHighlightCells.some((cell) => cell.row_index < headerCount && cell.col_index === columnIndex)
+                  ? "related"
+                  : undefined;
+              const isHeaderHighlight =
+                exactHeaderRole === "target" ||
+                (!hasExactHighlights && headerTargets.some((target) => columnMatches(column, target.columnText)));
               const shouldAttachHeaderRef = isHeaderHighlight && !didAttachHighlightedHeaderRef;
               if (shouldAttachHeaderRef) {
                 didAttachHighlightedHeaderRef = true;
@@ -120,9 +159,10 @@ export function DataGrid({
                 <th
                   className={[
                     `align-${column.align}`,
-                    columnTargets.some((target) => columnMatches(column, target.columnText))
+                    !hasExactHighlights && columnTargets.some((target) => columnMatches(column, target.columnText))
                       ? "data-grid__column-highlight"
                       : "",
+                    exactHeaderRole === "related" ? "data-grid__header-related-highlight" : "",
                     isHeaderHighlight ? "data-grid__header-cell-highlight" : "",
                   ]
                     .filter(Boolean)
@@ -139,8 +179,11 @@ export function DataGrid({
         </thead>
         <tbody>
           {visibleRows.map((row, rowIndex) => {
+            const sourceRowIndex =
+              typeof row._row_index === "number" ? Number(row._row_index) : headerCount + rowIndex;
+            const exactRowRole = exactRowHighlightMap.get(sourceRowIndex);
             const rowMatches = primaryTargets.some(
-              (target) => !target.columnText && rowMatchesTarget(row, target.rowText),
+              (target) => !hasExactHighlights && !target.columnText && rowMatchesTarget(row, target.rowText),
             );
             const shouldAttachRowRef = rowMatches && !didAttachHighlightedRowRef;
             if (shouldAttachRowRef) {
@@ -149,12 +192,19 @@ export function DataGrid({
 
             return (
               <tr
-                className={rowMatches ? "data-grid__row-highlight" : ""}
+                className={[
+                  rowMatches ? "data-grid__row-highlight" : "",
+                  exactRowRole === "related" ? "data-grid__row-related-highlight" : "",
+                  exactRowRole === "target" ? "data-grid__row-target-highlight" : "",
+                ]
+                  .filter(Boolean)
+                  .join(" ")}
                 key={`${rowIndex}-${row[columns[0].key]}`}
                 ref={shouldAttachRowRef ? highlightedRowRef : undefined}
               >
                 {columns.map((column, columnIndex) => {
-                  const isCellHighlight = primaryTargets.some((target) => {
+                  const exactRole = exactHighlightMap.get(cellKey(sourceRowIndex, columnIndex));
+                  const isCellHighlight = exactRole === "target" || (!hasExactHighlights && primaryTargets.some((target) => {
                     const targetRowMatches = rowMatchesTarget(row, target.rowText);
                     const targetColumnMatches = columnMatches(column, target.columnText);
 
@@ -162,15 +212,17 @@ export function DataGrid({
                       targetRowMatches &&
                       (targetColumnMatches || (!hasColumnHighlight && !target.columnText && columnIndex === 0))
                     );
-                  });
-                  const isRelatedCellHighlight = relatedTargets.some((target) => {
+                  }));
+                  const isRelatedCellHighlight = exactRole === "related" || (!hasExactHighlights && relatedTargets.some((target) => {
                     const targetRowMatches = rowMatchesTarget(row, target.rowText);
                     const targetColumnMatches = columnMatches(column, target.columnText);
 
                     return targetRowMatches && targetColumnMatches;
-                  });
+                  }));
                   const footnote = row[`${column.key}_footnote`];
-                  const shouldAttachCellRef = isCellHighlight && !didAttachHighlightedCellRef;
+                  const shouldAttachCellRef =
+                    (focusKey ? focusKey === cellKey(sourceRowIndex, columnIndex) : isCellHighlight) &&
+                    !didAttachHighlightedCellRef;
                   if (shouldAttachCellRef) {
                     didAttachHighlightedCellRef = true;
                   }
