@@ -904,13 +904,18 @@ button {
   background: #def2e4;
 }
 
-.data-grid tbody tr:first-child td {
-  font-weight: 900;
-  background: #fbfcfe;
-}
-
 .data-grid tbody tr.data-grid__row-highlight td {
   background: var(--highlight-related-bg);
+}
+
+.data-grid tbody tr.data-grid__summary-row td {
+  background: #fbfcfe;
+  font-weight: 850;
+}
+
+.data-grid tbody tr.data-grid__subtotal-row td {
+  background: #f8fafc;
+  font-weight: 800;
 }
 
 .data-grid tbody tr.data-grid__row-related-highlight td {

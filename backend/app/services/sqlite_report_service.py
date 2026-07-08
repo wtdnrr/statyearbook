@@ -504,6 +504,17 @@ def highlight_cells_for(row: sqlite3.Row, spec: dict[str, Any] | None) -> list[V
                 highlight_cell(source_row, previous_col, "related"),
             ]
         )
+    elif rule_type == "row_year_over_year_change_amount":
+        target_row = int(spec.get("target_row", row_index if row_index is not None else -1))
+        source_row = int(spec.get("source_row", -1))
+        previous_col = formula_previous_column(spec, col_index)
+        cells.extend(
+            [
+                highlight_cell(target_row, col_index, "target"),
+                highlight_cell(source_row, col_index, "related"),
+                highlight_cell(source_row, previous_col, "related"),
+            ]
+        )
     elif rule_type == "year_rows_change_rate":
         value_col = int(spec.get("value_column", -1))
         change_col = spec.get("change_column")
@@ -567,6 +578,7 @@ def highlight_rows_for(row: sqlite3.Row, spec: dict[str, Any] | None) -> list[Va
         "region_total",
         "row_ratio_by_rows",
         "row_year_over_year_rate",
+        "row_year_over_year_change_amount",
         "year_rows_change_rate",
         "year_rows_change_amount",
     }:
@@ -591,7 +603,15 @@ def highlight_scope_for(row: sqlite3.Row, spec: dict[str, Any] | None, header_co
         return "metadata"
     if row_index is not None and row_index < header_count:
         return "header"
-    if rule_type in {"row_sum", "row_arithmetic", "row_ratio", "column_share_ratio", "row_growth_rate", "year_rows_change_amount"}:
+    if rule_type in {
+        "row_sum",
+        "row_arithmetic",
+        "row_ratio",
+        "column_share_ratio",
+        "row_growth_rate",
+        "row_year_over_year_change_amount",
+        "year_rows_change_amount",
+    }:
         return "row"
     if rule_type in {"column_sum", "region_total", "row_ratio_by_rows"}:
         return "column"

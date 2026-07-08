@@ -181,6 +181,8 @@ class ProfileSpecRule(ValidationRule):
                 spec_issues, spec_checks = self._validate_row_growth_rate(table, profile, spec)
             elif rule_type == "row_year_over_year_rate":
                 spec_issues, spec_checks = self._validate_row_year_over_year_rate(table, profile, spec)
+            elif rule_type == "row_year_over_year_change_amount":
+                spec_issues, spec_checks = self._validate_row_year_over_year_change_amount(table, profile, spec)
             elif rule_type == "year_rows_change_rate":
                 spec_issues, spec_checks = self._validate_year_rows_change_rate(table, profile, spec)
             elif rule_type == "year_rows_change_amount":
@@ -637,7 +639,13 @@ class ProfileSpecRule(ValidationRule):
 
         has_formula_profile = any(
             check.get("type")
-            in {"row_growth_rate", "row_year_over_year_rate", "year_rows_change_rate", "year_rows_change_amount"}
+            in {
+                "row_growth_rate",
+                "row_year_over_year_rate",
+                "row_year_over_year_change_amount",
+                "year_rows_change_rate",
+                "year_rows_change_amount",
+            }
             for check in profile.check_specs
         )
         passed = not matches or has_formula_profile
@@ -788,6 +796,50 @@ class ProfileSpecRule(ValidationRule):
                 expected=expected,
                 passed=passed,
                 detail="같은 원자료 행에서 전년도 열과 당해연도 열을 비교해 증감률을 확인했습니다.",
+            )
+            checks.append(check)
+            if not passed:
+                issues.append(self._issue_from_check(check))
+        return issues, checks
+
+    def _validate_row_year_over_year_change_amount(
+        self,
+        table: ValidationTable,
+        profile: ValidationProfile,
+        spec: dict[str, Any],
+    ) -> tuple[list[ValidationIssueRecord], list[ValidationCheckRecord]]:
+        target_row = int(spec.get("target_row", -1))
+        source_row = int(spec.get("source_row", -1))
+        columns = [int(col_index) for col_index in spec.get("columns", [])]
+        if len(columns) < 2 or not self._valid_rows(table, [target_row, source_row]):
+            return [], []
+
+        issues: list[ValidationIssueRecord] = []
+        checks: list[ValidationCheckRecord] = []
+        ordered_columns = sorted(columns)
+        tolerance = float(spec.get("tolerance", 1.0))
+        for previous_col, current_col in zip(ordered_columns, ordered_columns[1:]):
+            if not self._valid_columns(table, [previous_col, current_col]):
+                continue
+            target_value = cell_number(table.matrix[target_row], current_col)
+            current_value = cell_number(table.matrix[source_row], current_col)
+            previous_value = cell_number(table.matrix[source_row], previous_col)
+            if target_value is None or current_value is None or previous_value is None:
+                continue
+
+            expected = current_value - previous_value
+            passed = abs(target_value - expected) <= tolerance
+            check = self._calculation_check(
+                table,
+                profile,
+                spec,
+                check_type="증감액 검수",
+                row_index=target_row,
+                col_index=current_col,
+                current=target_value,
+                expected=expected,
+                passed=passed,
+                detail="같은 원자료 행에서 전년도 열과 당해연도 열의 차이를 확인했습니다.",
             )
             checks.append(check)
             if not passed:

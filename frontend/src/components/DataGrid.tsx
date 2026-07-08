@@ -51,6 +51,27 @@ function columnMatches(column: ColumnDefinition, target: string | undefined) {
   return textMatches([column.label, column.label_en].filter(Boolean).join(" "), target);
 }
 
+function summaryRowKind(row: Record<string, string | number>, firstColumnKey: string | undefined) {
+  const label = String(row._row_label ?? (firstColumnKey ? row[firstColumnKey] : "") ?? "").trim();
+  const compact = normalizeText(label);
+  if (!compact) {
+    return undefined;
+  }
+  if (compact.startsWith("소계") || compact.includes("subtotal")) {
+    return "subtotal";
+  }
+  const totalLabels = ["계", "합계", "총계", "total", "grandtotal"];
+  if (
+    totalLabels.includes(compact) ||
+    compact.startsWith("계total") ||
+    compact.startsWith("합계total") ||
+    compact.startsWith("총계total")
+  ) {
+    return "total";
+  }
+  return undefined;
+}
+
 function cellKey(rowIndex: number, colIndex: number) {
   return `${rowIndex}:${colIndex}`;
 }
@@ -195,6 +216,7 @@ export function DataGrid({
             const rowMatches = primaryTargets.some(
               (target) => !hasExactHighlights && !target.columnText && rowMatchesTarget(row, target.rowText),
             );
+            const summaryKind = summaryRowKind(row, firstColumnKey);
             const shouldAttachRowRef = rowMatches && !didAttachHighlightedRowRef;
             if (shouldAttachRowRef) {
               didAttachHighlightedRowRef = true;
@@ -204,6 +226,8 @@ export function DataGrid({
               <tr
                 className={[
                   rowMatches ? "data-grid__row-highlight" : "",
+                  summaryKind === "total" ? "data-grid__summary-row" : "",
+                  summaryKind === "subtotal" ? "data-grid__subtotal-row" : "",
                   exactRowRole === "related" ? "data-grid__row-related-highlight" : "",
                   exactRowRole === "target" ? "data-grid__row-target-highlight" : "",
                 ]

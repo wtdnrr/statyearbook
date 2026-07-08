@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from functools import cached_property
 import re
 
 
@@ -62,14 +63,14 @@ class ValidationTable:
     note: str
     cells: list[ValidationCell]
 
-    @property
+    @cached_property
     def header_count(self) -> int:
         header_rows = {cell.row_index for cell in self.cells if cell.is_header}
         if header_rows:
             return max(header_rows) + 1
         return 1 if self.matrix else 0
 
-    @property
+    @cached_property
     def matrix(self) -> list[list[ValidationCell | None]]:
         if not self.cells:
             return []

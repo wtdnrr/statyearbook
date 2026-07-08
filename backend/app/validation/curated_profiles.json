@@ -1,0 +1,151 @@
+{
+  "version": 1,
+  "profiles": {
+    "4-1-8-4": {
+      "status": "ready",
+      "decision": "curated_calculation_profile",
+      "label": "여성지방공무원 비율·전년 대비 증감 산식 승인",
+      "table_type": "year_trend_table",
+      "notes": "큐레이션: 여성비율은 여성 공무원 수를 전체 공무원 수로 나누어 계산하고, 전년 대비 증감은 전체 공무원 수의 당해연도 값에서 전년도 값을 빼서 검수합니다.",
+      "checks": [
+        {
+          "id": "curated.4-1-8-4.female_percent",
+          "type": "row_ratio_by_rows",
+          "category": "table",
+          "check_group": "ratio",
+          "check_type": "비율 검수",
+          "failure_status": "오류 의심",
+          "severity": "critical",
+          "label": "여성비율 = 여성 / 전체 * 100",
+          "target_row": 4,
+          "numerator_row": 3,
+          "denominator_row": 1,
+          "columns": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
+          "multiplier": 100,
+          "tolerance": 0.15,
+          "confidence": 1.0
+        },
+        {
+          "id": "curated.4-1-8-4.total_yoy_change",
+          "type": "row_year_over_year_change_amount",
+          "category": "table",
+          "check_group": "growth_rate",
+          "check_type": "증감액 검수",
+          "failure_status": "오류 의심",
+          "severity": "critical",
+          "label": "전년 대비 증감 = 전체 당해연도 - 전체 전년도",
+          "target_row": 2,
+          "source_row": 1,
+          "columns": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
+          "tolerance": 1.0,
+          "confidence": 1.0
+        }
+      ]
+    }
+  },
+  "groups": [
+    {
+      "codes": [
+        "1-1-1-5",
+        "1-1-3",
+        "2-1-2-1",
+        "2-1-2-2",
+        "2-2-9 표2",
+        "3-1-1-1",
+        "3-1-1-2",
+        "4-1-1-3",
+        "4-1-1-4",
+        "4-1-1-5",
+        "4-1-1-6 표1",
+        "4-1-1-6 표2",
+        "4-1-1-6 표3",
+        "4-1-1-6 표4",
+        "4-1-1-6 표5",
+        "4-1-1-6 표6",
+        "4-1-11-1 표1",
+        "4-1-11-1 표2",
+        "4-1-11-2 표1",
+        "4-1-11-2 표2",
+        "4-1-11-3 표1",
+        "4-1-11-3 표2",
+        "4-2-3-1",
+        "4-2-3-2",
+        "4-2-4",
+        "4-2-6-2",
+        "5-1-2-1",
+        "5-1-2-2",
+        "5-1-2-3",
+        "5-1-7",
+        "5-1-9-3",
+        "5-2-1-1",
+        "5-2-1-2 표2",
+        "6-1-1-1",
+        "6-1-2",
+        "6-2-2-1",
+        "6-2-2-2",
+        "6-2-4-3 표2",
+        "6-2-8",
+        "6-3-3-3 표2",
+        "7-1-6-1",
+        "7-2-1-3",
+        "7-2-10",
+        "7-2-9-1",
+        "7-3-1-2",
+        "7-3-2-1 표2",
+        "부록 3",
+        "부록 4",
+        "4-1-9 표1",
+        "4-1-9 표2",
+        "4-1-9 표3"
+      ],
+      "profile": {
+        "status": "ready",
+        "decision": "no_calculation_required",
+        "label": "계산 검수 없음",
+        "table_type": "descriptive_or_reference_table",
+        "notes": "큐레이션: 표 내용을 확인한 결과 반복 산술로 검수할 합계·비율·증감률 구조가 없거나, 공통 검수만 적용하는 목록/사례/참고형 표로 분류했습니다."
+      }
+    },
+    {
+      "codes": [
+        "2-2-11-1",
+        "2-2-11-2",
+        "4-1-7-3",
+        "4-2-15",
+        "5-2-1-5 표3",
+        "7-3-1-1",
+        "7-3-2-1 표1",
+        "부록 2"
+      ],
+      "profile": {
+        "status": "needs_review",
+        "decision": "manual_calculation_required",
+        "label": "표별 산식 수동 확정 필요",
+        "table_type": "calculation_review_required",
+        "notes": "큐레이션: 합계·비율 후보가 있으나 표 구조상 자동 산식 확정이 안전하지 않습니다. 실제 서비스에서는 GPT API 또는 담당자가 결과 셀과 연산 셀을 확정한 뒤 프로파일을 승인해야 합니다."
+      }
+    },
+    {
+      "codes": [
+        "8-1-3-2 표1",
+        "8-1-3-2 표2",
+        "8-1-3-2 표3"
+      ],
+      "profile": {
+        "status": "ready",
+        "decision": "curated_sum_profile",
+        "label": "사이버교육 하위 행 합계 승인",
+        "table_type": "year_trend_table",
+        "notes": "큐레이션: 사이버교육 표의 계 행은 하위 연도 행 합계로 검수하는 산식으로 승인했습니다.",
+        "confidence_overrides": [
+          {
+            "match": {
+              "type": "column_sum"
+            },
+            "confidence": 0.95
+          }
+        ]
+      }
+    }
+  ]
+}
