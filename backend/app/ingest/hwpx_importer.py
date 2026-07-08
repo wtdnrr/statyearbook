@@ -14,9 +14,15 @@ from zipfile import ZipFile
 from app.db.schema import DB_PATH, connect, init_db
 from app.ingest.anomaly import annotate_adjacent_duplicate_tables
 from app.ingest.cell_text import split_cell_text
+from app.ingest.table_repairs import repair_region_split_rows
 
 
 TABLE_CODE_RE = re.compile(r"(?<!\d)(?:[1-9]|1[0-9])-\d{1,2}-\d{1,2}(?:-\d{1,2})?(?![-\d])")
+ENGLISH_TITLE_CHARS = r"A-Za-z0-9 ,&/().%·･+\-'’‘′ʼ~"
+ENGLISH_TITLE_RE = re.compile(
+    rf"(?<![A-Za-z0-9가-힣])([A-Za-z][{ENGLISH_TITLE_CHARS}]{{2,}}|\d+-[A-Za-z][{ENGLISH_TITLE_CHARS}]{{2,}})$"
+)
+ENGLISH_ONLY_RE = re.compile(rf"(?=[{ENGLISH_TITLE_CHARS}]*[A-Za-z])[{ENGLISH_TITLE_CHARS}]+")
 KOREAN_HEADER_LABELS = {
     "구분",
     "분류",
@@ -99,15 +105,15 @@ def element_text(element: ET.Element) -> str:
 
 
 def split_bilingual(text: str) -> tuple[str, str]:
-    cleaned = re.sub(r"\s+", " ", text).strip(" :;?")
+    cleaned = re.sub(r"\s+", " ", text).replace("\\~", "~").replace("᭼", "･").strip(" :;?")
     if not cleaned:
         return "", ""
 
-    match = re.search(r"([A-Za-z][A-Za-z0-9 ,&/().%·･+\-']{2,})$", cleaned)
+    match = ENGLISH_TITLE_RE.search(cleaned)
     if match and match.start() > 0:
         return cleaned[: match.start()].strip(), match.group(1).strip()
 
-    if re.fullmatch(r"[A-Za-z0-9 ,&/().%·･+\-']+", cleaned):
+    if ENGLISH_ONLY_RE.fullmatch(cleaned):
         return "", cleaned
 
     return cleaned, ""
@@ -344,10 +350,10 @@ def normalize_matrix_with_footnotes(parts: Iterable[TablePart]) -> tuple[list[li
             rows.append(cleaned_row)
             footnote_rows.append(footnote_row)
 
-    return (
-        [row + [""] * (max_cols - len(row)) for row in rows],
-        [row + [""] * (max_cols - len(row)) for row in footnote_rows],
-    )
+    normalized_rows = [row + [""] * (max_cols - len(row)) for row in rows]
+    normalized_footnote_rows = [row + [""] * (max_cols - len(row)) for row in footnote_rows]
+    repair_region_split_rows(normalized_rows, normalized_footnote_rows)
+    return normalized_rows, normalized_footnote_rows
 
 
 def normalize_matrix(parts: Iterable[TablePart]) -> list[list[str]]:

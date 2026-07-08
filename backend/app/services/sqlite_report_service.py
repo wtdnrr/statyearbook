@@ -207,6 +207,8 @@ class SQLiteReportService:
                 note=table_row["note"],
                 source=table_row["source"],
                 base_date=table_row["base_date"] or f"{report['year']} 기준",
+                base_date_display=metadata_base_date_display(table_row, report["year"]),
+                unit_display=metadata_unit_display(table_row),
                 extracted_at=table_row["extracted_at"],
                 header_count=header_count,
             ),
@@ -1158,6 +1160,26 @@ def formatted_value(value: Any, unit: str) -> str:
         body = str(value)
 
     return f"{body}{unit}" if unit and unit not in {"-", "%"} and isinstance(value, (int, float)) else body
+
+
+def metadata_base_date_display(table_row: sqlite3.Row, report_year: int) -> str:
+    fallback = table_row["base_date"] or f"{report_year} 기준"
+    raw_context = re.sub(r"\s+", " ", table_row["raw_context"] or "")
+    match = re.search(r"\(\s*([^()]*?기준)\s*\)\s*\(\s*(As of [^)]+)\s*\)", raw_context)
+    if not match:
+        return fallback
+    korean, english = match.groups()
+    return f"{korean.strip()}({english.strip()})"
+
+
+def metadata_unit_display(table_row: sqlite3.Row) -> str:
+    fallback = table_row["unit"] or "-"
+    raw_context = re.sub(r"\s+", " ", table_row["raw_context"] or "")
+    match = re.search(r"\(\s*단위\s*:\s*([^)]+?)\s*\)\s*\(\s*(Unit\s*:\s*[^)]+)\s*\)", raw_context)
+    if not match:
+        return fallback
+    unit, english = match.groups()
+    return f"{unit.strip()}({english.strip()})"
 
 
 def build_summary(

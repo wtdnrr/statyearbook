@@ -424,8 +424,25 @@ def row_sum_match_ratio(
     *,
     tolerance: float,
 ) -> tuple[float, int]:
+    passed_ratio, checked_count, _ = row_sum_match_summary(
+        table,
+        target_col,
+        operand_columns,
+        tolerance=tolerance,
+    )
+    return passed_ratio, checked_count
+
+
+def row_sum_match_summary(
+    table: ValidationTable,
+    target_col: int,
+    operand_columns: list[int],
+    *,
+    tolerance: float,
+) -> tuple[float, int, float]:
     checked = 0
     passed = 0
+    total_difference = 0.0
     for _, row in table.data_rows():
         current = cell_number(row, target_col)
         operands = [additive_cell_number(row, col_index) for col_index in operand_columns]
@@ -433,9 +450,11 @@ def row_sum_match_ratio(
             continue
         checked += 1
         expected = sum(value for value in operands if value is not None)
-        if abs(current - expected) <= tolerance:
+        difference = abs(current - expected)
+        total_difference += difference
+        if difference <= tolerance:
             passed += 1
-    return (passed / checked if checked else 0.0, checked)
+    return (passed / checked if checked else 0.0, checked, total_difference)
 
 
 def column_sum_match_ratio(
@@ -811,6 +830,16 @@ def best_row_sum_operand_columns(
         if len(group_operands) >= 2:
             candidates.append(group_operands)
 
+    same_leaf_operands = [
+        col_index
+        for col_index in numeric_columns
+        if col_index != target_col
+        and not is_total_column_candidate(table, col_index)
+        and normalize_text(leaf_header(table, col_index)) == normalize_text(leaf_header(table, target_col))
+    ]
+    if len(same_leaf_operands) >= 2:
+        candidates.append(same_leaf_operands)
+
     child_total_operands = [
         col_index
         for col_index in numeric_columns
@@ -855,23 +884,28 @@ def best_matching_row_sum_candidate(
     target_col: int,
     candidates: list[list[int]],
 ) -> tuple[list[int], float]:
-    scored_candidates: list[tuple[float, int, int, list[int]]] = []
+    scored_candidates: list[tuple[float, float, int, int, list[int]]] = []
     seen: set[tuple[int, ...]] = set()
     for operand_columns in candidates:
         key = tuple(operand_columns)
         if key in seen:
             continue
         seen.add(key)
-        passed_ratio, checked_count = row_sum_match_ratio(table, target_col, operand_columns, tolerance=1.0)
+        passed_ratio, checked_count, total_difference = row_sum_match_summary(
+            table,
+            target_col,
+            operand_columns,
+            tolerance=1.0,
+        )
         if checked_count < row_sum_minimum_checked_count(operand_columns) or passed_ratio < sum_profile_minimum_ratio(checked_count):
             continue
-        scored_candidates.append((passed_ratio, checked_count, -len(operand_columns), operand_columns))
+        scored_candidates.append((passed_ratio, -total_difference, checked_count, -len(operand_columns), operand_columns))
 
     if not scored_candidates:
         return [], 0.0
 
     best = max(scored_candidates)
-    return best[3], best[0]
+    return best[4], best[0]
 
 
 def row_sum_contiguous_candidates(target_col: int, operand_columns: list[int]) -> list[list[int]]:

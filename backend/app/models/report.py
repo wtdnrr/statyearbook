@@ -87,6 +87,8 @@ class TableMetadata(BaseModel):
     note: str
     source: str
     base_date: str
+    base_date_display: str
+    unit_display: str
     extracted_at: str
     header_count: int = 0
 

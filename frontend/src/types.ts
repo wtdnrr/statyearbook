@@ -80,6 +80,8 @@ export interface TableMetadata {
   note: string;
   source: string;
   base_date: string;
+  base_date_display: string;
+  unit_display: string;
   extracted_at: string;
   header_count?: number;
 }

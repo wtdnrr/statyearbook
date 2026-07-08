@@ -12,7 +12,10 @@ from typing import Iterable
 from app.db.schema import DB_PATH, connect, init_db
 from app.ingest.anomaly import annotate_adjacent_duplicate_tables
 from app.ingest.cell_text import split_cell_text
+from app.ingest.table_repairs import repair_region_split_rows
 from app.ingest.hwpx_importer import (
+    ENGLISH_ONLY_RE,
+    ENGLISH_TITLE_RE,
     TABLE_CODE_RE,
     append_unique,
     cell_range,
@@ -296,14 +299,14 @@ def extract_part_caption(matrix: list[list[str]]) -> tuple[list[list[str]], str,
 
 
 def split_bilingual_loose(text: str) -> tuple[str, str]:
-    cleaned = re.sub(r"\s+", " ", text).strip(" :;?")
+    cleaned = re.sub(r"\s+", " ", text).replace("\\~", "~").replace("᭼", "･").strip(" :;?")
     if not cleaned:
         return "", ""
 
-    match = re.search(r"([A-Za-z][A-Za-z0-9 ,&/().%·･+\-']{2,})$", cleaned)
+    match = ENGLISH_TITLE_RE.search(cleaned)
     if match and match.start() > 0:
         return cleaned[: match.start()].strip(), match.group(1).strip()
-    if re.fullmatch(r"[A-Za-z0-9 ,&/().%·･+\-']+", cleaned):
+    if ENGLISH_ONLY_RE.fullmatch(cleaned):
         return "", cleaned
     return cleaned, ""
 
@@ -682,7 +685,9 @@ def normalize_matrix_with_footnotes(parts: Iterable[TablePart]) -> tuple[list[li
         padded_rows,
         padded_footnote_rows,
     )
-    return merge_split_bilingual_label_column(normalized_rows, normalized_footnotes)
+    repaired_rows, repaired_footnotes = merge_split_bilingual_label_column(normalized_rows, normalized_footnotes)
+    repair_region_split_rows(repaired_rows, repaired_footnotes)
+    return repaired_rows, repaired_footnotes
 
 
 def normalize_matrix(parts: Iterable[TablePart]) -> list[list[str]]:

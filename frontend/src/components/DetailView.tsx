@@ -846,11 +846,11 @@ export function DetailView({ table, onBack }: DetailViewProps) {
                 <dl className="metadata-grid">
                   <div>
                     <dt>기준일</dt>
-                    <dd>{activePart.metadata.base_date}</dd>
+                    <dd>{activePart.metadata.base_date_display}</dd>
                   </div>
                   <div>
                     <dt>단위</dt>
-                    <dd>{activePart.unit}</dd>
+                    <dd>{activePart.metadata.unit_display}</dd>
                   </div>
                   <div>
                     <dt>최종 수정 일자</dt>
