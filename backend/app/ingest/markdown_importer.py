@@ -33,6 +33,8 @@ class TablePart:
     matrix: list[list[str]]
     raw_text: str
     source_kind: str
+    title: str = ""
+    title_en: str = ""
 
 
 @dataclass
@@ -258,13 +260,52 @@ def append_table_part(
     *,
     source_kind: str,
 ) -> None:
+    raw_text = table_raw_text(matrix)
+    matrix, part_title, part_title_en = extract_part_caption(matrix)
     matrix, notes, sources = extract_embedded_metadata_rows(matrix)
     for note in notes:
         append_unique(table.notes, note)
     for source in sources:
         append_unique(table.sources, source)
     if matrix:
-        table.parts.append(TablePart(matrix=matrix, raw_text=table_raw_text(matrix), source_kind=source_kind))
+        table.parts.append(
+            TablePart(
+                matrix=matrix,
+                raw_text=raw_text,
+                source_kind=source_kind,
+                title=part_title,
+                title_en=part_title_en,
+            )
+        )
+
+
+def extract_part_caption(matrix: list[list[str]]) -> tuple[list[list[str]], str, str]:
+    if not matrix:
+        return matrix, "", ""
+
+    first_row = matrix[0]
+    non_empty = [cell.strip() for cell in first_row if cell.strip()]
+    if not non_empty or not non_empty[0].startswith("▫"):
+        return matrix, "", ""
+
+    caption_text = re.sub(r"^▫\s*", "", non_empty[0]).strip()
+    caption_text = re.sub(r"\(\s*단위\s*:.*$", "", caption_text).strip()
+    title, title_en = split_bilingual_loose(caption_text)
+    remaining = drop_empty_columns(matrix[1:])
+    return remaining, title or caption_text, title_en
+
+
+def split_bilingual_loose(text: str) -> tuple[str, str]:
+    cleaned = re.sub(r"\s+", " ", text).strip(" :;?")
+    if not cleaned:
+        return "", ""
+
+    match = re.search(r"([A-Za-z][A-Za-z0-9 ,&/().%·･+\-']{2,})$", cleaned)
+    if match and match.start() > 0:
+        return cleaned[: match.start()].strip(), match.group(1).strip()
+    if re.fullmatch(r"[A-Za-z0-9 ,&/().%·･+\-']+", cleaned):
+        return "", cleaned
+    return cleaned, ""
 
 
 def drop_empty_columns(rows: list[list[str]]) -> list[list[str]]:
@@ -504,7 +545,8 @@ def parse_markdown(source_path: Path) -> list[LogicalTable]:
             html = "\n".join(block)
             matrix = html_table_matrix(html)
             if current and is_data_table(matrix) and not is_publication_info_table(matrix):
-                append_table_part(current, matrix, source_kind="html")
+                for part_matrix in split_embedded_caption_sections(matrix):
+                    append_table_part(current, part_matrix, source_kind="html")
             index += 1
             continue
 
@@ -515,7 +557,8 @@ def parse_markdown(source_path: Path) -> list[LogicalTable]:
                 index += 1
             matrix = markdown_table_matrix(block)
             if current and is_data_table(matrix) and not is_publication_info_table(matrix):
-                append_table_part(current, matrix, source_kind="markdown")
+                for part_matrix in split_embedded_caption_sections(matrix):
+                    append_table_part(current, part_matrix, source_kind="markdown")
             continue
 
         if line_is_title_candidate(line):
@@ -550,6 +593,42 @@ def parse_markdown(source_path: Path) -> list[LogicalTable]:
 
 def table_raw_text(matrix: list[list[str]]) -> str:
     return " ".join(cell for row in matrix for cell in row if cell)
+
+
+def split_embedded_caption_sections(matrix: list[list[str]]) -> list[list[list[str]]]:
+    sections: list[list[list[str]]] = []
+    current: list[list[str]] = []
+
+    for row in matrix:
+        if row_is_part_caption(row) and any(row_has_content(source_row) for source_row in current):
+            sections.append(trim_empty_edge_rows(current))
+            current = [row]
+            continue
+        current.append(row)
+
+    if any(row_has_content(row) for row in current):
+        sections.append(trim_empty_edge_rows(current))
+
+    return [section for section in sections if section]
+
+
+def row_has_content(row: list[str]) -> bool:
+    return any(cell.strip() for cell in row)
+
+
+def row_is_part_caption(row: list[str]) -> bool:
+    non_empty_cells = [cell.strip() for cell in row if cell.strip()]
+    return len(non_empty_cells) == 1 and non_empty_cells[0].startswith("▫")
+
+
+def trim_empty_edge_rows(rows: list[list[str]]) -> list[list[str]]:
+    start = 0
+    end = len(rows)
+    while start < end and not row_has_content(rows[start]):
+        start += 1
+    while end > start and not row_has_content(rows[end - 1]):
+        end -= 1
+    return rows[start:end]
 
 
 def is_publication_info_table(matrix: list[list[str]]) -> bool:
@@ -723,7 +802,7 @@ def split_table_by_part_structure(table: LogicalTable) -> list[LogicalTable]:
         split_tables.append(
             LogicalTable(
                 code=f"{table.code} 표{group_index}",
-                title=f"{table.title} 표 {group_index}",
+                title=table.title,
                 title_en=table.title_en,
                 section_title=table.section_title,
                 section_title_en=table.section_title_en,

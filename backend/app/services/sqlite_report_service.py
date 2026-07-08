@@ -161,8 +161,9 @@ class SQLiteReportService:
         matrix = matrix_from_cells(cells)
         footnote_matrix = footnote_matrix_from_cells(cells)
         header_count = header_count_from_cells(cells, matrix)
-        columns = build_columns(matrix, header_count)
-        rows = build_rows(matrix, columns, header_count, footnote_matrix)
+        label_column_indexes = leading_label_column_indexes(matrix, header_count)
+        columns = build_columns(matrix, header_count, label_column_indexes)
+        rows = build_rows(matrix, columns, header_count, footnote_matrix, label_column_indexes)
         table_id = f"db-{table_row['id']}"
         checks = build_validation_issues(connection, run_id, table_row["id"], header_count)
         status, status_label = status_from_checks(checks)
@@ -171,7 +172,7 @@ class SQLiteReportService:
             id=table_id,
             code=table_row["code"],
             title=table_row["title"],
-            title_en=table_row["title_en"],
+            title_en=part_title_en_from_table_row(table_row),
             section_title=table_row["section_title"],
             section_title_en=table_row["section_title_en"],
             domain=table_row["domain"],
@@ -182,7 +183,7 @@ class SQLiteReportService:
             year_range=str(report["year"]),
             updated_at=date_only(table_row["extracted_at"]),
             theme=theme_from_code(table_row["code"]),
-            part_label=part_label_from_code(table_row["code"]),
+            part_label=part_label_from_table_row(table_row),
             hierarchy=build_hierarchy(table_row),
             columns=columns,
             rows=rows,
@@ -451,6 +452,7 @@ def highlight_cells_for(row: sqlite3.Row, spec: dict[str, Any] | None) -> list[V
             ]
         )
         cells.extend(highlight_cell(row_index, denominator_col, "related") for denominator_col in denominator_columns)
+        cells.extend(highlight_cell(row_index, dependency_col, "related") for dependency_col in spec_columns(spec, "dependency_columns"))
     elif rule_type == "column_share_ratio":
         target_col = int(spec.get("target_column", col_index if col_index is not None else -1))
         numerator_col = int(spec.get("numerator_column", -1))
@@ -520,6 +522,19 @@ def highlight_cells_for(row: sqlite3.Row, spec: dict[str, Any] | None) -> list[V
                 highlight_cell(previous_row, value_col, "related"),
             ]
         )
+    elif rule_type == "year_rows_change_amount":
+        value_col = int(spec.get("value_column", -1))
+        change_col = int(spec.get("change_column", col_index if col_index is not None else -1))
+        row_indices = sorted(spec_rows(spec, "row_indices"))
+        previous_rows = [candidate for candidate in row_indices if row_index is not None and candidate < row_index]
+        previous_row = previous_rows[-1] if previous_rows else None
+        cells.extend(
+            [
+                highlight_cell(row_index, change_col, "target"),
+                highlight_cell(row_index, value_col, "related"),
+                highlight_cell(previous_row, value_col, "related"),
+            ]
+        )
     elif rule_type in {
         "spelling_static",
         "translation_static",
@@ -551,6 +566,7 @@ def highlight_rows_for(row: sqlite3.Row, spec: dict[str, Any] | None) -> list[Va
         "row_ratio_by_rows",
         "row_year_over_year_rate",
         "year_rows_change_rate",
+        "year_rows_change_amount",
     }:
         return []
 
@@ -573,7 +589,7 @@ def highlight_scope_for(row: sqlite3.Row, spec: dict[str, Any] | None, header_co
         return "metadata"
     if row_index is not None and row_index < header_count:
         return "header"
-    if rule_type in {"row_sum", "row_arithmetic", "row_ratio", "column_share_ratio", "row_growth_rate"}:
+    if rule_type in {"row_sum", "row_arithmetic", "row_ratio", "column_share_ratio", "row_growth_rate", "year_rows_change_amount"}:
         return "row"
     if rule_type in {"column_sum", "region_total", "row_ratio_by_rows"}:
         return "column"
@@ -633,6 +649,36 @@ def part_label_from_code(code: str) -> str | None:
     return f"표{match.group(1)}" if match else None
 
 
+def part_caption_from_raw_context(raw_context: str) -> tuple[str, str | None]:
+    match = re.search(r"▫\s*([^()]+?)(?:\s*\(|$)", raw_context)
+    if not match:
+        return "", None
+    caption = re.sub(r"\s+", " ", match.group(1)).strip()
+    caption = restore_hyphenated_line_breaks(caption)
+    title = clean_label(caption)
+    title_en = english_label(caption)
+    return title or caption, title_en
+
+
+def part_label_from_table_row(table_row: sqlite3.Row) -> str | None:
+    base_label = part_label_from_code(table_row["code"])
+    if not base_label:
+        return None
+    caption, _ = part_caption_from_raw_context(table_row["raw_context"] or "")
+    return f"{base_label} · {caption}" if caption else base_label
+
+
+def part_title_en_from_table_row(table_row: sqlite3.Row) -> str:
+    _, title_en = part_caption_from_raw_context(table_row["raw_context"] or "")
+    return title_en or table_row["title_en"]
+
+
+def part_title_from_label(part_label: str | None, fallback: str) -> str:
+    if part_label and "·" in part_label:
+        return part_label.split("·", 1)[1].strip()
+    return fallback
+
+
 def strip_part_suffix(value: str) -> str:
     return PART_SUFFIX_RE.sub("", value).strip()
 
@@ -675,7 +721,7 @@ def table_to_part(table: StatTable) -> StatTablePart:
     return StatTablePart(
         id=table.id,
         code=table.code,
-        title=strip_part_suffix(table.title),
+        title=part_title_from_label(table.part_label, strip_part_suffix(table.title)),
         title_en=table.title_en,
         part_label=table.part_label or "표",
         unit=table.unit,
@@ -689,6 +735,14 @@ def table_to_part(table: StatTable) -> StatTablePart:
         visualizations=table.visualizations,
         metadata=table.metadata,
     )
+
+
+def group_title_en(table: StatTable) -> str:
+    if table.hierarchy:
+        title_en = table.hierarchy[-1].title_en
+        if title_en:
+            return title_en
+    return table.title_en
 
 
 def combined_status(tables: list[StatTable]) -> tuple[str, str]:
@@ -729,6 +783,7 @@ def group_table_parts(tables: list[StatTable]) -> list[StatTable]:
                     "id": f"group-{base_code}",
                     "code": base_code,
                     "title": strip_part_suffix(first.title),
+                    "title_en": group_title_en(first),
                     "status": status,
                     "status_label": status_label,
                     "checks": combined_checks,
@@ -773,8 +828,40 @@ def footnote_matrix_from_cells(cells: list[sqlite3.Row]) -> list[list[str]]:
 def header_count_from_cells(cells: list[sqlite3.Row], matrix: list[list[str]]) -> int:
     header_rows = {cell["row_index"] for cell in cells if cell["is_header"]}
     if header_rows:
-        return max(header_rows) + 1
-    return 1 if matrix else 0
+        return display_header_count_from_matrix(matrix, max(header_rows) + 1)
+    return display_header_count_from_matrix(matrix, 1 if matrix else 0)
+
+
+def display_header_count_from_matrix(matrix: list[list[str]], stored_header_count: int) -> int:
+    header_count = stored_header_count
+    max_header_count = min(len(matrix), 5)
+    while header_count < max_header_count and row_looks_like_header_continuation(matrix[header_count]):
+        header_count += 1
+    return header_count
+
+
+def row_looks_like_header_continuation(row: list[str]) -> bool:
+    non_empty = [cell.strip() for cell in row if cell.strip()]
+    if len(non_empty) < 2:
+        return False
+    numeric_count = sum(1 for value in non_empty if parse_numeric(value) is not None)
+    if numeric_count:
+        return False
+    joined = " ".join(non_empty).lower()
+    return bool(
+        re.search(
+            r"구분|분류|순위|국가명|지\s*수|지역|연도|항목|계|classification|ranking|country|index|year|total",
+            joined,
+        )
+    )
+
+
+def row_is_caption_metadata(row: list[str]) -> bool:
+    non_empty = [cell.strip() for cell in row if cell.strip()]
+    if not non_empty:
+        return False
+    first = non_empty[0]
+    return first.startswith("▫") or first.startswith("※")
 
 
 def clean_label(text: str) -> str:
@@ -798,34 +885,201 @@ def english_label(text: str) -> str | None:
     return value or None
 
 
-def build_columns(matrix: list[list[str]], header_count: int) -> list[ColumnDefinition]:
+def inherited_header_value(header_row: list[str], col_index: int) -> str:
+    if col_index < len(header_row) and header_row[col_index].strip():
+        return header_row[col_index]
+    for left_col_index in range(col_index - 1, -1, -1):
+        if left_col_index < len(header_row) and header_row[left_col_index].strip():
+            return header_row[left_col_index]
+    return ""
+
+
+def header_text_for_column(matrix: list[list[str]], header_count: int, col_index: int) -> str:
+    values = [
+        row[col_index]
+        for row in matrix[:header_count]
+        if col_index < len(row) and row[col_index].strip()
+    ]
+    return " ".join(values)
+
+
+def looks_like_year_label_column(matrix: list[list[str]], header_count: int, col_index: int, values: list[str]) -> bool:
+    header = header_text_for_column(matrix, header_count, col_index).lower()
+    if "연도" not in header and "year" not in header:
+        return False
+    if not values:
+        return False
+    year_like_count = sum(1 for value in values if re.fullmatch(r"[’']?\d{2,4}", value.strip()))
+    return year_like_count / len(values) >= 0.7
+
+
+def leading_label_column_indexes(matrix: list[list[str]], header_count: int) -> list[int]:
+    data_rows = [row for row in matrix[header_count:] if any(cell.strip() for cell in row)]
+    max_cols = max((len(row) for row in matrix), default=0)
+    label_indexes: list[int] = []
+
+    for col_index in range(max_cols):
+        values = [
+            row[col_index].strip()
+            for row in data_rows
+            if col_index < len(row) and row[col_index].strip()
+        ]
+        if not values:
+            if label_indexes:
+                label_indexes.append(col_index)
+                continue
+            break
+
+        numeric_count = sum(1 for value in values if parse_numeric(value) is not None)
+        numeric_ratio = numeric_count / len(values)
+        if col_index == 0 and looks_like_year_label_column(matrix, header_count, col_index, values):
+            label_indexes.append(col_index)
+            continue
+        if numeric_ratio <= 0.25:
+            label_indexes.append(col_index)
+            continue
+        break
+
+    if len(label_indexes) > 3:
+        return [0]
+
+    if len(label_indexes) > 1:
+        has_measure_column = any(
+            any(
+                col_index < len(row) and parse_numeric(row[col_index].strip()) is not None
+                for row in data_rows
+            )
+            for col_index in range(label_indexes[-1] + 1, max_cols)
+        )
+        if not has_measure_column:
+            return [0]
+
+    return label_indexes or [0]
+
+
+def label_path_for_row(row: list[str], label_column_indexes: list[int], target_col_index: int) -> str:
+    parts: list[str] = []
+    for col_index in label_column_indexes:
+        if col_index > target_col_index or col_index >= len(row):
+            continue
+        label = clean_label(row[col_index])
+        if label and label not in parts:
+            parts.append(label)
+    return " / ".join(parts)
+
+
+def english_label_path_for_row(row: list[str], label_column_indexes: list[int], target_col_index: int) -> str | None:
+    parts: list[str] = []
+    for col_index in label_column_indexes:
+        if col_index > target_col_index or col_index >= len(row):
+            continue
+        label = english_label(row[col_index])
+        if label and label not in parts:
+            parts.append(label)
+    return " / ".join(parts) if parts else None
+
+
+def inferred_label_column_text(
+    matrix: list[list[str]],
+    header_count: int,
+    label_column_indexes: list[int],
+    col_index: int,
+) -> tuple[str, str | None]:
+    if col_index not in label_column_indexes:
+        return "", None
+
+    for row in matrix[header_count:]:
+        if col_index >= len(row) or not row[col_index].strip():
+            continue
+        label = label_path_for_row(row, label_column_indexes, col_index)
+        if label:
+            return label, english_label_path_for_row(row, label_column_indexes, col_index)
+    return "", None
+
+
+def should_collapse_label_columns(label_column_indexes: list[int]) -> bool:
+    return len(label_column_indexes) > 1 and label_column_indexes == list(range(len(label_column_indexes)))
+
+
+def display_source_columns(max_cols: int, label_column_indexes: list[int]) -> list[list[int]]:
+    if not should_collapse_label_columns(label_column_indexes):
+        return [[col_index] for col_index in range(max_cols)]
+
+    hidden_label_columns = set(label_column_indexes[1:])
+    return [
+        label_column_indexes if col_index == label_column_indexes[0] else [col_index]
+        for col_index in range(max_cols)
+        if col_index not in hidden_label_columns
+    ]
+
+
+def header_rows_for_labels(matrix: list[list[str]], header_count: int) -> list[list[str]]:
+    return [row for row in matrix[:header_count] if not row_is_caption_metadata(row)]
+
+
+def has_display_data(matrix: list[list[str]], header_count: int, col_index: int) -> bool:
+    return any(
+        col_index < len(row) and row[col_index].strip()
+        for row in matrix[header_count:]
+    )
+
+
+def has_display_header(header_rows: list[list[str]], col_index: int) -> bool:
+    return any(col_index < len(row) and row[col_index].strip() for row in header_rows)
+
+
+def build_columns(
+    matrix: list[list[str]],
+    header_count: int,
+    label_column_indexes: list[int] | None = None,
+) -> list[ColumnDefinition]:
     if not matrix:
         return []
 
     max_cols = max((len(row) for row in matrix), default=0)
-    header_rows = matrix[:header_count] if header_count else []
+    header_rows = header_rows_for_labels(matrix, header_count) if header_count else []
+    label_column_indexes = label_column_indexes or leading_label_column_indexes(matrix, header_count)
     columns: list[ColumnDefinition] = []
 
-    for col_index in range(max_cols):
+    for source_col_indexes in display_source_columns(max_cols, label_column_indexes):
+        col_index = source_col_indexes[0]
+        if (
+            col_index not in label_column_indexes
+            and not has_display_data(matrix, header_count, col_index)
+            and not has_display_header(header_rows, col_index)
+        ):
+            continue
         label_parts: list[str] = []
         english_parts: list[str] = []
+        inferred_label, inferred_label_en = ("", None) if len(source_col_indexes) > 1 else inferred_label_column_text(
+            matrix,
+            header_count,
+            label_column_indexes,
+            col_index,
+        )
         for header_row in header_rows:
-            value = header_row[col_index] if col_index < len(header_row) else ""
-            label = clean_label(value)
-            if label and label not in label_parts:
-                label_parts.append(label)
-            en = english_label(value)
-            if en and en not in english_parts:
-                english_parts.append(en)
+            for header_col_index in source_col_indexes:
+                value = header_row[header_col_index] if header_col_index < len(header_row) else ""
+                if not value.strip() and not inferred_label:
+                    value = inherited_header_value(header_row, header_col_index)
+                label = clean_label(value)
+                if label and label not in label_parts:
+                    label_parts.append(label)
+                en = english_label(value)
+                if en and en not in english_parts:
+                    english_parts.append(en)
 
-        label = " / ".join(label_parts) or f"열 {col_index + 1}"
+        label = " / ".join(label_parts) or inferred_label or f"열 {col_index + 1}"
+        label_en = " / ".join(english_parts) if english_parts else inferred_label_en
         columns.append(
             ColumnDefinition(
                 key=f"c{col_index}",
                 label=label,
-                label_en=" / ".join(english_parts) if english_parts else None,
+                label_en=label_en,
                 align="left" if col_index == 0 else "right",
                 width="24%" if col_index == 0 else None,
+                source_col_index=col_index,
+                source_col_indexes=source_col_indexes,
             )
         )
 
@@ -837,17 +1091,33 @@ def build_rows(
     columns: list[ColumnDefinition],
     header_count: int,
     footnote_matrix: list[list[str]] | None = None,
+    label_column_indexes: list[int] | None = None,
 ) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
+    label_column_indexes = label_column_indexes or leading_label_column_indexes(matrix, header_count)
     for matrix_row_index, source_row in enumerate(matrix[header_count:], start=header_count):
         if not any(cell for cell in source_row):
             continue
 
         row: dict[str, Any] = {}
         row["_row_index"] = matrix_row_index
-        for col_index, column in enumerate(columns):
-            value = source_row[col_index] if col_index < len(source_row) else ""
+        row["_row_label"] = label_path_for_row(
+            source_row,
+            label_column_indexes,
+            label_column_indexes[-1] if label_column_indexes else 0,
+        )
+        row["_row_label_en"] = english_label_path_for_row(
+            source_row,
+            label_column_indexes,
+            label_column_indexes[-1] if label_column_indexes else 0,
+        ) or ""
+        for column in columns:
+            col_index = column.source_col_index if column.source_col_index is not None else int(column.key[1:])
+            is_collapsed_label_column = len(column.source_col_indexes) > 1
+            value = row["_row_label"] if is_collapsed_label_column else (source_row[col_index] if col_index < len(source_row) else "")
             row[column.key] = coerce_display_value(value)
+            if is_collapsed_label_column and row["_row_label_en"]:
+                row[f"{column.key}_en"] = row["_row_label_en"]
             footnote = (
                 footnote_matrix[matrix_row_index][col_index]
                 if footnote_matrix and matrix_row_index < len(footnote_matrix) and col_index < len(footnote_matrix[matrix_row_index])

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import hashlib
+from itertools import combinations
 import json
 import re
 from typing import Any, Protocol
@@ -554,6 +555,10 @@ def numeric_cell_count(table: ValidationTable, col_index: int) -> int:
     return sum(1 for _, row in table.data_rows() if cell_number(row, col_index) is not None)
 
 
+def additive_cell_count(table: ValidationTable, col_index: int) -> int:
+    return sum(1 for _, row in table.data_rows() if additive_cell_number(row, col_index) is not None)
+
+
 def target_ratio_tolerance(table: ValidationTable, target_col: int, multiplier: float) -> float:
     if multiplier != 100:
         return 0.001
@@ -744,7 +749,9 @@ def infer_total_column_rules(table: ValidationTable) -> list[dict[str, Any]]:
     numeric_columns = [
         col_index
         for col_index in range(column_count(table))
-        if col_index not in label_columns and is_additive_column_label(table.column_text(col_index))
+        if col_index not in label_columns
+        and is_additive_column_label(table.column_text(col_index))
+        and additive_cell_count(table, col_index) >= 1
     ]
     specs: list[dict[str, Any]] = []
     for target_col in numeric_columns:
@@ -755,7 +762,7 @@ def infer_total_column_rules(table: ValidationTable) -> list[dict[str, Any]]:
         if not operand_columns:
             continue
         passed_ratio, checked_count = row_sum_match_ratio(table, target_col, operand_columns, tolerance=1.0)
-        if checked_count < 3 or passed_ratio < 0.8:
+        if checked_count < row_sum_minimum_checked_count(operand_columns) or passed_ratio < sum_profile_minimum_ratio(checked_count):
             continue
         specs.append(
             rule_spec(
@@ -768,7 +775,7 @@ def infer_total_column_rules(table: ValidationTable) -> list[dict[str, Any]]:
                 "target_column": target_col,
                 "operand_columns": operand_columns,
                 "tolerance": 1.0,
-                "confidence": 0.95 if passed_ratio >= 0.95 else 0.9,
+                "confidence": sum_profile_confidence(passed_ratio),
                 },
             )
         )
@@ -820,6 +827,34 @@ def best_row_sum_operand_columns(
     if len(all_leaf_operands) >= 2:
         candidates.append(all_leaf_operands)
 
+    best_candidate, best_ratio = best_matching_row_sum_candidate(table, target_col, candidates)
+    if best_candidate and best_ratio >= 0.95:
+        return best_candidate
+
+    contiguous_candidates = row_sum_contiguous_candidates(target_col, all_leaf_operands)
+    best_contiguous, contiguous_ratio = best_matching_row_sum_candidate(table, target_col, contiguous_candidates)
+    if best_contiguous and contiguous_ratio >= 0.95:
+        return best_contiguous
+
+    combination_candidates = row_sum_combination_candidates(all_leaf_operands)
+    fallback_candidates = [
+        candidate
+        for candidate in [best_candidate, best_contiguous]
+        if candidate
+    ]
+    best_candidate, _ = best_matching_row_sum_candidate(
+        table,
+        target_col,
+        [*fallback_candidates, *combination_candidates],
+    )
+    return best_candidate or []
+
+
+def best_matching_row_sum_candidate(
+    table: ValidationTable,
+    target_col: int,
+    candidates: list[list[int]],
+) -> tuple[list[int], float]:
     scored_candidates: list[tuple[float, int, int, list[int]]] = []
     seen: set[tuple[int, ...]] = set()
     for operand_columns in candidates:
@@ -828,14 +863,40 @@ def best_row_sum_operand_columns(
             continue
         seen.add(key)
         passed_ratio, checked_count = row_sum_match_ratio(table, target_col, operand_columns, tolerance=1.0)
-        if checked_count < 3 or passed_ratio < 0.8:
+        if checked_count < row_sum_minimum_checked_count(operand_columns) or passed_ratio < sum_profile_minimum_ratio(checked_count):
             continue
         scored_candidates.append((passed_ratio, checked_count, -len(operand_columns), operand_columns))
 
     if not scored_candidates:
-        return []
+        return [], 0.0
 
-    return max(scored_candidates)[3]
+    best = max(scored_candidates)
+    return best[3], best[0]
+
+
+def row_sum_contiguous_candidates(target_col: int, operand_columns: list[int]) -> list[list[int]]:
+    candidates: list[list[int]] = []
+    ordered = sorted(operand_columns)
+    for start in range(len(ordered)):
+        for end in range(start + 2, len(ordered) + 1):
+            candidate = ordered[start:end]
+            if target_col < candidate[0] or target_col > candidate[-1] or abs(target_col - candidate[-1]) <= 3:
+                candidates.append(candidate)
+    return candidates
+
+
+def row_sum_combination_candidates(operand_columns: list[int]) -> list[list[int]]:
+    if len(operand_columns) > 10:
+        return []
+    candidates: list[list[int]] = []
+    max_size = min(len(operand_columns), 7)
+    for size in range(2, max_size + 1):
+        candidates.extend([list(candidate) for candidate in combinations(operand_columns, size)])
+    return candidates
+
+
+def row_sum_minimum_checked_count(operand_columns: list[int]) -> int:
+    return 1 if len(operand_columns) >= 3 else 2
 
 
 def row_sum_rule_label(table: ValidationTable, target_col: int, operand_columns: list[int]) -> str:
@@ -862,63 +923,197 @@ def infer_total_row_rules(table: ValidationTable) -> list[dict[str, Any]]:
     columns = [
         col_index
         for col_index in range(column_count(table))
-        if col_index not in label_columns and is_additive_column_label(table.column_text(col_index))
+        if col_index not in label_columns
+        and is_additive_column_label(table.column_text(col_index))
+        and additive_cell_count(table, col_index) >= 1
     ]
     specs: list[dict[str, Any]] = []
     for position, (target_row_index, row) in enumerate(rows):
         row_label = combined_row_label(table, row)
         kind = row_total_kind(table, row)
-        if kind is None:
+        section_total = is_section_total_row_candidate(table, row)
+        if kind is None and not section_total:
             continue
-        window: list[tuple[int, list]] = []
-        for row_index, operand_row in rows[position + 1 :]:
-            operand_kind = row_total_kind(table, operand_row)
-            if kind == "subtotal" and operand_kind is not None:
-                break
-            if kind == "total" and operand_kind == "total":
-                break
-            window.append((row_index, operand_row))
-
-        if kind == "total":
-            subtotal_rows = [row_index for row_index, operand_row in window if row_total_kind(table, operand_row) == "subtotal"]
-            operand_rows = (
-                subtotal_rows
-                if len(subtotal_rows) >= 2
-                else [
-                    row_index
-                    for row_index, operand_row in window
-                    if row_total_kind(table, operand_row) is None and not is_calculation_row_label(table, operand_row)
-                ]
+        for candidate_index, operand_rows in enumerate(candidate_total_operand_rows(table, rows, position, kind, section_total)):
+            if len(operand_rows) < 2 or not columns:
+                continue
+            passed_ratio, checked_count = column_sum_match_ratio(table, target_row_index, operand_rows, columns, tolerance=1.0)
+            force_year_total = clear_year_total_candidate(table, kind, operand_rows, checked_count)
+            if checked_count < 2 or (passed_ratio < sum_profile_minimum_ratio(checked_count) and not force_year_total):
+                continue
+            specs.append(
+                rule_spec(
+                    "sum",
+                    {
+                        "id": f"profile.{table.code}.column_total_r{target_row_index}_{candidate_index + 1}",
+                        "type": "column_sum",
+                        "category": "template",
+                        "label": f"{clean_display_text(row_label)} = 하위 행 합계",
+                        "target_row": target_row_index,
+                        "operand_rows": operand_rows,
+                        "columns": columns,
+                        "tolerance": 1.0,
+                        "confidence": 0.65 if force_year_total and passed_ratio < sum_profile_minimum_ratio(checked_count) else sum_profile_confidence(passed_ratio),
+                    },
+                )
             )
-        else:
-            operand_rows = [
-                row_index
-                for row_index, operand_row in window
-                if row_total_kind(table, operand_row) is None and not is_calculation_row_label(table, operand_row)
-            ]
-
-        if len(operand_rows) < 2 or not columns:
-            continue
-        passed_ratio, checked_count = column_sum_match_ratio(table, target_row_index, operand_rows, columns, tolerance=1.0)
-        if checked_count < 2 or passed_ratio < 0.8:
-            continue
-        specs.append(
-            rule_spec(
-                "sum",
-                {
-                "id": f"profile.{table.code}.column_total_r{target_row_index}",
-                "type": "column_sum",
-                "category": "template",
-                "label": f"{clean_display_text(row_label)} = 하위 행 합계",
-                "target_row": target_row_index,
-                "operand_rows": operand_rows,
-                "columns": columns,
-                "tolerance": 1.0,
-                "confidence": 0.96 if passed_ratio >= 0.95 else 0.9,
-                },
-            )
-        )
     return specs
+
+
+def sum_profile_minimum_ratio(checked_count: int) -> float:
+    return 0.6 if checked_count >= 3 else 0.8
+
+
+def sum_profile_confidence(passed_ratio: float) -> float:
+    if passed_ratio >= 0.95:
+        return 0.96
+    if passed_ratio >= 0.8:
+        return 0.9
+    return 0.76
+
+
+def clear_year_total_candidate(
+    table: ValidationTable,
+    kind: str | None,
+    operand_rows: list[int],
+    checked_count: int,
+) -> bool:
+    if kind != "total" or checked_count < 2 or len(operand_rows) < 4:
+        return False
+    labels = [
+        normalize_text(combined_row_label(table, table.matrix[row_index]) or table.row_label(table.matrix[row_index]))
+        for row_index in operand_rows
+        if row_index < len(table.matrix)
+    ]
+    year_labels = [label for label in labels if re.fullmatch(r"\d{4}", label)]
+    return len(year_labels) >= 4 and len(year_labels) / len(labels) >= 0.8
+
+
+def candidate_total_operand_rows(
+    table: ValidationTable,
+    rows: list[tuple[int, list]],
+    position: int,
+    kind: str | None,
+    section_total: bool,
+) -> list[list[int]]:
+    target_row_index, _ = rows[position]
+    following = following_rows_for_total_candidate(table, rows, position, kind, section_total)
+    candidates: list[list[int]] = []
+
+    immediate_rows: list[int] = []
+    for row_index, row in following:
+        if row_total_kind(table, row) is not None or is_section_total_row_candidate(table, row):
+            break
+        if additive_operand_row(table, row):
+            immediate_rows.append(row_index)
+    if len(immediate_rows) >= 2:
+        candidates.append(immediate_rows)
+
+    aggregate_rows = [
+        row_index
+        for row_index, row in following
+        if row_index != target_row_index
+        and (row_total_kind(table, row) == "subtotal" or is_section_total_row_candidate(table, row))
+        and additive_operand_row(table, row)
+    ]
+    if len(aggregate_rows) >= 2:
+        candidates.append(aggregate_rows)
+
+    group_rows: dict[str, list[int]] = {}
+    for row_index, row in following:
+        if row_total_kind(table, row) is not None or is_section_total_row_candidate(table, row):
+            continue
+        if not additive_operand_row(table, row):
+            continue
+        group_key = row_group_key(table, row)
+        if not group_key:
+            continue
+        group_rows.setdefault(group_key, []).append(row_index)
+    for operand_rows in group_rows.values():
+        if len(operand_rows) >= 2:
+            candidates.append(operand_rows)
+
+    all_detail_rows = [
+        row_index
+        for row_index, row in following
+        if row_total_kind(table, row) is None
+        and not is_section_total_row_candidate(table, row)
+        and additive_operand_row(table, row)
+    ]
+    if len(all_detail_rows) >= 2:
+        candidates.append(all_detail_rows)
+
+    return unique_row_candidates(candidates)
+
+
+def following_rows_for_total_candidate(
+    table: ValidationTable,
+    rows: list[tuple[int, list]],
+    position: int,
+    kind: str | None,
+    section_total: bool,
+) -> list[tuple[int, list]]:
+    following: list[tuple[int, list]] = []
+    for row_index, row in rows[position + 1 :]:
+        operand_kind = row_total_kind(table, row)
+        operand_section_total = is_section_total_row_candidate(table, row)
+        if kind == "subtotal" and (operand_kind is not None or operand_section_total):
+            break
+        if section_total and (operand_kind is not None or operand_section_total):
+            break
+        if kind == "total" and operand_kind == "total":
+            break
+        following.append((row_index, row))
+    return following
+
+
+def unique_row_candidates(candidates: list[list[int]]) -> list[list[int]]:
+    unique: list[list[int]] = []
+    seen: set[tuple[int, ...]] = set()
+    for candidate in candidates:
+        key = tuple(candidate)
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(candidate)
+    return unique
+
+
+def additive_operand_row(table: ValidationTable, row: list) -> bool:
+    label = combined_row_label(table, row) or table.row_label(row)
+    normalized = normalize_text(label)
+    if is_calculation_row_label(table, row):
+        return False
+    if any(keyword in normalized for keyword in ("평균", "평균액", "average", "mean")):
+        return False
+    return row_numeric_cell_count(table, row) >= 1
+
+
+def row_numeric_cell_count(table: ValidationTable, row: list) -> int:
+    label_columns = set(leading_label_columns(table))
+    return sum(
+        1
+        for col_index in range(column_count(table))
+        if col_index not in label_columns and cell_number(row, col_index) is not None
+    )
+
+
+def row_group_key(table: ValidationTable, row: list) -> str:
+    label_columns = leading_label_columns(table)
+    if not label_columns:
+        return ""
+    return normalize_text(cell_text_at(row, label_columns[0]))
+
+
+def is_section_total_row_candidate(table: ValidationTable, row: list) -> bool:
+    if row_total_kind(table, row) is not None:
+        return False
+    if row_numeric_cell_count(table, row) < 1:
+        return False
+    label_columns = leading_label_columns(table)
+    first_label = cell_text_at(row, label_columns[0] if label_columns else 0)
+    cleaned = clean_display_text(first_label)
+    return bool(re.match(r"^\d+\s*[.)]", cleaned))
 
 
 def dedupe_check_specs(checks: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -1046,14 +1241,44 @@ def infer_header_formula_rules(table: ValidationTable) -> list[dict[str, Any]]:
                 rule_spec(
                     "sum",
                     {
-                    "id": f"profile.{table.code}.{target_symbol}_arithmetic",
-                    "type": "row_arithmetic",
-                    "category": "table",
-                    "label": f"{target_symbol}={match.group(2).replace(' ', '')}",
-                    "target_column": target_col,
-                    "terms": terms,
-                    "tolerance": 0.5,
-                    "confidence": 0.98,
+                        "id": f"profile.{table.code}.{target_symbol}_arithmetic",
+                        "type": "row_arithmetic",
+                        "category": "table",
+                        "label": f"{target_symbol}={match.group(2).replace(' ', '')}",
+                        "target_column": target_col,
+                        "terms": terms,
+                        "tolerance": 0.5,
+                        "confidence": 0.98,
+                    },
+                )
+            )
+
+        for match in re.finditer(r"\(([a-z](?:\s*[+-]\s*[a-z])+)\)", label, re.IGNORECASE):
+            if is_ratio_denominator_expression(label, match.start()):
+                continue
+            expression = match.group(1)
+            terms = expression_terms(expression, symbol_to_column)
+            if not terms:
+                continue
+            key = ("arithmetic", col_index)
+            if key in seen:
+                continue
+            seen.add(key)
+            clean_expression = expression.replace(" ", "").lower()
+            check_type = "증감액 검수" if is_change_amount_label(label) else "합계 검수"
+            rules.append(
+                rule_spec(
+                    "sum",
+                    {
+                        "id": f"profile.{table.code}.c{col_index}_arithmetic",
+                        "type": "row_arithmetic",
+                        "category": "table",
+                        "check_type": check_type,
+                        "label": f"{leaf_header(table, col_index)} = {clean_expression}",
+                        "target_column": col_index,
+                        "terms": terms,
+                        "tolerance": 0.5,
+                        "confidence": 0.98,
                     },
                 )
             )
@@ -1069,20 +1294,24 @@ def infer_header_formula_rules(table: ValidationTable) -> list[dict[str, Any]]:
             if key in seen:
                 continue
             seen.add(key)
+            dependency_columns = arithmetic_dependency_columns(table, numerator_col, symbol_to_column)
+            dependency_columns.extend(arithmetic_dependency_columns(table, denominator_col, symbol_to_column))
+            dependency_columns = unique_ints(dependency_columns)
             rules.append(
                 rule_spec(
                     "ratio",
                     {
-                    "id": f"profile.{table.code}.{numerator_symbol}_{denominator_symbol}_ratio",
-                    "type": "row_ratio",
-                    "category": "table",
-                    "label": f"{numerator_symbol}/{denominator_symbol}*100",
-                    "target_column": col_index,
-                    "numerator_column": numerator_col,
-                    "denominator_column": denominator_col,
-                    "multiplier": 100,
-                    "tolerance": 0.15,
-                    "confidence": 0.98,
+                        "id": f"profile.{table.code}.{numerator_symbol}_{denominator_symbol}_ratio",
+                        "type": "row_ratio",
+                        "category": "table",
+                        "label": f"{numerator_symbol}/{denominator_symbol}*100",
+                        "target_column": col_index,
+                        "numerator_column": numerator_col,
+                        "denominator_column": denominator_col,
+                        "multiplier": 100,
+                        "tolerance": 0.15,
+                        "confidence": 0.98,
+                        "dependency_columns": dependency_columns,
                     },
                 )
             )
@@ -1102,20 +1331,25 @@ def infer_header_formula_rules(table: ValidationTable) -> list[dict[str, Any]]:
             if key in seen:
                 continue
             seen.add(key)
+            dependency_columns = arithmetic_dependency_columns(table, numerator_col, symbol_to_column)
+            for denominator_col in denominator_columns:
+                dependency_columns.extend(arithmetic_dependency_columns(table, denominator_col, symbol_to_column))
+            dependency_columns = unique_ints(dependency_columns)
             rules.append(
                 rule_spec(
                     "ratio",
                     {
-                    "id": f"profile.{table.code}.{numerator_symbol}_sum_ratio_c{col_index}",
-                    "type": "row_ratio",
-                    "category": "table",
-                    "label": f"{numerator_symbol}/({denominator_expression})*100",
-                    "target_column": col_index,
-                    "numerator_column": numerator_col,
-                    "denominator_columns": denominator_columns,
-                    "multiplier": 100,
-                    "tolerance": target_ratio_tolerance(table, col_index, 100),
-                    "confidence": 0.98,
+                        "id": f"profile.{table.code}.{numerator_symbol}_sum_ratio_c{col_index}",
+                        "type": "row_ratio",
+                        "category": "table",
+                        "label": f"{numerator_symbol}/({denominator_expression})*100",
+                        "target_column": col_index,
+                        "numerator_column": numerator_col,
+                        "denominator_columns": denominator_columns,
+                        "multiplier": 100,
+                        "tolerance": target_ratio_tolerance(table, col_index, 100),
+                        "confidence": 0.98,
+                        "dependency_columns": dependency_columns,
                     },
                 )
             )
@@ -1186,6 +1420,9 @@ def infer_same_row_ratio_rules(table: ValidationTable) -> list[dict[str, Any]]:
             continue
 
         passed_ratio, checked_count, _, _, numerator_col, denominator_col, multiplier = max(candidates)
+        dependency_columns = arithmetic_dependency_columns(table, numerator_col)
+        dependency_columns.extend(arithmetic_dependency_columns(table, denominator_col))
+        dependency_columns = unique_ints(dependency_columns)
         specs.append(
             rule_spec(
                 "ratio",
@@ -1201,6 +1438,7 @@ def infer_same_row_ratio_rules(table: ValidationTable) -> list[dict[str, Any]]:
                     "tolerance": target_ratio_tolerance(table, target_col, multiplier),
                     "confidence": 0.97 if passed_ratio >= 0.95 else 0.9,
                     "matched_rows": checked_count,
+                    "dependency_columns": dependency_columns,
                 },
             )
         )
@@ -1447,6 +1685,24 @@ def infer_year_rows_change_rate_rules(table: ValidationTable) -> list[dict[str, 
     if len(row_indices) < 3:
         return []
 
+    if change_col is not None and rate_col_looks_like_same_row_share(table, rate_col, change_col, value_col):
+        return [
+            rule_spec(
+                "growth_rate",
+                {
+                    "id": f"profile.{table.code}.year_rows_change_amount_c{change_col}",
+                    "type": "year_rows_change_amount",
+                    "category": "table",
+                    "label": f"{leaf_header(table, change_col)} = 당해연도 - 전년도",
+                    "value_column": value_col,
+                    "change_column": change_col,
+                    "row_indices": row_indices,
+                    "change_tolerance": 1.0,
+                    "confidence": 0.94,
+                },
+            )
+        ]
+
     label = f"{leaf_header(table, rate_col)} = ({leaf_header(table, value_col)} 당해연도 - 전년도) / 전년도 * 100"
     if change_col is not None:
         label = f"{leaf_header(table, change_col)} = 당해연도 - 전년도, {label}"
@@ -1470,6 +1726,24 @@ def infer_year_rows_change_rate_rules(table: ValidationTable) -> list[dict[str, 
             },
         )
     ]
+
+
+def rate_col_looks_like_same_row_share(
+    table: ValidationTable,
+    rate_col: int,
+    change_col: int,
+    value_col: int,
+) -> bool:
+    tolerance = target_ratio_tolerance(table, rate_col, 100)
+    passed_ratio, checked_count = same_row_ratio_match_ratio(
+        table,
+        rate_col,
+        change_col,
+        value_col,
+        multiplier=100,
+        tolerance=tolerance,
+    )
+    return checked_count >= 3 and passed_ratio >= 0.8
 
 
 def infer_row_based_ratio_rules(table: ValidationTable) -> list[dict[str, Any]]:
@@ -1840,6 +2114,44 @@ def expression_terms(expression: str, symbol_to_column: dict[str, int]) -> list[
             return []
         terms.append({"op": "-" if match.group(1) == "-" else "+", "column": col_index})
     return terms
+
+
+def is_ratio_denominator_expression(label: str, start_index: int) -> bool:
+    return label[:start_index].rstrip().endswith("/")
+
+
+def unique_ints(values: list[int]) -> list[int]:
+    seen: set[int] = set()
+    unique_values: list[int] = []
+    for value in values:
+        if value in seen:
+            continue
+        seen.add(value)
+        unique_values.append(value)
+    return unique_values
+
+
+def arithmetic_dependency_columns(
+    table: ValidationTable,
+    target_col: int,
+    symbol_to_column: dict[str, int] | None = None,
+) -> list[int]:
+    symbols = symbol_to_column or symbol_columns(table)
+    label = table.column_text(target_col)
+    dependencies: list[int] = []
+
+    for match in re.finditer(r"\(([a-z])\s*=\s*([a-z](?:\s*[+-]\s*[a-z])+)\)", label, re.IGNORECASE):
+        target_symbol = match.group(1).lower()
+        if symbols.get(target_symbol) != target_col:
+            continue
+        dependencies.extend(int(term["column"]) for term in expression_terms(match.group(2), symbols))
+
+    for match in re.finditer(r"\(([a-z](?:\s*[+-]\s*[a-z])+)\)", label, re.IGNORECASE):
+        if is_ratio_denominator_expression(label, match.start()):
+            continue
+        dependencies.extend(int(term["column"]) for term in expression_terms(match.group(1), symbols))
+
+    return unique_ints(dependencies)
 
 
 def find_column(table: ValidationTable, predicate: Any) -> int | None:

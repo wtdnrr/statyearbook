@@ -125,11 +125,30 @@ function columnLabelAt(part: StatTablePart, colIndex: number | undefined) {
   if (colIndex === undefined || colIndex < 0) {
     return "열 정보 없음";
   }
-  const column = part.columns[colIndex];
+  const column = columnForSourceIndex(part, colIndex);
   if (!column) {
     return `${colIndex + 1}열`;
   }
   return [column.label, column.label_en].filter(Boolean).join(" ");
+}
+
+function sourceColumnIndexes(column: StatTablePart["columns"][number], fallbackIndex: number) {
+  if (column.source_col_indexes?.length) {
+    return column.source_col_indexes;
+  }
+  if (typeof column.source_col_index === "number") {
+    return [column.source_col_index];
+  }
+  return [fallbackIndex];
+}
+
+function columnForSourceIndex(part: StatTablePart, sourceColIndex: number | undefined) {
+  if (typeof sourceColIndex !== "number" || sourceColIndex < 0) {
+    return undefined;
+  }
+  return part.columns.find((column, columnIndex) =>
+    sourceColumnIndexes(column, columnIndex).includes(sourceColIndex),
+  );
 }
 
 function rowForMatrixIndex(part: StatTablePart, rowIndex: number | undefined) {
@@ -149,7 +168,7 @@ function rowLabelAt(part: StatTablePart, rowIndex: number | undefined) {
   }
   const row = rowForMatrixIndex(part, rowIndex);
   const firstColumnKey = part.columns[0]?.key;
-  const label = firstColumnKey ? String(row?.[firstColumnKey] ?? "").trim() : "";
+  const label = String(row?._row_label ?? "").trim() || (firstColumnKey ? String(row?.[firstColumnKey] ?? "").trim() : "");
   return label || `${rowIndex + 1}행`;
 }
 
@@ -162,7 +181,7 @@ function cellValueAt(part: StatTablePart, rowIndex: number | undefined, colIndex
     return columnLabelAt(part, colIndex);
   }
   const row = rowForMatrixIndex(part, rowIndex);
-  const column = part.columns[colIndex];
+  const column = columnForSourceIndex(part, colIndex);
   if (!row || !column) {
     return "";
   }

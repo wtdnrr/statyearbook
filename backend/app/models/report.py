@@ -22,6 +22,8 @@ class ColumnDefinition(BaseModel):
     label_en: str | None = None
     align: Literal["left", "right", "center"] = "right"
     width: str | None = None
+    source_col_index: int | None = None
+    source_col_indexes: list[int] = Field(default_factory=list)
 
 
 class ValidationHighlightCell(BaseModel):

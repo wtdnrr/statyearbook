@@ -103,7 +103,7 @@ def split_bilingual(text: str) -> tuple[str, str]:
     if not cleaned:
         return "", ""
 
-    match = re.search(r"([A-Z][A-Za-z0-9 ,&/().%·･+\-']{4,})$", cleaned)
+    match = re.search(r"([A-Za-z][A-Za-z0-9 ,&/().%·･+\-']{2,})$", cleaned)
     if match and match.start() > 0:
         return cleaned[: match.start()].strip(), match.group(1).strip()
 
@@ -370,6 +370,8 @@ def looks_like_data_row(row: list[str]) -> bool:
     first_cell = row[0] if row else ""
     if looks_like_header_label(first_cell):
         return False
+    if re.fullmatch(r"\d{4}", re.sub(r"\s+", "", first_cell)):
+        return True
     if any(numeric_value(cell) is not None for cell in row[1:]):
         return True
     return looks_like_text_data_row(row)

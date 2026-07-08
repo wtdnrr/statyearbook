@@ -183,6 +183,8 @@ class ProfileSpecRule(ValidationRule):
                 spec_issues, spec_checks = self._validate_row_year_over_year_rate(table, profile, spec)
             elif rule_type == "year_rows_change_rate":
                 spec_issues, spec_checks = self._validate_year_rows_change_rate(table, profile, spec)
+            elif rule_type == "year_rows_change_amount":
+                spec_issues, spec_checks = self._validate_year_rows_change_amount(table, profile, spec)
             elif rule_type == "outlier_columns":
                 spec_issues, spec_checks = self._validate_outliers(table, profile, spec)
             elif rule_type == "spelling_static":
@@ -203,6 +205,8 @@ class ProfileSpecRule(ValidationRule):
         if spec.get("execute") is False:
             return False
         confidence = float(spec.get("confidence", 1.0))
+        if spec.get("check_group") == "sum":
+            return confidence >= 0.6
         if spec.get("category") == "template" and confidence < 0.9:
             return False
         return True
@@ -438,7 +442,7 @@ class ProfileSpecRule(ValidationRule):
         issues: list[ValidationIssueRecord] = []
         checks: list[ValidationCheckRecord] = []
         for row_index, row in table.data_rows():
-            current = cell_number(row, target_col)
+            current = additive_cell_number(row, target_col)
             operands = [additive_cell_number(row, col_index) for col_index in operand_columns]
             if current is None or any(value is None for value in operands):
                 continue
@@ -477,7 +481,7 @@ class ProfileSpecRule(ValidationRule):
         issues: list[ValidationIssueRecord] = []
         checks: list[ValidationCheckRecord] = []
         for row_index, row in table.data_rows():
-            current = cell_number(row, target_col)
+            current = additive_cell_number(row, target_col)
             if current is None:
                 continue
 
@@ -496,7 +500,7 @@ class ProfileSpecRule(ValidationRule):
                 table,
                 profile,
                 spec,
-                check_type="합계 검수",
+                check_type=self._check_type(spec, "합계 검수"),
                 row_index=row_index,
                 col_index=target_col,
                 current=current,
@@ -632,7 +636,8 @@ class ProfileSpecRule(ValidationRule):
                     matches.append((row_index, col_index, text))
 
         has_formula_profile = any(
-            check.get("type") in {"row_growth_rate", "row_year_over_year_rate", "year_rows_change_rate"}
+            check.get("type")
+            in {"row_growth_rate", "row_year_over_year_rate", "year_rows_change_rate", "year_rows_change_amount"}
             for check in profile.check_specs
         )
         passed = not matches or has_formula_profile
@@ -856,6 +861,51 @@ class ProfileSpecRule(ValidationRule):
                 expected=expected_rate,
                 passed=passed,
                 detail="전년도 값과 당해연도 값을 비교해 증감률을 확인했습니다.",
+            )
+            checks.append(check)
+            if not passed:
+                issues.append(self._issue_from_check(check))
+
+        return issues, checks
+
+    def _validate_year_rows_change_amount(
+        self,
+        table: ValidationTable,
+        profile: ValidationProfile,
+        spec: dict[str, Any],
+    ) -> tuple[list[ValidationIssueRecord], list[ValidationCheckRecord]]:
+        value_col = int(spec.get("value_column", -1))
+        change_col = int(spec.get("change_column", -1))
+        row_indices = [int(row_index) for row_index in spec.get("row_indices", [])]
+        if len(row_indices) < 2 or not self._valid_rows(table, row_indices) or not self._valid_columns(table, [value_col, change_col]):
+            return [], []
+
+        issues: list[ValidationIssueRecord] = []
+        checks: list[ValidationCheckRecord] = []
+        change_tolerance = float(spec.get("change_tolerance", 1.0))
+
+        for previous_row_index, current_row_index in zip(row_indices, row_indices[1:]):
+            previous_row = table.matrix[previous_row_index]
+            current_row = table.matrix[current_row_index]
+            previous_value = cell_number(previous_row, value_col)
+            current_value = cell_number(current_row, value_col)
+            current_change = cell_number(current_row, change_col)
+            if previous_value is None or current_value is None or current_change is None:
+                continue
+
+            expected_change = current_value - previous_value
+            passed = abs(current_change - expected_change) <= change_tolerance
+            check = self._calculation_check(
+                table,
+                profile,
+                spec,
+                check_type="증감률 검수",
+                row_index=current_row_index,
+                col_index=change_col,
+                current=current_change,
+                expected=expected_change,
+                passed=passed,
+                detail="전년도 값과 당해연도 값을 비교해 증감 값을 확인했습니다.",
             )
             checks.append(check)
             if not passed:
@@ -1126,7 +1176,7 @@ class ProfileSpecRule(ValidationRule):
         for col_index in columns:
             if not self._valid_columns(table, [col_index]):
                 continue
-            current = cell_number(target_matrix_row, col_index)
+            current = additive_cell_number(target_matrix_row, col_index)
             values = []
             for row_index in operand_rows:
                 if row_index >= len(table.matrix):

@@ -15,6 +15,8 @@ export interface ColumnDefinition {
   label_en?: string;
   align: "left" | "right" | "center";
   width?: string;
+  source_col_index?: number;
+  source_col_indexes?: number[];
 }
 
 export interface ValidationHighlightCell {

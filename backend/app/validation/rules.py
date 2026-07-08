@@ -83,14 +83,28 @@ def leading_label_columns(table: ValidationTable) -> list[int]:
     for col_index in range(column_count(table)):
         values = [cell_text(row, col_index) for row in rows if cell_text(row, col_index).strip()]
         if not values:
-            continue
+            if labels:
+                labels.append(col_index)
+                continue
+            break
         numeric_count = sum(1 for row in rows if cell_number(row, col_index) is not None)
         numeric_ratio = numeric_count / max(len(values), 1)
+        header_text = table.column_text(col_index)
+        year_like_count = sum(
+            1
+            for value in values
+            if re.fullmatch(r"[’']?\d{2,4}(?:\s*\([^)]*\))?", clean_display_text(value))
+        )
+        if col_index == 0 and ("연도" in header_text or re.search(r"\byear\b", header_text, re.IGNORECASE)) and year_like_count / len(values) >= 0.7:
+            labels.append(col_index)
+            continue
         if numeric_ratio <= 0.25:
             labels.append(col_index)
             continue
         break
 
+    if len(labels) > 3:
+        return [0]
     return labels or [0]
 
 
@@ -121,11 +135,11 @@ def is_ratio_like(value: str) -> bool:
 
 def is_additive_column_label(value: str) -> bool:
     normalized = normalize_text(value)
-    if any(keyword in normalized for keyword in ("평균", "비율", "비중", "증감률", "잔액율", "잔액률", "율", "1인당")):
+    if any(keyword in normalized for keyword in ("평균", "비율", "비중", "증감률", "잔액율", "잔액률", "율", "1인당", "피해내용", "내용", "비고", "remarks")):
         return False
     return not bool(
         re.search(
-            r"\b(rate|average|ratio|percent|percentage|per\s+person|per\s+capita|each\s+worker|assigned\s+to\s+each)\b",
+            r"\b(rate|average|ratio|percent|percentage|per\s+person|per\s+capita|each\s+worker|assigned\s+to\s+each|details?|remarks?)\b",
             value,
             re.IGNORECASE,
         )
@@ -828,7 +842,7 @@ class RegionTotalSumRule(ValidationRule):
 
     def _is_additive_column(self, label: str) -> bool:
         normalized = normalize_text(label)
-        blocked = ["평균", "비율", "비중", "증감", "증감률", "잔액율", "율", "%", "rate", "average", "ratio"]
+        blocked = ["평균", "비율", "비중", "증감", "증감률", "잔액율", "율", "%", "피해내용", "내용", "비고", "rate", "average", "ratio", "detail", "remark"]
         return not any(keyword in normalized for keyword in blocked)
 
     def _matches(self, current: float, expected: float) -> bool:

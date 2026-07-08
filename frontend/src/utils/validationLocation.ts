@@ -23,6 +23,24 @@ function displayColumnLabel(column: ColumnDefinition | undefined) {
   return [column.label, column.label_en].filter(Boolean).join(" ");
 }
 
+function sourceColumnIndexes(column: ColumnDefinition, fallbackIndex: number) {
+  if (column.source_col_indexes?.length) {
+    return column.source_col_indexes;
+  }
+  if (typeof column.source_col_index === "number") {
+    return [column.source_col_index];
+  }
+  return [fallbackIndex];
+}
+
+function columnForSourceIndex(columns: ColumnDefinition[], sourceColIndex: number | undefined) {
+  if (typeof sourceColIndex !== "number" || sourceColIndex < 0) {
+    return undefined;
+  }
+
+  return columns.find((column, columnIndex) => sourceColumnIndexes(column, columnIndex).includes(sourceColIndex));
+}
+
 function cleanLocationPart(value: string) {
   return value.replace(/\s+/g, " ").replace(/^[\s/·,-]+|[\s/·,-]+$/g, "").trim();
 }
@@ -40,24 +58,30 @@ export function resolveIssueLocation(table: IssueLocationTable, issue: Validatio
   const firstColumnKey = table.columns[0]?.key;
   const headerCount = table.metadata?.header_count ?? 0;
   const isHeader = typeof issue.row_index === "number" && headerCount > 0 && issue.row_index < headerCount;
-  const indexedColumn =
-    typeof issue.col_index === "number" && issue.col_index >= 0 ? table.columns[issue.col_index] : undefined;
+  const indexedColumn = columnForSourceIndex(table.columns, issue.col_index);
   const matchedColumn =
     indexedColumn ??
     table.columns
       .slice(1)
       .sort((a, b) => displayColumnLabel(b).length - displayColumnLabel(a).length)
       .find((column) => normalizeMatchText(issue.location).includes(normalizeMatchText(displayColumnLabel(column))));
-  const rowLabelFromText = firstColumnKey
-    ? table.rows
-        .map((row) => String(row[firstColumnKey] ?? ""))
-        .filter(Boolean)
-        .sort((a, b) => b.length - a.length)
-        .find((value) => normalizeMatchText(issue.location).includes(normalizeMatchText(value)))
-    : undefined;
+  const rowLabelCandidates = table.rows
+    .flatMap((row) => [row._row_label, firstColumnKey ? row[firstColumnKey] : undefined])
+    .map((value) => String(value ?? ""))
+    .filter(Boolean)
+    .sort((a, b) => b.length - a.length);
+  const rowLabelFromText = rowLabelCandidates.find((value) =>
+    normalizeMatchText(issue.location).includes(normalizeMatchText(value)),
+  );
   const rowLabelFromIndex =
-    typeof issue.row_index === "number" && firstColumnKey
-      ? String(table.rows[headerCount > 0 ? issue.row_index - headerCount : issue.row_index]?.[firstColumnKey] ?? "")
+    typeof issue.row_index === "number"
+      ? String(
+          table.rows[headerCount > 0 ? issue.row_index - headerCount : issue.row_index]?._row_label ??
+            (firstColumnKey
+              ? table.rows[headerCount > 0 ? issue.row_index - headerCount : issue.row_index]?.[firstColumnKey]
+              : "") ??
+            "",
+        )
       : "";
 
   if (isHeader) {
