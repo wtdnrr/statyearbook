@@ -341,6 +341,19 @@ def additive_cell_number(row: list, col_index: int) -> float | None:
     return None
 
 
+def additive_operand_cell_number(row: list, col_index: int) -> float | None:
+    value = additive_cell_number(row, col_index)
+    if value is not None:
+        return value
+    if col_index < len(row) and row[col_index] is not None and not cell_text_at(row, col_index):
+        return 0.0
+    return None
+
+
+def additive_target_cell_number(row: list, col_index: int) -> float | None:
+    return additive_operand_cell_number(row, col_index)
+
+
 def is_male_label(leaf: str, full_label: str) -> bool:
     normalized_leaf = normalize_text(leaf)
     return normalized_leaf in {"남", "남성", "male", "man"} or bool(re.search(r"\b(male|man)\b", full_label, re.IGNORECASE))
@@ -458,8 +471,8 @@ def row_sum_match_summary(
     passed = 0
     total_difference = 0.0
     for _, row in table.data_rows():
-        current = cell_number(row, target_col)
-        operands = [additive_cell_number(row, col_index) for col_index in operand_columns]
+        current = additive_target_cell_number(row, target_col)
+        operands = [additive_operand_cell_number(row, col_index) for col_index in operand_columns]
         if current is None or any(value is None for value in operands):
             continue
         checked += 1
@@ -485,9 +498,9 @@ def column_sum_match_ratio(
     passed = 0
     target_matrix_row = table.matrix[target_row]
     for col_index in columns:
-        current = cell_number(target_matrix_row, col_index)
+        current = additive_target_cell_number(target_matrix_row, col_index)
         values = [
-            additive_cell_number(table.matrix[row_index], col_index)
+            additive_operand_cell_number(table.matrix[row_index], col_index)
             for row_index in operand_rows
             if row_index < len(table.matrix)
         ]
@@ -851,6 +864,10 @@ def best_row_sum_operand_columns(
     if len(child_total_operands) >= 2:
         candidates.append(child_total_operands)
 
+    top_level_summary_operands = top_level_summary_operand_columns(table, target_col, numeric_columns)
+    if len(top_level_summary_operands) >= 2:
+        candidates.append(top_level_summary_operands)
+
     all_leaf_operands = [
         col_index
         for col_index in numeric_columns
@@ -880,6 +897,52 @@ def best_row_sum_operand_columns(
         [*fallback_candidates, *combination_candidates],
     )
     return best_candidate or []
+
+
+def top_level_summary_operand_columns(
+    table: ValidationTable,
+    target_col: int,
+    numeric_columns: list[int],
+) -> list[int]:
+    groups: dict[str, list[int]] = {}
+    group_order: list[str] = []
+    for col_index in numeric_columns:
+        if col_index == target_col or is_total_column_candidate(table, col_index):
+            continue
+        path = effective_header_path(table, col_index)
+        if not path:
+            continue
+        root = path[0]
+        root_key = normalize_text(root)
+        if not root_key or total_label_kind(root) is not None:
+            continue
+        if root_key not in groups:
+            groups[root_key] = []
+            group_order.append(root_key)
+        groups[root_key].append(col_index)
+
+    operands: list[int] = []
+    for group_key in group_order:
+        columns = groups[group_key]
+        if len(columns) == 1:
+            operands.append(columns[0])
+            continue
+        representative = representative_header_group_column(table, columns)
+        if representative is not None:
+            operands.append(representative)
+    return operands
+
+
+def representative_header_group_column(table: ValidationTable, columns: list[int]) -> int | None:
+    if not columns:
+        return None
+    root = effective_header_path(table, columns[0])[0]
+    root_key = normalize_text(root)
+    for col_index in columns:
+        leaf_key = normalize_text(leaf_header(table, col_index))
+        if leaf_key and (leaf_key in root_key or root_key in leaf_key):
+            return col_index
+    return columns[0]
 
 
 def best_matching_row_sum_candidate(
@@ -959,6 +1022,31 @@ def infer_total_row_rules(table: ValidationTable) -> list[dict[str, Any]]:
     columns = additive_measure_columns(table)
     specs: list[dict[str, Any]] = []
     implicit_child_map = implicit_subtotal_child_map(table, rows)
+    for target_row_index, operand_rows in implicit_child_map.items():
+        if len(operand_rows) < 2 or not columns:
+            continue
+        if target_row_index >= len(table.matrix):
+            continue
+        passed_ratio, checked_count = column_sum_match_ratio(table, target_row_index, operand_rows, columns, tolerance=1.0)
+        if checked_count < 2 or passed_ratio < 0.95:
+            continue
+        target_label = combined_row_label(table, table.matrix[target_row_index]) or table.row_label(table.matrix[target_row_index])
+        specs.append(
+            rule_spec(
+                "sum",
+                {
+                    "id": f"profile.{table.code}.implicit_subtotal_r{target_row_index}",
+                    "type": "column_sum",
+                    "category": "template",
+                    "label": f"{clean_display_text(target_label)} = 내부 하위 행 합계",
+                    "target_row": target_row_index,
+                    "operand_rows": operand_rows,
+                    "columns": columns,
+                    "tolerance": 1.0,
+                    "confidence": 0.96,
+                },
+            )
+        )
     for position, (target_row_index, row) in enumerate(rows):
         row_label = combined_row_label(table, row)
         kind = row_total_kind(table, row)
@@ -1170,9 +1258,9 @@ def column_sum_match_ratio_in_matrix(
     passed = 0
     target_matrix_row = matrix[target_row]
     for col_index in columns:
-        current = cell_number(target_matrix_row, col_index)
+        current = additive_target_cell_number(target_matrix_row, col_index)
         values = [
-            additive_cell_number(matrix[row_index], col_index)
+            additive_operand_cell_number(matrix[row_index], col_index)
             for row_index in operand_rows
             if row_index < len(matrix)
         ]

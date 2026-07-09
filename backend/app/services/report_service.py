@@ -1,10 +1,16 @@
-from app.data.dummy_report import ORIGINAL_FILE, TABLES
 from app.models.report import PressInsight, ReportPayload, ReportSummary, StatTable
+
+
+FALLBACK_ORIGINAL_FILE = "2025_통계연보_추출.xlsx"
 
 
 class ReportService:
     def __init__(self, tables: list[StatTable] | None = None) -> None:
-        self._tables = tables or TABLES
+        if tables is None:
+            from app.data.dummy_report import TABLES
+
+            tables = TABLES
+        self._tables = tables
 
     def get_payload(self) -> ReportPayload:
         return ReportPayload(
@@ -21,7 +27,7 @@ class ReportService:
                     issue_counts[check.type] = issue_counts.get(check.type, 0) + 1
 
         return ReportSummary(
-            file_name=ORIGINAL_FILE,
+            file_name=FALLBACK_ORIGINAL_FILE,
             base_year="2025",
             total_tables=len(self._tables),
             normal_count=sum(1 for table in self._tables if table.status == "normal"),

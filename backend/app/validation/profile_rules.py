@@ -87,6 +87,19 @@ def additive_cell_number(row: list, col_index: int) -> float | None:
     return None
 
 
+def additive_operand_cell_number(row: list, col_index: int) -> float | None:
+    value = additive_cell_number(row, col_index)
+    if value is not None:
+        return value
+    if col_index < len(row) and row[col_index] is not None and not clean_display_text(cell_text(row, col_index)):
+        return 0.0
+    return None
+
+
+def additive_target_cell_number(row: list, col_index: int) -> float | None:
+    return additive_operand_cell_number(row, col_index)
+
+
 class ProfileStateRule(ValidationRule):
     rule_id = "profile.state"
     issue_type = "검수 프로파일 확인"
@@ -444,8 +457,8 @@ class ProfileSpecRule(ValidationRule):
         issues: list[ValidationIssueRecord] = []
         checks: list[ValidationCheckRecord] = []
         for row_index, row in table.data_rows():
-            current = additive_cell_number(row, target_col)
-            operands = [additive_cell_number(row, col_index) for col_index in operand_columns]
+            current = additive_target_cell_number(row, target_col)
+            operands = [additive_operand_cell_number(row, col_index) for col_index in operand_columns]
             if current is None or any(value is None for value in operands):
                 continue
 
@@ -483,13 +496,13 @@ class ProfileSpecRule(ValidationRule):
         issues: list[ValidationIssueRecord] = []
         checks: list[ValidationCheckRecord] = []
         for row_index, row in table.data_rows():
-            current = additive_cell_number(row, target_col)
+            current = additive_target_cell_number(row, target_col)
             if current is None:
                 continue
 
             expected = 0.0
             for term in terms:
-                value = additive_cell_number(row, int(term["column"]))
+                value = additive_operand_cell_number(row, int(term["column"]))
                 if value is None:
                     expected = None
                     break
@@ -1228,12 +1241,12 @@ class ProfileSpecRule(ValidationRule):
         for col_index in columns:
             if not self._valid_columns(table, [col_index]):
                 continue
-            current = additive_cell_number(target_matrix_row, col_index)
+            current = additive_target_cell_number(target_matrix_row, col_index)
             values = []
             for row_index in operand_rows:
                 if row_index >= len(table.matrix):
                     continue
-                value = additive_cell_number(table.matrix[row_index], col_index)
+                value = additive_operand_cell_number(table.matrix[row_index], col_index)
                 if value is not None:
                     values.append(value)
             if current is None or len(values) < 2:
