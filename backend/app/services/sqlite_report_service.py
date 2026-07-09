@@ -334,6 +334,7 @@ def load_rule_specs_by_id(
     connection: sqlite3.Connection,
     check_rows: list[sqlite3.Row],
 ) -> dict[str, dict[str, Any]]:
+    specs: dict[str, dict[str, Any]] = {}
     profile_ids = sorted(
         {
             int(row["profile_id"])
@@ -341,33 +342,64 @@ def load_rule_specs_by_id(
             if row["profile_id"] is not None
         }
     )
-    if not profile_ids:
-        return {}
 
-    placeholders = ", ".join("?" for _ in profile_ids)
-    profile_rows = connection.execute(
-        f"""
-        SELECT id, rules_json
-        FROM validation_profiles
-        WHERE id IN ({placeholders})
-        """,
-        profile_ids,
-    ).fetchall()
+    if profile_ids:
+        placeholders = ", ".join("?" for _ in profile_ids)
+        profile_rows = connection.execute(
+            f"""
+            SELECT id, rules_json
+            FROM validation_profiles
+            WHERE id IN ({placeholders})
+            """,
+            profile_ids,
+        ).fetchall()
 
-    specs: dict[str, dict[str, Any]] = {}
-    for profile_row in profile_rows:
-        try:
-            rules = json.loads(profile_row["rules_json"] or "{}")
-        except json.JSONDecodeError:
-            continue
-        checks = rules.get("checks", [])
-        if not isinstance(checks, list):
-            continue
-        for spec in checks:
-            if not isinstance(spec, dict) or not spec.get("id"):
+        for profile_row in profile_rows:
+            try:
+                rules = json.loads(profile_row["rules_json"] or "{}")
+            except json.JSONDecodeError:
                 continue
-            specs[str(spec["id"])] = spec
+            checks = rules.get("checks", [])
+            if not isinstance(checks, list):
+                continue
+            for spec in checks:
+                if not isinstance(spec, dict) or not spec.get("id"):
+                    continue
+                specs[str(spec["id"])] = spec
+
+    for row in check_rows:
+        spec = cross_split_part_row_total_spec(str(row["rule_id"]))
+        if spec is not None:
+            specs[str(row["rule_id"])] = spec
     return specs
+
+
+def cross_split_part_row_total_spec(rule_id: str) -> dict[str, Any] | None:
+    if not rule_id.startswith("cross.split_part_row_total:"):
+        return None
+
+    values: dict[str, str] = {}
+    for chunk in rule_id.split(":")[1:]:
+        if "=" not in chunk:
+            continue
+        key, value = chunk.split("=", 1)
+        values[key] = value
+
+    target = int_or_none(values.get("target"))
+    related = [
+        int(value)
+        for value in values.get("related", "").split(",")
+        if value.strip().isdigit()
+    ]
+    if target is None:
+        return None
+
+    return {
+        "id": rule_id,
+        "type": "row_sum",
+        "target_column": target,
+        "operand_columns": related,
+    }
 
 
 def int_or_none(value: Any) -> int | None:

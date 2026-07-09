@@ -8,11 +8,14 @@ from app.validation.models import (
     ValidationIssueRecord,
     ValidationTable,
     clean_display_text,
+    format_number,
     normalize_text,
 )
+from app.validation.rules import cell_number, cell_text, column_count, combined_row_label
 
 
 PART_SUFFIX_RE = re.compile(r"\s+표\s*\d+$")
+PART_NUMBER_RE = re.compile(r"\s+표\s*(\d+)$")
 
 
 @dataclass(frozen=True)
@@ -81,6 +84,94 @@ class AdjacentDuplicateTableRule:
         )
 
 
+class SplitPartRowTotalRule:
+    """Validate row totals whose detail columns are split across table parts."""
+
+    rule_id = "cross.split_part_row_total"
+    check_type = "합계 검수"
+
+    def evaluate(self, tables: list[ValidationTable]) -> CrossTableValidationResult:
+        issues: list[ValidationIssueRecord] = []
+        checks: list[ValidationCheckRecord] = []
+
+        for _, parts in split_part_groups(tables).items():
+            if len(parts) < 2:
+                continue
+
+            target_part = parts[0]
+            target_columns = split_total_columns(target_part)
+            if not target_columns:
+                continue
+
+            part_rows = {
+                part.code: rows_by_label(part)
+                for part in parts
+            }
+            for target_col in target_columns:
+                metric_key = metric_column_key(target_part, target_col)
+                if not metric_key:
+                    continue
+
+                same_part_operand_cols = detail_columns_for_metric(target_part, metric_key, exclude_total=True)
+                all_operand_columns = {
+                    part.code: detail_columns_for_metric(part, metric_key, exclude_total=True)
+                    for part in parts
+                }
+                if sum(len(columns) for columns in all_operand_columns.values()) < 2:
+                    continue
+
+                candidate_checks: list[ValidationCheckRecord] = []
+                candidate_issues: list[ValidationIssueRecord] = []
+                for row_index, row in target_part.data_rows():
+                    row_label = row_label_key(target_part, row)
+                    if not row_label:
+                        continue
+
+                    current = additive_value(row, target_col, blank_as_zero=True)
+                    operand_values: list[float] = []
+                    missing_part = False
+                    for part in parts:
+                        part_row_index = part_rows.get(part.code, {}).get(row_label)
+                        if part_row_index is None or part_row_index >= len(part.matrix):
+                            missing_part = True
+                            break
+                        part_row = part.matrix[part_row_index]
+                        for col_index in all_operand_columns.get(part.code, []):
+                            value = additive_value(part_row, col_index, blank_as_zero=True)
+                            if value is None:
+                                missing_part = True
+                                break
+                            operand_values.append(value)
+                        if missing_part:
+                            break
+
+                    if current is None or missing_part or len(operand_values) < 2:
+                        continue
+
+                    expected = sum(operand_values)
+                    passed = abs(current - expected) <= 1.0
+                    check = split_row_total_check(
+                        target_part,
+                        parts,
+                        row_index=row_index,
+                        target_col=target_col,
+                        metric_key=metric_key,
+                        same_part_operand_cols=same_part_operand_cols,
+                        current=current,
+                        expected=expected,
+                        passed=passed,
+                    )
+                    candidate_checks.append(check)
+                    if not passed:
+                        candidate_issues.append(issue_from_check(check))
+
+                if split_row_total_candidate_is_reliable(candidate_checks):
+                    checks.extend(candidate_checks)
+                    issues.extend(candidate_issues)
+
+        return CrossTableValidationResult(issues=issues, checks=checks)
+
+
 def issue_from_check(check: ValidationCheckRecord) -> ValidationIssueRecord:
     return ValidationIssueRecord(
         table_id=check.table_id,
@@ -101,6 +192,25 @@ def issue_from_check(check: ValidationCheckRecord) -> ValidationIssueRecord:
 
 def base_table_code(code: str) -> str:
     return PART_SUFFIX_RE.sub("", code).strip()
+
+
+def part_number(code: str) -> int | None:
+    match = PART_NUMBER_RE.search(code)
+    return int(match.group(1)) if match else None
+
+
+def split_part_groups(tables: list[ValidationTable]) -> dict[str, list[ValidationTable]]:
+    groups: dict[str, list[ValidationTable]] = {}
+    for table in tables:
+        number = part_number(table.code)
+        if number is None:
+            continue
+        groups.setdefault(base_table_code(table.code), []).append(table)
+    return {
+        code: sorted(parts, key=lambda table: part_number(table.code) or 0)
+        for code, parts in groups.items()
+        if len(parts) >= 2
+    }
 
 
 def parent_table_code(code: str) -> str:
@@ -148,4 +258,120 @@ def comparable_text(value: str) -> str:
     return normalize_text(clean_display_text(value))
 
 
-DEFAULT_CROSS_TABLE_RULES = [AdjacentDuplicateTableRule()]
+def header_value(table: ValidationTable, header_row_index: int, col_index: int) -> str:
+    if header_row_index >= len(table.matrix):
+        return ""
+    row = table.matrix[header_row_index]
+    value = clean_display_text(cell_text(row, col_index))
+    if value:
+        return value
+    for left_col_index in range(col_index - 1, -1, -1):
+        left_value = clean_display_text(cell_text(row, left_col_index))
+        if left_value:
+            return left_value
+    return ""
+
+
+def metric_column_key(table: ValidationTable, col_index: int) -> str:
+    if table.header_count <= 1:
+        return normalize_text(header_value(table, 0, col_index))
+    return normalize_text(header_value(table, table.header_count - 1, col_index))
+
+
+def split_total_columns(table: ValidationTable) -> list[int]:
+    columns: list[int] = []
+    for col_index in range(1, column_count(table)):
+        top_header = header_value(table, 0, col_index)
+        if not top_header:
+            continue
+        normalized = normalize_text(top_header)
+        if normalized.startswith("합계") or normalized in {"계", "total"} or "total" in normalized:
+            columns.append(col_index)
+    return columns
+
+
+def detail_columns_for_metric(table: ValidationTable, metric_key: str, *, exclude_total: bool) -> list[int]:
+    columns: list[int] = []
+    total_columns = set(split_total_columns(table)) if exclude_total else set()
+    for col_index in range(1, column_count(table)):
+        if col_index in total_columns:
+            continue
+        if metric_column_key(table, col_index) == metric_key:
+            columns.append(col_index)
+    return columns
+
+
+def rows_by_label(table: ValidationTable) -> dict[str, int]:
+    rows: dict[str, int] = {}
+    for row_index, row in table.data_rows():
+        key = row_label_key(table, row)
+        if key:
+            rows[key] = row_index
+    return rows
+
+
+def row_label_key(table: ValidationTable, row: list) -> str:
+    return normalize_text(combined_row_label(table, row) or table.row_label(row))
+
+
+def additive_value(row: list, col_index: int, *, blank_as_zero: bool) -> float | None:
+    value = cell_number(row, col_index)
+    if value is not None:
+        return value
+    if col_index >= len(row) or row[col_index] is None:
+        return None
+    text = clean_display_text(cell_text(row, col_index))
+    if text in {"-", "－", "―"} or (blank_as_zero and not text):
+        return 0.0
+    return None
+
+
+def split_row_total_candidate_is_reliable(checks: list[ValidationCheckRecord]) -> bool:
+    if len(checks) < 5:
+        return False
+    passed = sum(1 for check in checks if check.status == "정상")
+    return passed / len(checks) >= 0.8
+
+
+def split_row_total_check(
+    table: ValidationTable,
+    parts: list[ValidationTable],
+    *,
+    row_index: int,
+    target_col: int,
+    metric_key: str,
+    same_part_operand_cols: list[int],
+    current: float,
+    expected: float,
+    passed: bool,
+) -> ValidationCheckRecord:
+    row = table.matrix[row_index] if row_index < len(table.matrix) else []
+    row_label = combined_row_label(table, row) or table.row_label(row) or f"{row_index + 1}행"
+    metric_label = clean_display_text(header_value(table, table.header_count - 1, target_col))
+    detail = (
+        f"{base_table_code(table.code)}은 표가 {len(parts)}개로 나뉘어 있어, "
+        f"{metric_label or metric_key} 합계는 표1과 나머지 하위표의 같은 행 세부 항목을 모두 더해 검수했습니다."
+    )
+    related = ",".join(str(col_index) for col_index in same_part_operand_cols)
+    rule_id = f"{SplitPartRowTotalRule.rule_id}:target={target_col}:related={related}:metric={metric_key}"
+    return ValidationCheckRecord(
+        table_id=table.id,
+        rule_id=rule_id,
+        check_type=SplitPartRowTotalRule.check_type,
+        check_label=f"분할표 합계: 합계 {metric_label} = 하위표 세부 항목 합계",
+        location=f"{clean_display_text(row_label)} 합계 {metric_label}",
+        current_value=format_number(current),
+        expected_value=format_number(expected),
+        difference=None if passed else format_number(current - expected),
+        status="정상" if passed else "오류 의심",
+        severity="info" if passed else "critical",
+        detail=detail,
+        row_index=row_index,
+        col_index=target_col,
+        formula=f"합계 {metric_label} = 표1·표2 세부 {metric_label} 항목 합계",
+        profile_id=None,
+        confidence=0.98,
+    )
+
+
+DEFAULT_CROSS_TABLE_RULES = [AdjacentDuplicateTableRule(), SplitPartRowTotalRule()]

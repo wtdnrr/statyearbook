@@ -793,6 +793,26 @@ def infer_total_column_rules(table: ValidationTable) -> list[dict[str, Any]]:
         if not is_total_column_candidate(table, target_col):
             continue
 
+        direct_child_columns = direct_child_sum_operand_columns(table, target_col, numeric_columns)
+        if direct_child_columns:
+            passed_ratio, checked_count = row_sum_match_ratio(table, target_col, direct_child_columns, tolerance=1.0)
+            if checked_count >= row_sum_minimum_checked_count(direct_child_columns) and passed_ratio >= sum_profile_minimum_ratio(checked_count):
+                specs.append(
+                    rule_spec(
+                        "sum",
+                        {
+                            "id": f"profile.{table.code}.row_total_direct_c{target_col}",
+                            "type": "row_sum",
+                            "category": "template",
+                            "label": row_sum_rule_label(table, target_col, direct_child_columns),
+                            "target_column": target_col,
+                            "operand_columns": direct_child_columns,
+                            "tolerance": 1.0,
+                            "confidence": sum_profile_confidence(passed_ratio),
+                        },
+                    )
+                )
+
         operand_columns = best_row_sum_operand_columns(table, target_col, numeric_columns)
         if not operand_columns:
             continue
@@ -815,6 +835,30 @@ def infer_total_column_rules(table: ValidationTable) -> list[dict[str, Any]]:
             )
         )
     return specs
+
+
+def direct_child_sum_operand_columns(
+    table: ValidationTable,
+    target_col: int,
+    numeric_columns: list[int],
+) -> list[int]:
+    target_path = effective_header_path(table, target_col)
+    if not target_path or total_like_header_position(target_path) is None:
+        return []
+
+    operands: list[int] = []
+    for col_index in numeric_columns:
+        if col_index == target_col:
+            continue
+        path = effective_header_path(table, col_index)
+        if len(path) != len(target_path) + 1:
+            continue
+        if not normalized_path_startswith(path, tuple(target_path)):
+            continue
+        if total_label_kind(leaf_header(table, col_index)) is not None:
+            continue
+        operands.append(col_index)
+    return operands
 
 
 def best_row_sum_operand_columns(
@@ -845,6 +889,9 @@ def best_row_sum_operand_columns(
         ]
         if len(group_operands) >= 2:
             candidates.append(group_operands)
+            passed_ratio, checked_count = row_sum_match_ratio(table, target_col, group_operands, tolerance=1.0)
+            if checked_count >= row_sum_minimum_checked_count(group_operands) and passed_ratio >= sum_profile_minimum_ratio(checked_count):
+                return group_operands
 
     same_leaf_operands = [
         col_index
@@ -1353,7 +1400,7 @@ def additive_operand_row(table: ValidationTable, row: list) -> bool:
         return False
     if any(keyword in normalized for keyword in ("평균", "평균액", "average", "mean")):
         return False
-    return row_numeric_cell_count(table, row) >= 1
+    return row_additive_cell_count(table, row) >= 1
 
 
 def row_numeric_cell_count(table: ValidationTable, row: list) -> int:
@@ -1362,6 +1409,15 @@ def row_numeric_cell_count(table: ValidationTable, row: list) -> int:
         1
         for col_index in range(column_count(table))
         if col_index not in label_columns and cell_number(row, col_index) is not None
+    )
+
+
+def row_additive_cell_count(table: ValidationTable, row: list) -> int:
+    label_columns = set(leading_label_columns(table))
+    return sum(
+        1
+        for col_index in range(column_count(table))
+        if col_index not in label_columns and additive_operand_cell_number(row, col_index) is not None
     )
 
 
