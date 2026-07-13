@@ -82,8 +82,16 @@ function checksForFilter<T extends { status: string }>(
   return allChecks;
 }
 
+function calculationFamilyKeyForCheck(check: ValidationIssue) {
+  return [check.rule_id ?? check.id, check.type, check.formula ?? "", check.detail].join("::");
+}
+
 function groupKeyForCheck(check: ValidationIssue) {
-  return [check.rule_id ?? check.id, check.type, check.status, check.formula ?? "", check.detail].join("::");
+  return [calculationFamilyKeyForCheck(check), check.status].join("::");
+}
+
+function shouldExpandCalculationFamily(check: ValidationIssue) {
+  return Boolean(check.rule_id) && ["합계 검수", "비율 검수", "증감액 검수", "증감률 검수"].includes(check.type);
 }
 
 function aggregateStatus(checks: ValidationIssue[]) {
@@ -265,7 +273,12 @@ function mergeHighlightCells(checks: ValidationIssue[]) {
       );
       const key = highlightCellKey(normalizedCell);
       const current = cellsByKey.get(key);
-      if (!current || normalizedCell.role === "target") {
+      const shouldReplace =
+        !current ||
+        (current.role !== "target" && normalizedCell.role === "target") ||
+        (hasFailure && check.status !== "정상" && normalizedCell.role === "target");
+
+      if (shouldReplace) {
         cellsByKey.set(key, normalizedCell);
       }
     }
@@ -413,6 +426,49 @@ function groupChecksForDisplay(part: StatTablePart, sourceChecks: ValidationIssu
   });
 }
 
+function expandCalculationFamilyForHighlight(
+  part: StatTablePart,
+  check: DisplayCheck | undefined,
+  sourceChecks: ValidationIssue[],
+) {
+  if (!check || !shouldExpandCalculationFamily(check)) {
+    return check;
+  }
+
+  const familyKey = calculationFamilyKeyForCheck(check);
+  const existingIds = new Set(check.checks.map((item) => item.id));
+  const siblingChecks = sourceChecks.filter(
+    (item) => calculationFamilyKeyForCheck(item) === familyKey && !existingIds.has(item.id),
+  );
+  if (siblingChecks.length === 0) {
+    return check;
+  }
+
+  const checks = [...check.checks, ...siblingChecks];
+  if (checks.length > 3) {
+    return check;
+  }
+
+  const highlightCells = mergeHighlightCells(checks);
+  const highlightRows = mergeHighlightRows(checks);
+  const focusCell = focusCellForChecks(checks, highlightCells);
+  const targetLocations = checks.map((item) => resolveIssueLocation(part, item));
+  const rows = uniqueValues(targetLocations.map((location) => location.row));
+  const columns = uniqueValues(targetLocations.map((location) => location.column));
+
+  return {
+    ...check,
+    checks,
+    targetLocations,
+    targetCount: checks.length,
+    rowSummary: summarizeValues(rows, "행"),
+    columnSummary: summarizeValues(columns, "열"),
+    highlight_cells: highlightCells,
+    highlight_rows: highlightRows,
+    focus_cell: focusCell,
+  };
+}
+
 function rootTableAsPart(table: StatTable): StatTablePart {
   return {
     id: table.id,
@@ -531,11 +587,12 @@ export function DetailView({ table, onBack }: DetailViewProps) {
     [activePart, errorRawChecks],
   );
   const filteredChecks = checksForFilter(checkFilter, displayChecks, passedChecks, reviewChecks, errorChecks);
-  const selectedIssue =
+  const selectedIssueBase =
     filteredChecks.find((check) => check.id === selectedCheckId) ??
     filteredChecks[0] ??
     displayChecks.find((check) => check.id === selectedCheckId) ??
     displayChecks[0];
+  const selectedIssue = expandCalculationFamilyForHighlight(activePart, selectedIssueBase, allRawChecks);
   const activeIssueIndex = Math.max(filteredChecks.findIndex((check) => check.id === selectedIssue?.id), 0);
   const selectedIssueHighlight = highlightForCheck(activePart, selectedIssue);
   const parentHierarchy = table.hierarchy.slice(0, -1);

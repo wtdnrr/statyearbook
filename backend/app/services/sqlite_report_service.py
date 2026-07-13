@@ -458,6 +458,13 @@ def formula_previous_column(spec: dict[str, Any] | None, current_col: int | None
     return previous_columns[-1] if previous_columns else None
 
 
+def expand_column_sum_highlight_columns(columns: list[int]) -> bool:
+    if len(columns) <= 1 or len(columns) > 3:
+        return False
+    ordered = sorted(columns)
+    return ordered == list(range(ordered[0], ordered[-1] + 1))
+
+
 def highlight_cells_for(row: sqlite3.Row, spec: dict[str, Any] | None) -> list[ValidationHighlightCell]:
     row_index = int_or_none(row["row_index"])
     col_index = int_or_none(row["col_index"])
@@ -520,8 +527,17 @@ def highlight_cells_for(row: sqlite3.Row, spec: dict[str, Any] | None) -> list[V
         )
     elif rule_type in {"column_sum", "region_total"}:
         target_row = int(spec.get("target_row", row_index if row_index is not None else -1))
-        cells.append(highlight_cell(target_row, col_index, "target"))
-        cells.extend(highlight_cell(operand_row, col_index, "related") for operand_row in spec_rows(spec, "operand_rows"))
+        rule_columns = spec_columns(spec, "columns")
+        current_col = col_index if col_index is not None else (rule_columns[0] if rule_columns else -1)
+        target_columns = (
+            [current_col, *[column for column in rule_columns if column != current_col]]
+            if expand_column_sum_highlight_columns(rule_columns)
+            else [current_col]
+        )
+        cells.extend(highlight_cell(target_row, column, "target") for column in target_columns)
+        operand_rows = spec_rows(spec, "operand_rows")
+        for operand_row in operand_rows:
+            cells.extend(highlight_cell(operand_row, column, "related") for column in target_columns)
     elif rule_type == "row_ratio_by_rows":
         target_row = int(spec.get("target_row", row_index if row_index is not None else -1))
         numerator_row = int(spec.get("numerator_row", -1))

@@ -82,7 +82,7 @@ def additive_cell_number(row: list, col_index: int) -> float | None:
         return value
 
     text = clean_display_text(cell_text(row, col_index))
-    if text in {"-", "－", "―"}:
+    if text in {"-", "－", "―", "_", "＿"}:
         return 0.0
     return None
 
@@ -97,7 +97,7 @@ def additive_operand_cell_number(row: list, col_index: int) -> float | None:
 
 
 def additive_target_cell_number(row: list, col_index: int) -> float | None:
-    return additive_operand_cell_number(row, col_index)
+    return additive_cell_number(row, col_index)
 
 
 class ProfileStateRule(ValidationRule):

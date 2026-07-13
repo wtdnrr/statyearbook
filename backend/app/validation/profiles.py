@@ -339,7 +339,7 @@ def additive_cell_number(row: list, col_index: int) -> float | None:
         return value
 
     text = cell_text_at(row, col_index)
-    if text in {"-", "－", "―"}:
+    if text in {"-", "－", "―", "_", "＿"}:
         return 0.0
     return None
 
@@ -354,7 +354,7 @@ def additive_operand_cell_number(row: list, col_index: int) -> float | None:
 
 
 def additive_target_cell_number(row: list, col_index: int) -> float | None:
-    return additive_operand_cell_number(row, col_index)
+    return additive_cell_number(row, col_index)
 
 
 def is_male_label(leaf: str, full_label: str) -> bool:
@@ -881,6 +881,13 @@ def best_row_sum_operand_columns(
 ) -> list[int]:
     candidates: list[list[int]] = []
 
+    sibling_total_operands = sibling_total_operand_columns(table, target_col, numeric_columns)
+    if len(sibling_total_operands) >= 2:
+        candidates.append(sibling_total_operands)
+        passed_ratio, checked_count = row_sum_match_ratio(table, target_col, sibling_total_operands, tolerance=1.0)
+        if checked_count >= row_sum_minimum_checked_count(sibling_total_operands) and passed_ratio >= sum_profile_minimum_ratio(checked_count):
+            return sibling_total_operands
+
     exact_parent_operands = [
         col_index
         for col_index in numeric_columns
@@ -890,6 +897,9 @@ def best_row_sum_operand_columns(
     ]
     if len(exact_parent_operands) >= 2:
         candidates.append(exact_parent_operands)
+        passed_ratio, checked_count = row_sum_match_ratio(table, target_col, exact_parent_operands, tolerance=1.0)
+        if checked_count >= row_sum_minimum_checked_count(exact_parent_operands) and passed_ratio >= sum_profile_minimum_ratio(checked_count):
+            return exact_parent_operands
 
     group_prefix = aggregate_group_prefix(table, target_col)
     if group_prefix:
@@ -957,6 +967,27 @@ def best_row_sum_operand_columns(
         [*fallback_candidates, *combination_candidates],
     )
     return best_candidate or []
+
+
+def sibling_total_operand_columns(
+    table: ValidationTable,
+    target_col: int,
+    numeric_columns: list[int],
+) -> list[int]:
+    if total_label_kind(leaf_header(table, target_col)) is None:
+        return []
+
+    target_leaf_key = normalize_text(leaf_header(table, target_col))
+    target_parent_key = effective_header_parent_key(table, target_col)
+    operands = [
+        col_index
+        for col_index in numeric_columns
+        if col_index != target_col
+        and total_label_kind(leaf_header(table, col_index)) is not None
+        and normalize_text(leaf_header(table, col_index)) == target_leaf_key
+        and effective_header_parent_key(table, col_index) != target_parent_key
+    ]
+    return operands
 
 
 def top_level_summary_operand_columns(
