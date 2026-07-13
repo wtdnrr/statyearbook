@@ -98,6 +98,8 @@ def leading_label_columns(table: ValidationTable) -> list[int]:
         if col_index == 0 and ("연도" in header_text or re.search(r"\byear\b", header_text, re.IGNORECASE)) and year_like_count / len(values) >= 0.7:
             labels.append(col_index)
             continue
+        if labels and is_schedule_descriptor_column(header_text):
+            continue
         if numeric_ratio <= 0.25:
             labels.append(col_index)
             continue
@@ -131,6 +133,13 @@ def is_ratio_like(value: str) -> bool:
     if any(keyword in normalized for keyword in ("비율", "비중", "증감률", "잔액율", "잔액률", "율")):
         return True
     return bool(re.search(r"\b(rate|ratio|percent|percentage)\b", value, re.IGNORECASE))
+
+
+def is_schedule_descriptor_column(value: str) -> bool:
+    normalized = normalize_text(value)
+    if any(keyword in normalized for keyword in ("운영일자", "일자", "일시", "날짜", "기간")):
+        return True
+    return bool(re.search(r"\b(dates?|period|schedule)\b", value, re.IGNORECASE))
 
 
 def is_additive_column_label(value: str) -> bool:

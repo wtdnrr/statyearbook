@@ -391,8 +391,16 @@ def cross_split_part_row_total_spec(rule_id: str) -> dict[str, Any] | None:
         for value in values.get("related", "").split(",")
         if value.strip().isdigit()
     ]
+    role = values.get("role", "target")
     if target is None:
         return None
+
+    if role == "operand":
+        return {
+            "id": rule_id,
+            "type": "cross_split_operand_row",
+            "operand_columns": related,
+        }
 
     return {
         "id": rule_id,
@@ -525,6 +533,15 @@ def highlight_cells_for(row: sqlite3.Row, spec: dict[str, Any] | None) -> list[V
                 highlight_cell(denominator_row, col_index, "related"),
             ]
         )
+    elif rule_type == "weighted_average":
+        target_row = int(spec.get("target_row", row_index if row_index is not None else -1))
+        target_col = int(spec.get("target_column", col_index if col_index is not None else -1))
+        value_col = int(spec.get("value_column", -1))
+        weight_col = int(spec.get("weight_column", -1))
+        cells.append(highlight_cell(target_row, target_col, "target"))
+        for operand_row in spec_rows(spec, "operand_rows"):
+            cells.append(highlight_cell(operand_row, value_col, "related"))
+            cells.append(highlight_cell(operand_row, weight_col, "related"))
     elif rule_type == "row_year_over_year_rate":
         target_row = int(spec.get("target_row", row_index if row_index is not None else -1))
         source_row = int(spec.get("source_row", -1))
@@ -580,6 +597,8 @@ def highlight_cells_for(row: sqlite3.Row, spec: dict[str, Any] | None) -> list[V
                 highlight_cell(previous_row, value_col, "related"),
             ]
         )
+    elif rule_type == "cross_split_operand_row":
+        cells.extend(highlight_cell(row_index, col, "related") for col in spec_columns(spec, "operand_columns"))
     elif rule_type in {
         "spelling_static",
         "translation_static",
@@ -609,10 +628,12 @@ def highlight_rows_for(row: sqlite3.Row, spec: dict[str, Any] | None) -> list[Va
         "column_sum",
         "region_total",
         "row_ratio_by_rows",
+        "weighted_average",
         "row_year_over_year_rate",
         "row_year_over_year_change_amount",
         "year_rows_change_rate",
         "year_rows_change_amount",
+        "cross_split_operand_row",
     }:
         return []
 
@@ -643,9 +664,12 @@ def highlight_scope_for(row: sqlite3.Row, spec: dict[str, Any] | None, header_co
         "row_growth_rate",
         "row_year_over_year_change_amount",
         "year_rows_change_amount",
+        "cross_split_operand_row",
     }:
         return "row"
     if rule_type in {"column_sum", "region_total", "row_ratio_by_rows"}:
+        return "column"
+    if rule_type == "weighted_average":
         return "column"
     if rule_type in {"spelling_static", "translation_static"}:
         return "header" if row_index is not None and row_index < header_count else "cell"
@@ -926,6 +950,8 @@ def clean_label(text: str) -> str:
     cleaned = re.sub(r"\([^가-힣)]*[A-Za-z][^)]*\)", "", cleaned)
     koreanish = re.sub(r"[A-Za-z][A-Za-z0-9 /&().,%·･+\-']*", "", cleaned)
     koreanish = re.sub(r"\s+", " ", koreanish).strip(" /")
+    if diagonal_region_header_label(koreanish, cleaned):
+        return "지역"
     koreanish = re.sub(r"^구분(?=\S)", "구분 / ", koreanish)
     koreanish = re.sub(r"(\d{4})(?=[가-힣])", r"\1 ", koreanish)
     koreanish = koreanish.replace("()", "").strip(" /")
@@ -934,9 +960,36 @@ def clean_label(text: str) -> str:
 
 def english_label(text: str) -> str | None:
     text = restore_hyphenated_line_breaks(text)
+    if diagonal_region_header_label(clean_label_korean_only(text), text):
+        return "Region"
     matches = re.findall(r"[A-Za-z][A-Za-z0-9 /&().,%·･+\-']*", text)
     value = " ".join(item.strip() for item in matches if item.strip())
     return value or None
+
+
+def clean_label_korean_only(text: str) -> str:
+    cleaned = re.sub(r"\s+", " ", restore_hyphenated_line_breaks(text)).strip()
+    cleaned = re.sub(r"\([^가-힣)]*[A-Za-z][^)]*\)", "", cleaned)
+    koreanish = re.sub(r"[A-Za-z][A-Za-z0-9 /&().,%·･+\-']*", "", cleaned)
+    return re.sub(r"\s+", " ", koreanish).strip(" /")
+
+
+def diagonal_region_header_label(korean_text: str, raw_text: str) -> bool:
+    normalized_korean = re.sub(r"\s+", "", korean_text)
+    normalized_raw = raw_text.lower()
+    return (
+        "구분" in normalized_korean
+        and "지역" in normalized_korean
+        and "classification" in normalized_raw
+        and "region" in normalized_raw
+    )
+
+
+def is_schedule_descriptor_column_label(value: str) -> bool:
+    normalized = re.sub(r"[\s·,._\-()/%]+", "", value).lower()
+    if any(keyword in normalized for keyword in ("운영일자", "일자", "일시", "날짜", "기간")):
+        return True
+    return bool(re.search(r"\b(dates?|period|schedule)\b", value, re.IGNORECASE))
 
 
 def inherited_header_value(header_row: list[str], col_index: int) -> str:
@@ -986,8 +1039,11 @@ def leading_label_column_indexes(matrix: list[list[str]], header_count: int) -> 
 
         numeric_count = sum(1 for value in values if parse_numeric(value) is not None)
         numeric_ratio = numeric_count / len(values)
+        header_text = header_text_for_column(matrix, header_count, col_index)
         if col_index == 0 and looks_like_year_label_column(matrix, header_count, col_index, values):
             label_indexes.append(col_index)
+            continue
+        if label_indexes and is_schedule_descriptor_column_label(header_text):
             continue
         if numeric_ratio <= 0.25:
             label_indexes.append(col_index)
@@ -1130,14 +1186,32 @@ def build_columns(
                 key=f"c{col_index}",
                 label=label,
                 label_en=label_en,
-                align="left" if col_index == 0 else "right",
-                width="24%" if col_index == 0 else None,
+                align=column_alignment(col_index, label, label_en),
+                width=column_width(col_index, label, label_en),
                 source_col_index=col_index,
                 source_col_indexes=source_col_indexes,
             )
         )
 
     return columns
+
+
+def column_alignment(col_index: int, label: str, label_en: str | None) -> str:
+    combined = f"{label} {label_en or ''}"
+    if col_index == 0:
+        return "left"
+    if is_schedule_descriptor_column_label(combined):
+        return "center"
+    return "right"
+
+
+def column_width(col_index: int, label: str, label_en: str | None) -> str | None:
+    combined = f"{label} {label_en or ''}"
+    if col_index == 0:
+        return "24%"
+    if is_schedule_descriptor_column_label(combined):
+        return "18%"
+    return None
 
 
 def build_rows(

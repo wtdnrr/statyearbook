@@ -41,6 +41,129 @@
           "confidence": 1.0
         }
       ]
+    },
+    "4-1-10": {
+      "status": "ready",
+      "decision": "curated_average_profile",
+      "label": "지방자치단체 위원회 평균회의 횟수 가중 평균 산식 승인",
+      "table_type": "regional_summary_table",
+      "notes": "큐레이션: 연간 평균회의 개최횟수의 계 값은 시도별 값을 단순 평균하지 않고, 위원회 수를 가중치로 둔 가중 평균으로 검수합니다.",
+      "checks": [
+        {
+          "id": "curated.4-1-10.weighted_average_meetings",
+          "type": "weighted_average",
+          "category": "table",
+          "check_group": "average",
+          "check_type": "평균 검수",
+          "failure_status": "오류 의심",
+          "severity": "critical",
+          "label": "계 평균회의 개최횟수 = Σ(지역별 위원회 수 × 지역별 평균회의 개최횟수) / Σ(지역별 위원회 수)",
+          "target_row": 3,
+          "target_column": 2,
+          "value_column": 2,
+          "weight_column": 1,
+          "operand_rows": [4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20],
+          "tolerance": 0.05,
+          "confidence": 1.0
+        }
+      ]
+    },
+    "4-1-8-3": {
+      "status": "ready",
+      "decision": "curated_sum_profile",
+      "label": "연령별 지방공무원 직종·연령 합계 산식 승인",
+      "table_type": "classification_by_age_table",
+      "notes": "큐레이션: 일반직은 고위공무원부터 전문임기제까지의 합계이고, 계는 일반직·특정직·정무직·별정직의 합계입니다. 전체 계는 20세 이하부터 60세 이상까지 연령대별 전체 값을 더해 검수합니다.",
+      "suppress_checks": [
+        {
+          "type": "row_sum"
+        }
+      ],
+      "checks": [
+        {
+          "id": "curated.4-1-8-3.general_service_total",
+          "type": "column_sum",
+          "category": "table",
+          "check_group": "sum",
+          "check_type": "합계 검수",
+          "failure_status": "오류 의심",
+          "severity": "critical",
+          "label": "일반직 = 고위공무원 + 1급 + 2급 + 3급 + 4급 + 5급 + 6급 + 7급 + 8급 + 9급 + 연구직 + 지도직 + 시간선택제 + 전문경력관 + 전담직위 + 일반임기제 + 전문임기제",
+          "target_row": 3,
+          "operand_rows": [4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20],
+          "columns": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14],
+          "tolerance": 0.0,
+          "confidence": 1.0
+        },
+        {
+          "id": "curated.4-1-8-3.grand_total_by_service",
+          "type": "column_sum",
+          "category": "table",
+          "check_group": "sum",
+          "check_type": "합계 검수",
+          "failure_status": "오류 의심",
+          "severity": "critical",
+          "label": "계 = 일반직 + 특정직 + 정무직 + 별정직",
+          "target_row": 2,
+          "operand_rows": [3, 21, 22, 23],
+          "columns": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14],
+          "tolerance": 0.0,
+          "confidence": 1.0
+        },
+        {
+          "id": "curated.4-1-8-3.age_total",
+          "type": "row_sum",
+          "category": "table",
+          "check_group": "sum",
+          "check_type": "합계 검수",
+          "failure_status": "오류 의심",
+          "severity": "critical",
+          "label": "계 전체 = 20세 이하 전체 + 21~30세 전체 + 31~40세 전체 + 41~50세 전체 + 51~59세 전체 + 60세 이상 전체",
+          "target_column": 1,
+          "operand_columns": [3, 5, 7, 9, 11, 13],
+          "tolerance": 0.0,
+          "confidence": 1.0
+        }
+      ]
+    },
+    "5-1-5-1": {
+      "status": "ready",
+      "decision": "curated_sum_profile",
+      "label": "연도별 교부세 계층 합계 산식 승인",
+      "table_type": "year_trend_table",
+      "notes": "큐레이션: 정률분은 보통교부세·특별교부세·분권교부세의 합계이며, 총계는 정률분·부동산교부세·소방안전교부세의 합계로 검수합니다.",
+      "checks": [
+        {
+          "id": "curated.5-1-5-1.fixed_ratio_total",
+          "type": "column_sum",
+          "category": "table",
+          "check_group": "sum",
+          "check_type": "합계 검수",
+          "failure_status": "오류 의심",
+          "severity": "critical",
+          "label": "정률분 = 보통교부세 + 특별교부세 + 분권교부세",
+          "target_row": 2,
+          "operand_rows": [3, 4, 5],
+          "columns": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
+          "tolerance": 1.0,
+          "confidence": 1.0
+        },
+        {
+          "id": "curated.5-1-5-1.grand_total",
+          "type": "column_sum",
+          "category": "table",
+          "check_group": "sum",
+          "check_type": "합계 검수",
+          "failure_status": "오류 의심",
+          "severity": "critical",
+          "label": "총계 = 정률분 + 부동산교부세 + 소방안전교부세",
+          "target_row": 1,
+          "operand_rows": [2, 6, 7],
+          "columns": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
+          "tolerance": 1.0,
+          "confidence": 1.0
+        }
+      ]
     }
   },
   "groups": [

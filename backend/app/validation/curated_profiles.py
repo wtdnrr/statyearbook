@@ -50,6 +50,13 @@ def apply_curated_profile(
 
     curated_checks = [deepcopy(check) for check in checks]
     apply_confidence_overrides(curated_checks, profile.get("confidence_overrides", []))
+    suppressions = profile.get("suppress_checks", [])
+    if suppressions:
+        curated_checks = [
+            check
+            for check in curated_checks
+            if not any(check_matches(check, suppression) for suppression in suppressions)
+        ]
 
     decision = profile.get("decision")
     if decision:

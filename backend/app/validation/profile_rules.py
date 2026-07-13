@@ -188,6 +188,8 @@ class ProfileSpecRule(ValidationRule):
                 spec_issues, spec_checks = self._validate_column_share_ratio(table, profile, spec)
             elif rule_type == "row_ratio_by_rows":
                 spec_issues, spec_checks = self._validate_row_ratio_by_rows(table, profile, spec)
+            elif rule_type == "weighted_average":
+                spec_issues, spec_checks = self._validate_weighted_average(table, profile, spec)
             elif rule_type == "growth_rate_scan":
                 spec_issues, spec_checks = self._validate_growth_rate_scan(table, profile, spec)
             elif rule_type == "row_growth_rate":
@@ -1222,6 +1224,60 @@ class ProfileSpecRule(ValidationRule):
                 )
             )
         return issues, checks
+
+    def _validate_weighted_average(
+        self,
+        table: ValidationTable,
+        profile: ValidationProfile,
+        spec: dict[str, Any],
+    ) -> tuple[list[ValidationIssueRecord], list[ValidationCheckRecord]]:
+        target_row = int(spec.get("target_row", -1))
+        target_column = int(spec.get("target_column", -1))
+        value_column = int(spec.get("value_column", -1))
+        weight_column = int(spec.get("weight_column", -1))
+        operand_rows = [int(row_index) for row_index in spec.get("operand_rows", [])]
+        if (
+            target_row < 0
+            or target_row >= len(table.matrix)
+            or not self._valid_columns(table, [target_column, value_column, weight_column])
+            or not operand_rows
+        ):
+            return [], []
+
+        current = additive_target_cell_number(table.matrix[target_row], target_column)
+        weighted_sum = 0.0
+        weight_sum = 0.0
+        checked_rows = 0
+        for row_index in operand_rows:
+            if row_index >= len(table.matrix):
+                continue
+            row = table.matrix[row_index]
+            value = additive_operand_cell_number(row, value_column)
+            weight = additive_operand_cell_number(row, weight_column)
+            if value is None or weight is None:
+                continue
+            weighted_sum += value * weight
+            weight_sum += weight
+            checked_rows += 1
+
+        if current is None or checked_rows < 2 or weight_sum == 0:
+            return [], []
+
+        expected = weighted_sum / weight_sum
+        passed = abs(current - expected) <= float(spec.get("tolerance", 0.05))
+        check = self._calculation_check(
+            table,
+            profile,
+            spec,
+            check_type="평균 검수",
+            row_index=target_row,
+            col_index=target_column,
+            current=current,
+            expected=expected,
+            passed=passed,
+            detail="통계표별 검수 기준에 정의된 가중 평균 산식을 확인했습니다.",
+        )
+        return ([self._issue_from_check(check)] if not passed else []), [check]
 
     def _validate_column_sum(
         self,

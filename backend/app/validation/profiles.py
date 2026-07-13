@@ -17,6 +17,7 @@ from app.validation.rules import (
     combined_row_label,
     header_parent_key,
     is_additive_column_label,
+    is_schedule_descriptor_column,
     is_total_like,
     leading_label_columns,
     leaf_header,
@@ -272,6 +273,8 @@ def analyze_table(table: ValidationTable) -> dict[str, Any]:
 def infer_column_role(table: ValidationTable, col_index: int) -> str:
     label = table.column_text(col_index)
     normalized = normalize_text(label)
+    if is_schedule_descriptor_column(label):
+        return "date"
     if any(keyword in normalized for keyword in ("계", "합계", "총계", "소계", "total", "subtotal")):
         return "total"
     if any(keyword in normalized for keyword in ("비율", "비중", "증감률", "잔액율", "잔액률", "율", "rate", "ratio", "percent")):
@@ -706,6 +709,9 @@ def common_check_specs(table: ValidationTable) -> list[dict[str, Any]]:
 
 
 def region_total_check_specs(table: ValidationTable) -> list[dict[str, Any]]:
+    if has_schedule_descriptor_column(table):
+        return []
+
     rows = table.data_rows()
     target_item = next(
         ((row_index, row) for row_index, row in rows[:5] if row_total_kind(table, row) == "total"),
@@ -750,11 +756,18 @@ def region_total_check_specs(table: ValidationTable) -> list[dict[str, Any]]:
             "target_row": target_row_index,
             "operand_rows": operand_rows,
             "columns": columns,
-            "tolerance": 1.0,
+            "tolerance": sum_execution_tolerance(table),
             "confidence": 0.95 if len(unique_regions) >= 15 else 0.82,
             },
         )
     ]
+
+
+def has_schedule_descriptor_column(table: ValidationTable) -> bool:
+    return any(
+        is_schedule_descriptor_column(table.column_text(col_index))
+        for col_index in range(column_count(table))
+    )
 
 
 def year_sequence_check_specs(table: ValidationTable) -> list[dict[str, Any]]:
@@ -807,7 +820,7 @@ def infer_total_column_rules(table: ValidationTable) -> list[dict[str, Any]]:
                             "label": row_sum_rule_label(table, target_col, direct_child_columns),
                             "target_column": target_col,
                             "operand_columns": direct_child_columns,
-                            "tolerance": 1.0,
+                            "tolerance": sum_execution_tolerance(table),
                             "confidence": sum_profile_confidence(passed_ratio),
                         },
                     )
@@ -829,7 +842,7 @@ def infer_total_column_rules(table: ValidationTable) -> list[dict[str, Any]]:
                 "label": row_sum_rule_label(table, target_col, operand_columns),
                 "target_column": target_col,
                 "operand_columns": operand_columns,
-                "tolerance": 1.0,
+                "tolerance": sum_execution_tolerance(table),
                 "confidence": sum_profile_confidence(passed_ratio),
                 },
             )
@@ -1120,7 +1133,7 @@ def infer_total_row_rules(table: ValidationTable) -> list[dict[str, Any]]:
                         "target_row": target_row_index,
                         "operand_rows": operand_rows,
                         "columns": columns,
-                        "tolerance": 1.0,
+                        "tolerance": sum_execution_tolerance(table),
                         "confidence": 0.65 if force_year_total and passed_ratio < sum_profile_minimum_ratio(checked_count) else sum_profile_confidence(passed_ratio),
                     },
                 )
@@ -1138,6 +1151,23 @@ def sum_profile_confidence(passed_ratio: float) -> float:
     if passed_ratio >= 0.8:
         return 0.9
     return 0.76
+
+
+def sum_execution_tolerance(table: ValidationTable) -> float:
+    if count_like_sum_unit(table.unit):
+        return 0.0
+    return 1.0
+
+
+def count_like_sum_unit(unit: str) -> bool:
+    if any(separator in unit for separator in (",", "%", "/", "·", "･")):
+        return False
+    normalized = normalize_text(unit)
+    if not normalized:
+        return False
+    if any(keyword in normalized for keyword in ("원", "krw", "금액", "면적", "㎡", "km", "㎞", "㎢", "ha", "천", "백만")):
+        return False
+    return normalized in {"명", "개", "개소", "건", "회", "종", "곳", "대", "가구", "세대", "필지", "동"}
 
 
 def clear_year_total_candidate(
@@ -1277,6 +1307,8 @@ def implicit_subtotal_child_map(
         max_prefix = min(len(detail_rows), 30)
         for size in range(2, max_prefix + 1):
             candidate_rows = detail_rows[:size]
+            if flat_region_rows_are_not_implicit_children(table, target_row_index, candidate_rows):
+                continue
             passed_ratio, checked_count = column_sum_match_ratio_in_matrix(
                 matrix,
                 target_row_index,
@@ -1289,6 +1321,29 @@ def implicit_subtotal_child_map(
                 break
 
     return child_map
+
+
+def flat_region_rows_are_not_implicit_children(
+    table: ValidationTable,
+    target_row_index: int,
+    candidate_rows: list[int],
+) -> bool:
+    if target_row_index >= len(table.matrix):
+        return False
+    if not plain_region_row(table, table.matrix[target_row_index]):
+        return False
+    return all(
+        row_index < len(table.matrix) and plain_region_row(table, table.matrix[row_index])
+        for row_index in candidate_rows
+    )
+
+
+def plain_region_row(table: ValidationTable, row: list) -> bool:
+    parts = [clean_display_text(part) for part in row_label_parts(table, row) if clean_display_text(part)]
+    if len(parts) != 1:
+        return False
+    normalized = normalize_text(parts[0])
+    return any(normalized.startswith(region) for region in REGION_NAMES)
 
 
 def column_sum_match_ratio_in_matrix(
@@ -1533,7 +1588,7 @@ def infer_gender_total_rules(table: ValidationTable) -> list[dict[str, Any]]:
                     "label": f"{leaf_header(table, target_col)} = {leaf_header(table, male_col)} + {leaf_header(table, female_col)}",
                     "target_column": target_col,
                     "operand_columns": [male_col, female_col],
-                    "tolerance": 1.0,
+                    "tolerance": sum_execution_tolerance(table),
                     "confidence": 0.97 if passed_ratio >= 0.95 else 0.9,
                 },
             )
