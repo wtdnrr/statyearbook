@@ -32,9 +32,11 @@ interface ReportWorkspaceProps {
   selectedReportId: string;
   query: string;
   filter: FilterValue;
+  showOutlierChecks: boolean;
   onReportChange: (reportId: string) => void;
   onQueryChange: (query: string) => void;
   onFilterChange: (filter: FilterValue) => void;
+  onShowOutlierChecksChange: (show: boolean) => void;
   onSelect: (tableId: string) => void;
   onOpen: (tableId: string) => void;
 }
@@ -48,9 +50,11 @@ export function ReportWorkspace({
   selectedReportId,
   query,
   filter,
+  showOutlierChecks,
   onReportChange,
   onQueryChange,
   onFilterChange,
+  onShowOutlierChecksChange,
   onSelect,
   onOpen,
 }: ReportWorkspaceProps) {
@@ -79,8 +83,10 @@ export function ReportWorkspace({
           availableReports={availableReports}
           selectedReportId={selectedReportId || String(summary.report_id ?? "")}
           activeFilter={filter}
+          showOutlierChecks={showOutlierChecks}
           onReportChange={onReportChange}
           onFilterChange={handleSummaryFilterChange}
+          onShowOutlierChecksChange={onShowOutlierChecksChange}
         />
         <TableList
           tables={filteredTables}

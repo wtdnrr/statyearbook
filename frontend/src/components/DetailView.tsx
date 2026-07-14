@@ -46,6 +46,8 @@ interface GridHighlightLocation {
 
 interface DetailViewProps {
   table: StatTable;
+  showOutlierChecks: boolean;
+  onShowOutlierChecksChange: (show: boolean) => void;
   onBack: () => void;
 }
 
@@ -563,7 +565,12 @@ function CalculationUsageList({ part, check }: { part: StatTablePart; check: Dis
   );
 }
 
-export function DetailView({ table, onBack }: DetailViewProps) {
+export function DetailView({
+  table,
+  showOutlierChecks,
+  onShowOutlierChecksChange,
+  onBack,
+}: DetailViewProps) {
   const [activeTab, setActiveTab] = useState<DetailTab>("checks");
   const tableParts = useMemo(() => (table.parts.length > 0 ? table.parts : [rootTableAsPart(table)]), [table]);
   const [activePartId, setActivePartId] = useState<string>(tableParts[0]?.id ?? table.id);
@@ -660,6 +667,14 @@ export function DetailView({ table, onBack }: DetailViewProps) {
           </div>
         </div>
         <div className="detail-header__actions">
+          <label className="table-option-toggle validation-toggle">
+            <input
+              checked={showOutlierChecks}
+              onChange={(event) => onShowOutlierChecksChange(event.target.checked)}
+              type="checkbox"
+            />
+            <span>이상치 표시</span>
+          </label>
           <StatusBadge status={table.status} label={table.status_label} />
           <button className="secondary-button detail-download" type="button">
             <Download aria-hidden="true" size={16} />
@@ -913,9 +928,21 @@ export function DetailView({ table, onBack }: DetailViewProps) {
                     <dt>최종 수정 일자</dt>
                     <dd>{activePart.updated_at}</dd>
                   </div>
+                  <div>
+                    <dt>소속</dt>
+                    <dd>{activePart.metadata.source_department || "-"}</dd>
+                  </div>
+                  <div>
+                    <dt>이름</dt>
+                    <dd>{activePart.metadata.source_officer || "-"}</dd>
+                  </div>
+                  <div>
+                    <dt>내선번호</dt>
+                    <dd>{activePart.metadata.source_extension || "-"}</dd>
+                  </div>
                   <div className="metadata-grid__wide">
                     <dt>출처</dt>
-                    <dd>{activePart.metadata.source}</dd>
+                    <dd>{activePart.metadata.source_reference || activePart.metadata.source || "-"}</dd>
                   </div>
                   <div className="metadata-grid__wide">
                     <dt>주석</dt>

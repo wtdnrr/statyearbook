@@ -8,6 +8,7 @@ import sqlite3
 from typing import Any
 from urllib.parse import unquote
 
+from app.core.contact_metadata import parse_contact_metadata
 from app.db.schema import DB_PATH, connect, init_db
 from app.models.report import (
     ChangeItem,
@@ -222,6 +223,7 @@ class SQLiteReportService:
         table_id = f"db-{table_row['id']}"
         checks = build_validation_issues(connection, run_id, table_row["id"], header_count)
         status, status_label = status_from_checks(checks)
+        contact = parse_contact_metadata(table_row["source"] or "")
 
         return StatTable(
             id=table_id,
@@ -261,6 +263,10 @@ class SQLiteReportService:
                 sheet_name=table_row["section_file"],
                 note=table_row["note"],
                 source=table_row["source"],
+                source_department=contact.department,
+                source_officer=contact.officer,
+                source_extension=contact.extension,
+                source_reference=contact.source_reference,
                 base_date=table_row["base_date"] or f"{report['year']} 기준",
                 base_date_display=metadata_base_date_display(table_row, report["year"]),
                 unit_display=metadata_unit_display(table_row),

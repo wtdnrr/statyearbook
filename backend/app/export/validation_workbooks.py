@@ -13,6 +13,7 @@ from openpyxl.comments import Comment
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 
+from app.core.contact_metadata import ContactMetadata, parse_contact_metadata
 from app.db.schema import DB_PATH, connect, init_db
 from app.services.sqlite_report_service import highlight_cells_for, load_rule_specs_by_id
 from app.validation.models import ValidationTable, restore_hyphenated_line_breaks
@@ -23,13 +24,6 @@ from app.validation.sqlite_repository import SQLiteValidationRepository
 EXCLUDED_CHECK_TYPES = {"이상치 검수"}
 PART_SUFFIX_RE = re.compile(r"\s+표\d+$")
 INVALID_SHEET_CHARS_RE = re.compile(r"[\\/*?:\[\]]")
-PHONE_RE = re.compile(r"(?<!\d)(?:0\d{1,2})[-)]?\s*\d{3,4}-\d{4}(?!\d)")
-CONTACT_RE = re.compile(
-    r"(?P<department>[가-힣A-Za-z0-9()·･\s]{1,60}?)\s+"
-    r"(?P<role>주무관|사무관|서기관|연구사|전문관|과장|팀장|센터장|담당자|경위|소방경|소방위)\s+"
-    r"(?P<name>[가-힣]{2,5})"
-)
-
 NAVY = "17324D"
 BLUE = "DCEAF7"
 ERROR_TARGET = "F4CCCC"
@@ -42,14 +36,6 @@ TEXT = "172033"
 MUTED = "5F6F86"
 THIN_SIDE = Side(style="thin", color="D6DFEA")
 THIN_BORDER = Border(left=THIN_SIDE, right=THIN_SIDE, top=THIN_SIDE, bottom=THIN_SIDE)
-
-
-@dataclass(frozen=True)
-class ContactMetadata:
-    department: str
-    officer: str
-    extension: str
-    source_reference: str
 
 
 @dataclass(frozen=True)
@@ -185,58 +171,6 @@ def resolve_run_id(connection: sqlite3.Connection, *, report_id: int, run_id: in
     return int(row["id"])
 
 
-def parse_contact_metadata(raw_source: str) -> ContactMetadata:
-    source = clean_source_text(raw_source)
-    departments: list[str] = []
-    officers: list[str] = []
-    for match in CONTACT_RE.finditer(source):
-        department = clean_department(match.group("department"))
-        if department and department not in departments:
-            departments.append(department)
-        officer = match.group("name").strip()
-        if officer and officer not in officers:
-            officers.append(officer)
-
-    phones = unique(PHONE_RE.findall(source))
-    source_reference = source_reference_from(source)
-    return ContactMetadata(
-        department=" / ".join(departments),
-        officer=" / ".join(officers),
-        extension=" / ".join(normalize_phone(phone) for phone in phones),
-        source_reference=source_reference,
-    )
-
-
-def clean_source_text(value: str) -> str:
-    cleaned = value.replace("\\*", "*").replace("\\_", "_")
-    cleaned = re.sub(r"\[([^\]]+)\]\([^)]+\)\)?", r"\1", cleaned)
-    cleaned = cleaned.replace("\\", "")
-    return re.sub(r"\s+", " ", cleaned).strip(" *")
-
-
-def clean_department(value: str) -> str:
-    cleaned = re.split(r"\s+[|/]\s+|[,;]", value)[-1]
-    cleaned = cleaned.strip(" *·･-/")
-    words = cleaned.split()
-    if len(words) > 4:
-        words = words[-4:]
-    return " ".join(words)
-
-
-def normalize_phone(value: str) -> str:
-    return re.sub(r"\s+", "", value).replace(")", "-")
-
-
-def source_reference_from(source: str) -> str:
-    parts = re.split(r"\s+/\s+", source, maxsplit=1)
-    if len(parts) == 2 and parts[1].strip():
-        return parts[1].strip()
-
-    without_contact = CONTACT_RE.sub("", source)
-    without_contact = PHONE_RE.sub("", without_contact)
-    return without_contact.strip(" *()/,-") or source
-
-
 def unique(values: Iterable[str]) -> list[str]:
     return list(dict.fromkeys(value.strip() for value in values if value.strip()))
 
@@ -249,7 +183,7 @@ def write_metadata_workbook(
     workbook = Workbook()
     sheet = workbook.active
     sheet.title = "메타데이터"
-    headers = ["번호", "통계명", "기준일", "단위", "주석", "과", "주무관", "내선번호", "출처"]
+    headers = ["번호", "통계명", "기준일", "단위", "주석", "소속", "이름", "내선번호", "출처"]
     write_header_row(sheet, 1, headers)
     for row_index, (base_code, parts) in enumerate(group_tables_by_base(tables).items(), start=2):
         part_contacts = [contacts[int(part["id"])] for part in parts]
@@ -337,7 +271,7 @@ def write_statistic_sheet(
         2,
         1,
         f"기준일 {first['base_date'] or '-'}   |   단위 {first['unit'] or '-'}   |   "
-        f"과 {contact.department or '-'}   |   주무관 {contact.officer or '-'}   |   내선번호 {contact.extension or '-'}",
+        f"소속 {contact.department or '-'}   |   이름 {contact.officer or '-'}   |   내선번호 {contact.extension or '-'}",
     )
     sheet.cell(2, 1).fill = PatternFill("solid", fgColor=GRAY)
     sheet.cell(2, 1).font = Font(name="Arial", size=10, color=TEXT)
@@ -542,7 +476,7 @@ def write_validation_index_workbook(
     workbook = Workbook()
     sheet = workbook.active
     sheet.title = "검수내역"
-    headers = ["번호", "통계명", "검수내용", "과", "주무관", "내선번호", "출처"]
+    headers = ["번호", "통계명", "검수내용", "소속", "주무관", "내선번호", "출처"]
     write_header_row(sheet, 1, headers)
     for row_index, check in enumerate(checks, start=2):
         contact = contacts[int(check["table_id"])]

@@ -86,6 +86,10 @@ class TableMetadata(BaseModel):
     sheet_name: str
     note: str
     source: str
+    source_department: str = ""
+    source_officer: str = ""
+    source_extension: str = ""
+    source_reference: str = ""
     base_date: str
     base_date_display: str = ""
     unit_display: str = ""

@@ -16,8 +16,9 @@ from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 import xlrd
 
+from app.core.contact_metadata import parse_contact_metadata
 from app.db.schema import DB_PATH, connect
-from app.export.validation_workbooks import base_table_code, parse_contact_metadata
+from app.export.validation_workbooks import base_table_code
 
 
 REFERENCE_SHEETS = {2025: "2025 통계연보 목록", 2026: "2026 통계연보 목록"}
@@ -1062,7 +1063,10 @@ def normalize_title(value: str) -> str:
 
 
 def normalize_name(value: str) -> str:
-    return re.sub(r"[^가-힣a-z]", "", unicodedata.normalize("NFKC", value or "").lower())
+    normalized = unicodedata.normalize("NFKC", value or "").lower()
+    for role in sorted(ROLE_WORDS, key=len, reverse=True):
+        normalized = normalized.replace(role, "")
+    return re.sub(r"[^가-힣a-z]", "", normalized)
 
 
 def title_similarity(left: str, right: str) -> float:

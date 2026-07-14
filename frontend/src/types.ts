@@ -79,6 +79,10 @@ export interface TableMetadata {
   sheet_name: string;
   note: string;
   source: string;
+  source_department: string;
+  source_officer: string;
+  source_extension: string;
+  source_reference: string;
   base_date: string;
   base_date_display: string;
   unit_display: string;

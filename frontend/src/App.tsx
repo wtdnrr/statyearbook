@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 
 import { AppHeader, type AppSection } from "./components/AppHeader";
 import { DetailView } from "./components/DetailView";
@@ -6,6 +6,10 @@ import { PressPage } from "./components/PressPage";
 import { ReportWorkspace } from "./components/ReportWorkspace";
 import { useReport } from "./hooks/useReport";
 import type { TableStatus } from "./types";
+import {
+  summaryWithValidationVisibility,
+  tablesWithValidationVisibility,
+} from "./utils/validationVisibility";
 import "./styles/global.css";
 
 type FilterValue = TableStatus | "all" | "has_issues";
@@ -17,9 +21,21 @@ export default function App() {
   const [selectedReportId, setSelectedReportId] = useState("");
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState<FilterValue>("all");
+  const [showOutlierChecks, setShowOutlierChecks] = useState(false);
   const report = useReport(selectedReportId || undefined);
 
-  const tables = report.data?.tables ?? [];
+  const rawTables = report.data?.tables ?? [];
+  const tables = useMemo(
+    () => tablesWithValidationVisibility(rawTables, showOutlierChecks),
+    [rawTables, showOutlierChecks],
+  );
+  const visibleSummary = useMemo(
+    () =>
+      report.data
+        ? summaryWithValidationVisibility(report.data.summary, tables)
+        : undefined,
+    [report.data, tables],
+  );
   const detailTable = tables.find((table) => table.id === detailTableId);
 
   function handleSelect(tableId: string) {
@@ -54,22 +70,31 @@ export default function App() {
   }
 
   if (detailTable) {
-    return <DetailView table={detailTable} onBack={() => setDetailTableId(null)} />;
+    return (
+      <DetailView
+        table={detailTable}
+        showOutlierChecks={showOutlierChecks}
+        onShowOutlierChecksChange={setShowOutlierChecks}
+        onBack={() => setDetailTableId(null)}
+      />
+    );
   }
 
   const reportWorkspace = (
     <ReportWorkspace
       datasetLabel={activeSection === "keyStats" ? "주요통계집" : "통계 연보"}
-      summary={report.data.summary}
+      summary={visibleSummary ?? report.data.summary}
       availableReports={report.data.available_reports}
       tables={tables}
       selectedTableId={selectedTableId}
       selectedReportId={selectedReportId}
       query={query}
       filter={filter}
+      showOutlierChecks={showOutlierChecks}
       onReportChange={handleReportChange}
       onQueryChange={setQuery}
       onFilterChange={setFilter}
+      onShowOutlierChecksChange={setShowOutlierChecks}
       onSelect={handleSelect}
       onOpen={handleOpen}
     />

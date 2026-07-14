@@ -10,8 +10,10 @@ interface ReportSummaryPanelProps {
   availableReports: ReportOption[];
   selectedReportId: string;
   activeFilter: TableStatus | "all" | "has_issues";
+  showOutlierChecks: boolean;
   onReportChange: (reportId: string) => void;
   onFilterChange: (filter: SummaryFilter) => void;
+  onShowOutlierChecksChange: (show: boolean) => void;
 }
 
 const summaryCards: Array<{
@@ -35,8 +37,10 @@ export function ReportSummaryPanel({
   availableReports,
   selectedReportId,
   activeFilter,
+  showOutlierChecks,
   onReportChange,
   onFilterChange,
+  onShowOutlierChecksChange,
 }: ReportSummaryPanelProps) {
   const reportOptions =
     availableReports.length > 0
@@ -86,6 +90,15 @@ export function ReportSummaryPanel({
           </button>
         ))}
       </div>
+
+      <label className="summary-option-toggle">
+        <input
+          checked={showOutlierChecks}
+          onChange={(event) => onShowOutlierChecksChange(event.target.checked)}
+          type="checkbox"
+        />
+        <span>이상치 검수 표시</span>
+      </label>
 
     </section>
   );

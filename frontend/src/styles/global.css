@@ -233,6 +233,27 @@ button {
   border-color: #f4b8b8;
 }
 
+.summary-option-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-self: start;
+  gap: 7px;
+  min-height: 34px;
+  padding: 6px 9px;
+  color: var(--muted);
+  background: var(--surface-muted);
+  border: 1px solid var(--line);
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.summary-option-toggle input {
+  width: 14px;
+  height: 14px;
+  margin: 0;
+  accent-color: #244c73;
+}
+
 .metric-card--blue {
   background: var(--blue-soft);
   border-color: #b8d6f3;
@@ -1430,6 +1451,11 @@ button {
   height: 14px;
   margin: 0;
   accent-color: #244c73;
+}
+
+.validation-toggle {
+  color: #425268;
+  background: #fbfcfe;
 }
 
 .original-title-group {

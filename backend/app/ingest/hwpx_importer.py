@@ -11,6 +11,7 @@ from typing import Iterable
 import xml.etree.ElementTree as ET
 from zipfile import ZipFile
 
+from app.core.contact_metadata import clean_source_text
 from app.db.schema import DB_PATH, connect, init_db
 from app.core.numeric_text import parse_numeric_value
 from app.ingest.anomaly import annotate_adjacent_duplicate_tables
@@ -186,7 +187,7 @@ def is_title_table(matrix: list[list[str]], text: str) -> bool:
 
 
 def append_unique(target: list[str], value: str) -> None:
-    cleaned = value.strip()
+    cleaned = clean_source_text(value)
     if cleaned and cleaned not in target:
         target.append(cleaned)
 
