@@ -8,7 +8,7 @@ type LoadState =
   | { status: "success"; data: ReportPayload; error: null }
   | { status: "error"; data: null; error: string };
 
-export function useReport() {
+export function useReport(reportId?: string) {
   const [state, setState] = useState<LoadState>({
     status: "loading",
     data: null,
@@ -17,8 +17,9 @@ export function useReport() {
 
   useEffect(() => {
     let isMounted = true;
+    setState({ status: "loading", data: null, error: null });
 
-    fetchReport()
+    fetchReport(reportId)
       .then((data) => {
         if (isMounted) {
           setState({ status: "success", data, error: null });
@@ -33,7 +34,7 @@ export function useReport() {
     return () => {
       isMounted = false;
     };
-  }, []);
+  }, [reportId]);
 
   return state;
 }

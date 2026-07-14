@@ -1,6 +1,6 @@
 import { useMemo } from "react";
 
-import type { ReportSummary, StatTable, TableStatus } from "../types";
+import type { ReportOption, ReportSummary, StatTable, TableStatus } from "../types";
 import { ReportSummaryPanel } from "./ReportSummaryPanel";
 import { TableList } from "./TableList";
 import { TablePreview } from "./TablePreview";
@@ -26,12 +26,13 @@ function matchesWorkspaceFilter(table: StatTable, query: string, filter: FilterV
 interface ReportWorkspaceProps {
   datasetLabel: string;
   summary: ReportSummary;
+  availableReports: ReportOption[];
   tables: StatTable[];
   selectedTableId: string;
-  selectedYear: string;
+  selectedReportId: string;
   query: string;
   filter: FilterValue;
-  onYearChange: (year: string) => void;
+  onReportChange: (reportId: string) => void;
   onQueryChange: (query: string) => void;
   onFilterChange: (filter: FilterValue) => void;
   onSelect: (tableId: string) => void;
@@ -41,12 +42,13 @@ interface ReportWorkspaceProps {
 export function ReportWorkspace({
   datasetLabel,
   summary,
+  availableReports,
   tables,
   selectedTableId,
-  selectedYear,
+  selectedReportId,
   query,
   filter,
-  onYearChange,
+  onReportChange,
   onQueryChange,
   onFilterChange,
   onSelect,
@@ -74,9 +76,10 @@ export function ReportWorkspace({
         <ReportSummaryPanel
           summary={summary}
           datasetLabel={datasetLabel}
-          selectedYear={selectedYear}
+          availableReports={availableReports}
+          selectedReportId={selectedReportId || String(summary.report_id ?? "")}
           activeFilter={filter}
-          onYearChange={onYearChange}
+          onReportChange={onReportChange}
           onFilterChange={handleSummaryFilterChange}
         />
         <TableList

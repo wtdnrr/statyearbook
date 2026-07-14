@@ -4,6 +4,8 @@ from dataclasses import dataclass
 from functools import cached_property
 import re
 
+from app.core.numeric_text import parse_numeric_value
+
 
 @dataclass(frozen=True)
 class ValidationCell:
@@ -118,14 +120,7 @@ def clean_display_text(value: str) -> str:
 
 
 def parse_numeric_text(value: str) -> float | None:
-    cleaned = value.strip().replace(",", "").replace("%", "")
-    if re.fullmatch(r"\([-+]?\d+(?:\.\d+)?\)", cleaned):
-        cleaned = cleaned[1:-1]
-    if not cleaned or cleaned in {"-", "－", "―"}:
-        return None
-    if re.fullmatch(r"[-+]?\d+(?:\.\d+)?", cleaned):
-        return float(cleaned)
-    return None
+    return parse_numeric_value(value)
 
 
 def format_number(value: float) -> str:

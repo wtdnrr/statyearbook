@@ -1,19 +1,19 @@
 import { Database } from "lucide-react";
 
-import type { ReportSummary, TableStatus } from "../types";
+import type { ReportOption, ReportSummary, TableStatus } from "../types";
 
 type SummaryFilter = TableStatus | "all";
 
 interface ReportSummaryPanelProps {
   summary: ReportSummary;
   datasetLabel: string;
-  selectedYear: string;
+  availableReports: ReportOption[];
+  selectedReportId: string;
   activeFilter: TableStatus | "all" | "has_issues";
-  onYearChange: (year: string) => void;
+  onReportChange: (reportId: string) => void;
   onFilterChange: (filter: SummaryFilter) => void;
 }
 
-const yearOptions = ["2025", "2024", "2023"];
 const summaryCards: Array<{
   filter: SummaryFilter;
   label: string;
@@ -32,20 +32,35 @@ const summaryCards: Array<{
 export function ReportSummaryPanel({
   summary,
   datasetLabel,
-  selectedYear,
+  availableReports,
+  selectedReportId,
   activeFilter,
-  onYearChange,
+  onReportChange,
   onFilterChange,
 }: ReportSummaryPanelProps) {
+  const reportOptions =
+    availableReports.length > 0
+      ? availableReports
+      : [
+          {
+            id: summary.report_id ?? 0,
+            year: Number(summary.base_year) || 0,
+            title: `${summary.base_year} ${datasetLabel}`,
+            file_name: summary.file_name,
+            imported_at: "",
+            table_count: summary.total_tables,
+          },
+        ];
+
   return (
     <section className="report-summary-panel" aria-label="자료 및 검수 요약">
       <div className="dataset-selector">
         <label>
           <Database aria-hidden="true" size={16} />
-          <select value={selectedYear} onChange={(event) => onYearChange(event.target.value)}>
-            {yearOptions.map((year) => (
-              <option key={year} value={year}>
-                {year} {datasetLabel}
+          <select value={selectedReportId} onChange={(event) => onReportChange(event.target.value)}>
+            {reportOptions.map((report) => (
+              <option key={report.id} value={report.id}>
+                {report.year} {datasetLabel} · {report.table_count}개 표
               </option>
             ))}
           </select>

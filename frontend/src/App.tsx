@@ -11,13 +11,13 @@ import "./styles/global.css";
 type FilterValue = TableStatus | "all" | "has_issues";
 
 export default function App() {
-  const report = useReport();
   const [activeSection, setActiveSection] = useState<AppSection>("annual");
   const [selectedTableId, setSelectedTableId] = useState<string>("");
   const [detailTableId, setDetailTableId] = useState<string | null>(null);
-  const [selectedYear, setSelectedYear] = useState("2025");
+  const [selectedReportId, setSelectedReportId] = useState("");
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState<FilterValue>("all");
+  const report = useReport(selectedReportId || undefined);
 
   const tables = report.data?.tables ?? [];
   const detailTable = tables.find((table) => table.id === detailTableId);
@@ -37,6 +37,14 @@ export default function App() {
     setDetailTableId(null);
   }
 
+  function handleReportChange(reportId: string) {
+    setSelectedReportId(reportId);
+    setSelectedTableId("");
+    setDetailTableId(null);
+    setFilter("all");
+    setQuery("");
+  }
+
   if (report.status === "loading") {
     return <div className="state-page">데이터를 불러오는 중입니다.</div>;
   }
@@ -53,12 +61,13 @@ export default function App() {
     <ReportWorkspace
       datasetLabel={activeSection === "keyStats" ? "주요통계집" : "통계 연보"}
       summary={report.data.summary}
+      availableReports={report.data.available_reports}
       tables={tables}
       selectedTableId={selectedTableId}
-      selectedYear={selectedYear}
+      selectedReportId={selectedReportId}
       query={query}
       filter={filter}
-      onYearChange={setSelectedYear}
+      onReportChange={handleReportChange}
       onQueryChange={setQuery}
       onFilterChange={setFilter}
       onSelect={handleSelect}

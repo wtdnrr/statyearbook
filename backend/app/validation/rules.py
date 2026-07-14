@@ -77,6 +77,10 @@ def cell_number(row: list, col_index: int) -> float | None:
 
 
 def leading_label_columns(table: ValidationTable) -> list[int]:
+    cached = getattr(table, "_leading_label_columns_cache", None)
+    if cached is not None:
+        return list(cached)
+
     rows = [row for _, row in table.data_rows()]
     labels: list[int] = []
 
@@ -105,9 +109,9 @@ def leading_label_columns(table: ValidationTable) -> list[int]:
             continue
         break
 
-    if len(labels) > 3:
-        return [0]
-    return labels or [0]
+    resolved = [0] if len(labels) > 3 else labels or [0]
+    table._leading_label_columns_cache = tuple(resolved)
+    return list(resolved)
 
 
 def combined_row_label(table: ValidationTable, row: list) -> str:

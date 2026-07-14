@@ -12,6 +12,7 @@ import xml.etree.ElementTree as ET
 from zipfile import ZipFile
 
 from app.db.schema import DB_PATH, connect, init_db
+from app.core.numeric_text import parse_numeric_value
 from app.ingest.anomaly import annotate_adjacent_duplicate_tables
 from app.ingest.cell_text import split_cell_text
 from app.ingest.table_repairs import repair_region_split_rows
@@ -362,18 +363,13 @@ def normalize_matrix(parts: Iterable[TablePart]) -> list[list[str]]:
 
 
 def numeric_value(text: str) -> float | None:
-    cleaned = text.strip().replace(",", "").replace("%", "")
-    if re.fullmatch(r"\([-+]?\d+(?:\.\d+)?\)", cleaned):
-        cleaned = cleaned[1:-1]
-    if not cleaned or cleaned in {"-", "－", "―"}:
-        return None
-    if re.fullmatch(r"[-+]?\d+(?:\.\d+)?", cleaned):
-        return float(cleaned)
-    return None
+    return parse_numeric_value(text)
 
 
 def looks_like_data_row(row: list[str]) -> bool:
     first_cell = row[0] if row else ""
+    if looks_like_total_data_label(first_cell):
+        return True
     if looks_like_header_label(first_cell):
         return False
     if re.fullmatch(r"\d{4}", re.sub(r"\s+", "", first_cell)):
@@ -381,6 +377,14 @@ def looks_like_data_row(row: list[str]) -> bool:
     if any(numeric_value(cell) is not None for cell in row[1:]):
         return True
     return looks_like_text_data_row(row)
+
+
+def looks_like_total_data_label(value: str) -> bool:
+    cleaned = re.sub(r"\s+", " ", value).strip()
+    return bool(
+        re.match(r"^(?:합\s*계|총\s*계|소\s*계)(?:\s|$|[(:\[])", cleaned, re.IGNORECASE)
+        or re.match(r"^계(?:\s+(?:total|sum)\b|\s*$|\s*[(:\[])", cleaned, re.IGNORECASE)
+    )
 
 
 def looks_like_text_data_row(row: list[str]) -> bool:

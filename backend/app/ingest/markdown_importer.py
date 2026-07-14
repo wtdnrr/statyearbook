@@ -92,6 +92,27 @@ class OutlineTitle:
     title_en: str
 
 
+DRAFT_TITLE_TRANSLATION_OVERRIDES: dict[str, tuple[str, str]] = {
+    "2-1-4-1": ("가입자 수", "Number of Subscribers"),
+    "2-1-4-2": ("맞춤 안내 수준 현황", "Status of Personalized Guidance Levels"),
+    "2-1-4-3": (
+        "수혜적 공공서비스(혜택) 등록 현황",
+        "Registration Status of Beneficial Public Services",
+    ),
+}
+
+
+def apply_draft_title_translation(code: str, title: str, title_en: str) -> tuple[str, str]:
+    override = DRAFT_TITLE_TRANSLATION_OVERRIDES.get(code)
+    if not override or title_en:
+        return title, title_en
+
+    title_ko, translated_title = override
+    if "(영문)" not in title:
+        return title, title_en
+    return title_ko, translated_title
+
+
 @dataclass
 class ParsedHtmlCell:
     text: str
@@ -568,6 +589,7 @@ def parse_markdown(source_path: Path) -> list[LogicalTable]:
             parsed_title = parse_markdown_title_block(line, appendix_section)
             if parsed_title:
                 code, title, title_en, section_title, section_title_en, next_appendix_section = parsed_title
+                title, title_en = apply_draft_title_translation(code, title, title_en)
                 if next_appendix_section is not None:
                     appendix_section = next_appendix_section
                 parent_title = nearest_parent_title(code, outline)
@@ -648,7 +670,7 @@ def normalize_matrix_with_footnotes(parts: Iterable[TablePart]) -> tuple[list[li
     rows: list[list[str]] = []
     footnote_rows: list[list[str]] = []
     max_cols = 0
-    header_signature: tuple[str, ...] | None = None
+    header_signatures: set[tuple[str, ...]] = set()
     seen_data_signatures: set[tuple[str, ...]] = set()
     data_started = False
 
@@ -661,15 +683,14 @@ def normalize_matrix_with_footnotes(parts: Iterable[TablePart]) -> tuple[list[li
                 continue
 
             row_signature = tuple(cleaned_row)
-            if data_started and header_signature and row_signature == header_signature:
+            if data_started and row_signature in header_signatures:
                 continue
             if data_started and row_signature in seen_data_signatures:
                 continue
 
-            if header_signature is None:
-                header_signature = row_signature
-
             has_numeric_data = any(numeric_value(cell) is not None for cell in cleaned_row[1:])
+            if not data_started:
+                header_signatures.add(row_signature)
             if has_numeric_data:
                 data_started = True
             if data_started:
@@ -971,10 +992,13 @@ def import_markdown(
     year: int = 2025,
     title: str | None = None,
     run_validation: bool = True,
+    limit: int | None = None,
 ) -> dict[str, int | str]:
     source_path = source_path.expanduser().resolve()
     imported_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     parsed_tables = parse_markdown(source_path)
+    if limit is not None:
+        parsed_tables = parsed_tables[: max(limit, 0)]
     source_hash = file_hash(source_path)
     report_title = title or f"{year} 행정안전통계연보"
 
@@ -1014,6 +1038,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--db", type=Path, default=DB_PATH, help="SQLite database path")
     parser.add_argument("--year", type=int, default=2025, help="Report year")
     parser.add_argument("--title", default=None, help="Report title")
+    parser.add_argument("--limit", type=int, default=None, help="Import only the first N logical statistics")
     parser.add_argument("--skip-validation", action="store_true", help="Skip rule-based validation")
     return parser
 
@@ -1027,6 +1052,7 @@ def main() -> None:
         year=args.year,
         title=args.title,
         run_validation=not args.skip_validation,
+        limit=args.limit,
     )
     print(
         "Imported {tables} tables and {cells} cells into {db_path}; validation issues: {validation_issues}".format(

@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 
 from app.models.report import (
     ReportPayload,
@@ -16,18 +16,21 @@ router = APIRouter()
 
 
 @router.get("/report", response_model=ReportPayload)
-def get_report() -> ReportPayload:
-    return get_report_service().get_payload()
+def get_report(report_id: int | None = Query(default=None)) -> ReportPayload:
+    service = get_report_service()
+    if hasattr(service, "get_payload_for_report"):
+        return service.get_payload_for_report(report_id)  # type: ignore[attr-defined]
+    return service.get_payload()
 
 
 @router.get("/tables", response_model=list[StatTable])
-def list_tables() -> list[StatTable]:
-    return get_report_service().list_tables()
+def list_tables(report_id: int | None = Query(default=None)) -> list[StatTable]:
+    return get_report_service().list_tables(report_id)  # type: ignore[arg-type]
 
 
 @router.get("/tables/{table_id}", response_model=StatTable)
-def get_table(table_id: str) -> StatTable:
-    table = get_report_service().get_table(table_id)
+def get_table(table_id: str, report_id: int | None = Query(default=None)) -> StatTable:
+    table = get_report_service().get_table(table_id, report_id)  # type: ignore[arg-type]
     if table is None:
         raise HTTPException(status_code=404, detail="Table not found")
     return table

@@ -24,7 +24,7 @@ from app.validation.rules import (
 )
 
 
-PROFILE_VERSION = "validation-profile-v1"
+PROFILE_VERSION = "validation-profile-v2"
 
 COMMON_RULE_IDS = [
     "sum",
@@ -36,6 +36,15 @@ COMMON_RULE_IDS = [
     "unit",
     "empty",
 ]
+
+DRAFT_TITLE_TRANSLATION_OVERRIDES: dict[str, tuple[str, str]] = {
+    "2-1-4-1": ("가입자 수", "Number of Subscribers"),
+    "2-1-4-2": ("맞춤 안내 수준 현황", "Status of Personalized Guidance Levels"),
+    "2-1-4-3": (
+        "수혜적 공공서비스(혜택) 등록 현황",
+        "Registration Status of Beneficial Public Services",
+    ),
+}
 
 
 @dataclass(frozen=True)
@@ -210,7 +219,7 @@ def detect_templates(table: ValidationTable) -> list[str]:
     normalized_headers = normalize_text(all_headers)
     title = normalize_text(f"{table.title} {table.code}")
 
-    region_labels = {table.row_label(row)[:2] for _, row in table.data_rows()}
+    region_labels = {region_name_from_label(table.row_label(row)) for _, row in table.data_rows()}
     if "지역" in normalized_headers or len(region_labels & {"서울", "부산", "대구", "인천", "광주", "대전", "울산", "세종", "경기", "강원", "충북", "충남", "전북", "전남", "경북", "경남", "제주"}) >= 8:
         templates.append("regional_table")
 
@@ -302,16 +311,26 @@ def infer_row_role(label: str) -> str:
 
 
 def total_label_kind(value: str) -> str | None:
-    normalized = normalize_text(value)
-    if not normalized:
+    cleaned = clean_display_text(value)
+    normalized = normalize_text(cleaned)
+    if not cleaned:
         return None
-    if normalized.startswith("소계") or "subtotal" in normalized:
+    if re.match(r"^소\s*계(?:\s|$|[(:\[])", cleaned, re.IGNORECASE) or re.search(
+        r"\bsub[ -]?total\b", cleaned, re.IGNORECASE
+    ):
         return "subtotal"
-    if normalized in {"계", "total", "합계", "총계"}:
+    if re.match(r"^(?:합\s*계|총\s*계)(?:\s|$|[(:\[])", cleaned, re.IGNORECASE):
         return "total"
-    if normalized.startswith(("계", "합계", "총계")):
+    if re.match(r"^계(?:\s+(?:total|sum)\b|\s*$|\s*[(:\[])", cleaned, re.IGNORECASE):
+        return "total"
+    if normalized in {"total", "grandtotal"} or re.match(r"^(?:grand\s+)?total\b", cleaned, re.IGNORECASE):
         return "total"
     return None
+
+
+def region_name_from_label(value: str) -> str:
+    normalized = normalize_text(value)
+    return next((region for region in REGION_NAMES if normalized.startswith(region)), "")
 
 
 def row_total_kind(table: ValidationTable, row: list) -> str | None:
@@ -431,6 +450,8 @@ def normalized_path_startswith(path: list[str] | tuple[str, ...], prefix: tuple[
 def is_total_column_candidate(table: ValidationTable, col_index: int) -> bool:
     leaf = leaf_header(table, col_index)
     if total_label_kind(leaf) is not None:
+        return True
+    if any(total_label_kind(value) is not None for value in effective_header_path(table, col_index)):
         return True
 
     label = effective_column_text(table, col_index)
@@ -600,6 +621,40 @@ def row_ratio_by_rows_match_ratio(
     return (passed / checked if checked else 0.0, checked)
 
 
+def row_ratio_by_sum_rows_match_ratio(
+    table: ValidationTable,
+    *,
+    target_row: int,
+    numerator_row: int,
+    denominator_rows: list[int],
+    columns: list[int],
+    multiplier: float,
+    tolerance: float,
+) -> tuple[float, int]:
+    if not all(
+        row_index < len(table.matrix)
+        for row_index in [target_row, numerator_row, *denominator_rows]
+    ):
+        return 0.0, 0
+
+    checked = 0
+    passed = 0
+    for col_index in columns:
+        target_value = cell_number(table.matrix[target_row], col_index)
+        numerator = cell_number(table.matrix[numerator_row], col_index)
+        denominator_values = [cell_number(table.matrix[row_index], col_index) for row_index in denominator_rows]
+        if target_value is None or numerator is None or any(value is None for value in denominator_values):
+            continue
+        denominator = sum(value for value in denominator_values if value is not None)
+        if denominator == 0:
+            continue
+        checked += 1
+        expected = numerator / denominator * multiplier
+        if abs(target_value - expected) <= tolerance:
+            passed += 1
+    return (passed / checked if checked else 0.0, checked)
+
+
 def numeric_cell_count(table: ValidationTable, col_index: int) -> int:
     return sum(1 for _, row in table.data_rows() if cell_number(row, col_index) is not None)
 
@@ -644,18 +699,24 @@ def infer_profile_checks(
     checks.extend(infer_gender_total_rules(table))
     checks.extend(infer_header_formula_rules(table))
     checks.extend(infer_same_row_ratio_rules(table))
+    checks.extend(infer_following_component_ratio_rules(table))
     checks.extend(infer_column_share_ratio_rules(table))
     checks.extend(infer_growth_rate_rules(table))
     checks.extend(infer_year_rows_change_rate_rules(table))
     checks.extend(infer_named_row_ratio_rules(table))
     checks.extend(infer_row_based_ratio_rules(table))
     checks.extend(infer_row_based_growth_rate_rules(table))
+    checks.extend(infer_wrapped_total_cell_rules(table))
     checks.extend(infer_total_column_rules(table))
     checks.extend(infer_total_row_rules(table))
     checks.extend(outlier_check_specs(table))
     checks.extend(static_spelling_check_specs(table))
     checks.extend(static_terminology_check_specs(table))
     checks.extend(static_translation_check_specs(table))
+
+    for check in checks:
+        if check.get("check_group") == "ratio":
+            check.setdefault("aggregate_strategy", "recalculate_from_numerator_and_denominator")
 
     return dedupe_check_specs(checks)
 
@@ -713,54 +774,106 @@ def region_total_check_specs(table: ValidationTable) -> list[dict[str, Any]]:
         return []
 
     rows = table.data_rows()
-    target_item = next(
-        ((row_index, row) for row_index, row in rows[:5] if row_total_kind(table, row) == "total"),
-        None,
-    )
-    if target_item is None:
+    target_items = [
+        (row_index, row)
+        for row_index, row in rows[:6]
+        if row_total_kind(table, row) == "total"
+    ]
+    if not target_items:
         return []
 
-    target_row_index, _ = target_item
-    subtotal_rows = [
-        row_index
-        for row_index, row in rows
-        if row_index != target_row_index and row_total_kind(table, row) == "subtotal"
-    ]
-    region_rows = [
-        row_index
-        for row_index, row in rows
-        if row_index != target_row_index
-        and row_total_kind(table, row) is None
-        and clean_display_text(combined_row_label(table, row))[:2] in REGION_NAMES
-    ]
-    operand_rows = subtotal_rows if len(subtotal_rows) >= 2 else region_rows
-    unique_regions = {
-        clean_display_text(combined_row_label(table, table.matrix[row_index]))[:2]
-        for row_index in operand_rows
+    numeric_columns = additive_measure_columns(table)
+    target_row_indices = {row_index for row_index, _ in target_items}
+    populated_target_columns = {
+        col_index
+        for target_row_index, _ in target_items
+        for col_index in numeric_columns
+        if additive_target_cell_number(table.matrix[target_row_index], col_index) is not None
     }
-    if len(operand_rows) < 8:
+    populated_detail_columns = {
+        col_index
+        for row_index, row in rows
+        if row_index not in target_row_indices
+        for col_index in numeric_columns
+        if additive_operand_cell_number(row, col_index) is not None
+    }
+    if len(populated_target_columns) == 1 and len(populated_detail_columns) >= 2:
         return []
 
-    columns = additive_measure_columns(table)
-    if not columns:
-        return []
+    specs: list[dict[str, Any]] = []
+    for target_row_index, target_row in target_items:
+        target_leaf = clean_display_text(row_leaf_label(table, target_row))
+        target_leaf_key = normalize_text(target_leaf)
+        has_series_leaf = bool(target_leaf_key) and total_label_kind(target_leaf) is None
 
-    return [
-        rule_spec(
-            "sum",
-            {
-            "id": f"profile.{table.code}.region_total",
-            "type": "region_total",
-            "category": "template",
-            "label": "지역 합계 = 시도별 세부 값 합계",
-            "target_row": target_row_index,
-            "operand_rows": operand_rows,
-            "columns": columns,
-            "tolerance": sum_execution_tolerance(table),
-            "confidence": 0.95 if len(unique_regions) >= 15 else 0.82,
-            },
+        def same_series(row: list) -> bool:
+            if not has_series_leaf:
+                return True
+            return normalize_text(row_leaf_label(table, row)) == target_leaf_key
+
+        subtotal_rows = [
+            row_index
+            for row_index, row in rows
+            if row_index not in target_row_indices
+            and row_total_kind(table, row) == "subtotal"
+            and same_series(row)
+        ]
+        detail_rows = [
+            row_index
+            for row_index, row in rows
+            if row_index not in target_row_indices
+            and row_total_kind(table, row) is None
+            and same_series(row)
+            and additive_operand_row(table, row)
+            and not is_calculation_row_label(table, row)
+        ]
+        region_rows = [
+            row_index
+            for row_index in detail_rows
+            if region_name_from_label(combined_row_label(table, table.matrix[row_index]))
+        ]
+        if len(region_rows) < 8:
+            continue
+        operand_rows = subtotal_rows if len(subtotal_rows) >= 2 else detail_rows
+        if len(operand_rows) < 8:
+            continue
+
+        columns = [
+            col_index
+            for col_index in numeric_columns
+            if additive_target_cell_number(target_row, col_index) is not None
+            and sum(
+                additive_operand_cell_number(table.matrix[row_index], col_index) is not None
+                for row_index in operand_rows
+            )
+            >= 2
+        ]
+        if not columns:
+            continue
+
+        unique_regions = {
+            region_name_from_label(combined_row_label(table, table.matrix[row_index]))
+            for row_index in operand_rows
+        }
+        unique_regions.discard("")
+        series_suffix = f" ({target_leaf})" if has_series_leaf else ""
+        specs.append(
+            rule_spec(
+                "sum",
+                {
+                    "id": f"profile.{table.code}.region_total_r{target_row_index}",
+                    "type": "region_total",
+                    "category": "template",
+                    "label": f"지역 합계{series_suffix} = 시도별 세부 값 합계",
+                    "target_row": target_row_index,
+                    "operand_rows": operand_rows,
+                    "columns": columns,
+                    "tolerance": sum_execution_tolerance(table),
+                    "confidence": 0.95 if len(unique_regions) >= 15 else 0.82,
+                },
+            )
         )
-    ]
+    return specs
 
 
 def has_schedule_descriptor_column(table: ValidationTable) -> bool:
@@ -799,6 +912,63 @@ def year_sequence_check_specs(table: ValidationTable) -> list[dict[str, Any]]:
     ]
 
 
+def infer_wrapped_total_cell_rules(table: ValidationTable) -> list[dict[str, Any]]:
+    """Detect side-by-side label/value blocks sharing one displayed grand total."""
+
+    rows = table.data_rows()
+    numeric_columns = additive_measure_columns(table)
+    if len(numeric_columns) < 2:
+        return []
+
+    for target_row, row in rows[:5]:
+        if row_total_kind(table, row) != "total":
+            continue
+        populated_targets = [
+            col_index
+            for col_index in numeric_columns
+            if additive_target_cell_number(row, col_index) is not None
+        ]
+        if len(populated_targets) != 1:
+            continue
+
+        target_col = populated_targets[0]
+        operand_cells: list[dict[str, int]] = []
+        populated_operand_columns: set[int] = set()
+        numeric_operand_count = 0
+        for operand_row, operand_matrix_row in rows:
+            if operand_row == target_row or row_total_kind(table, operand_matrix_row) is not None:
+                continue
+            for operand_col in numeric_columns:
+                if operand_col >= len(operand_matrix_row) or operand_matrix_row[operand_col] is None:
+                    continue
+                operand_cells.append({"row": operand_row, "column": operand_col})
+                value = additive_operand_cell_number(operand_matrix_row, operand_col)
+                if value is not None:
+                    populated_operand_columns.add(operand_col)
+                    numeric_operand_count += 1
+
+        if len(populated_operand_columns) < 2 or numeric_operand_count < 4:
+            continue
+
+        return [
+            rule_spec(
+                "sum",
+                {
+                    "id": f"profile.{table.code}.wrapped_total_r{target_row}_c{target_col}",
+                    "type": "cell_sum",
+                    "category": "table",
+                    "label": "좌우 반복 구역 전체 합계 = 모든 구역 세부 셀 합계",
+                    "target_row": target_row,
+                    "target_column": target_col,
+                    "operand_cells": operand_cells,
+                    "tolerance": sum_execution_tolerance(table),
+                    "confidence": 0.95,
+                },
+            )
+        ]
+    return []
+
+
 def infer_total_column_rules(table: ValidationTable) -> list[dict[str, Any]]:
     numeric_columns = additive_measure_columns(table)
     specs: list[dict[str, Any]] = []
@@ -809,7 +979,7 @@ def infer_total_column_rules(table: ValidationTable) -> list[dict[str, Any]]:
         direct_child_columns = direct_child_sum_operand_columns(table, target_col, numeric_columns)
         if direct_child_columns:
             passed_ratio, checked_count = row_sum_match_ratio(table, target_col, direct_child_columns, tolerance=1.0)
-            if checked_count >= row_sum_minimum_checked_count(direct_child_columns) and passed_ratio >= sum_profile_minimum_ratio(checked_count):
+            if checked_count >= 1 and passed_ratio >= 0.8:
                 specs.append(
                     rule_spec(
                         "sum",
@@ -821,17 +991,34 @@ def infer_total_column_rules(table: ValidationTable) -> list[dict[str, Any]]:
                             "target_column": target_col,
                             "operand_columns": direct_child_columns,
                             "tolerance": sum_execution_tolerance(table),
-                            "confidence": sum_profile_confidence(passed_ratio),
+                            "confidence": semantic_sum_confidence(passed_ratio, checked_count),
                         },
                     )
                 )
+                # The direct header children are the clearest hierarchy level.
+                # A flattened alternative would duplicate the same aggregate.
+                continue
 
         operand_columns = best_row_sum_operand_columns(table, target_col, numeric_columns)
+        semantic_total = False
         if not operand_columns:
-            continue
+            operand_columns = semantic_flat_total_operand_columns(table, target_col, numeric_columns)
+            if not operand_columns:
+                continue
+            semantic_total = True
         passed_ratio, checked_count = row_sum_match_ratio(table, target_col, operand_columns, tolerance=1.0)
-        if checked_count < row_sum_minimum_checked_count(operand_columns) or passed_ratio < sum_profile_minimum_ratio(checked_count):
-            continue
+        if semantic_total:
+            matching_rows = matching_row_sum_indices(table, target_col, operand_columns, tolerance=1.0)
+            if not matching_rows:
+                continue
+            restricted_rows = matching_rows if passed_ratio < 0.8 else []
+        else:
+            restricted_rows = []
+            if (
+                checked_count < row_sum_minimum_checked_count(operand_columns)
+                or passed_ratio < sum_profile_minimum_ratio(checked_count)
+            ):
+                continue
         specs.append(
             rule_spec(
                 "sum",
@@ -842,8 +1029,13 @@ def infer_total_column_rules(table: ValidationTable) -> list[dict[str, Any]]:
                 "label": row_sum_rule_label(table, target_col, operand_columns),
                 "target_column": target_col,
                 "operand_columns": operand_columns,
+                "row_indices": restricted_rows,
                 "tolerance": sum_execution_tolerance(table),
-                "confidence": sum_profile_confidence(passed_ratio),
+                "confidence": (
+                    semantic_sum_confidence(passed_ratio, checked_count)
+                    if semantic_total
+                    else sum_profile_confidence(passed_ratio)
+                ),
                 },
             )
         )
@@ -856,22 +1048,88 @@ def direct_child_sum_operand_columns(
     numeric_columns: list[int],
 ) -> list[int]:
     target_path = effective_header_path(table, target_col)
-    if not target_path or total_like_header_position(target_path) is None:
+    total_position = total_like_header_position(target_path)
+    if not target_path or total_position is None or total_position == 0:
         return []
 
-    operands: list[int] = []
+    candidate_groups: list[list[int]] = []
+    nested_children: list[int] = []
+    replacement_children: list[int] = []
     for col_index in numeric_columns:
         if col_index == target_col:
             continue
         path = effective_header_path(table, col_index)
-        if len(path) != len(target_path) + 1:
-            continue
-        if not normalized_path_startswith(path, tuple(target_path)):
-            continue
         if total_label_kind(leaf_header(table, col_index)) is not None:
             continue
-        operands.append(col_index)
-    return operands
+        if (
+            len(path) == len(target_path) + 1
+            and normalized_path_startswith(path, tuple(target_path))
+        ):
+            nested_children.append(col_index)
+            continue
+        if len(path) == len(target_path) and all(
+            index == total_position or normalize_text(path[index]) == normalize_text(target_path[index])
+            for index in range(len(target_path))
+        ):
+            replacement_children.append(col_index)
+
+    if len(nested_children) >= 2:
+        candidate_groups.append(nested_children)
+    if len(replacement_children) >= 2:
+        candidate_groups.append(replacement_children)
+    best, _ = best_matching_row_sum_candidate(table, target_col, candidate_groups)
+    return best
+
+
+def semantic_flat_total_operand_columns(
+    table: ValidationTable,
+    target_col: int,
+    numeric_columns: list[int],
+) -> list[int]:
+    """Return leaf columns when a standalone total column is structurally clear.
+
+    This fallback intentionally does not depend on the current values matching;
+    otherwise the very typo that validation should find can suppress the rule.
+    """
+
+    if re.search(r"\s표\d+$", table.code):
+        return []
+    target_path = effective_header_path(table, target_col)
+    if len(target_path) != 1 or total_label_kind(target_path[0]) != "total":
+        return []
+    operands = [
+        col_index
+        for col_index in numeric_columns
+        if col_index != target_col and not is_total_column_candidate(table, col_index)
+    ]
+    return operands if len(operands) >= 2 else []
+
+
+def matching_row_sum_indices(
+    table: ValidationTable,
+    target_col: int,
+    operand_columns: list[int],
+    *,
+    tolerance: float,
+) -> list[int]:
+    matching: list[int] = []
+    for row_index, row in table.data_rows():
+        current = additive_target_cell_number(row, target_col)
+        operands = [additive_operand_cell_number(row, col_index) for col_index in operand_columns]
+        if current is None or any(value is None for value in operands):
+            continue
+        expected = sum(value for value in operands if value is not None)
+        if abs(current - expected) <= tolerance:
+            matching.append(row_index)
+    return matching
+
+
+def semantic_sum_confidence(passed_ratio: float, checked_count: int) -> float:
+    if passed_ratio >= 0.95:
+        return 0.98
+    if checked_count >= 3 and passed_ratio >= 0.6:
+        return 0.9
+    return 0.82
 
 
 def best_row_sum_operand_columns(
@@ -1114,12 +1372,19 @@ def infer_total_row_rules(table: ValidationTable) -> list[dict[str, Any]]:
     specs: list[dict[str, Any]] = []
     implicit_child_map = implicit_subtotal_child_map(table, rows)
     for target_row_index, operand_rows in implicit_child_map.items():
-        if len(operand_rows) < 2 or not columns:
+        if not operand_rows or not columns:
             continue
         if target_row_index >= len(table.matrix):
             continue
-        passed_ratio, checked_count = column_sum_match_ratio(table, target_row_index, operand_rows, columns, tolerance=1.0)
-        if checked_count < 2 or passed_ratio < 0.95:
+        passed_ratio, checked_count = column_sum_match_ratio_in_matrix(
+            table.matrix,
+            target_row_index,
+            operand_rows,
+            columns,
+            tolerance=1.0,
+            minimum_operands=1 if len(operand_rows) == 1 else 2,
+        )
+        if checked_count < 2 or passed_ratio < sum_profile_minimum_ratio(checked_count):
             continue
         target_label = combined_row_label(table, table.matrix[target_row_index]) or table.row_label(table.matrix[target_row_index])
         specs.append(
@@ -1133,8 +1398,9 @@ def infer_total_row_rules(table: ValidationTable) -> list[dict[str, Any]]:
                     "target_row": target_row_index,
                     "operand_rows": operand_rows,
                     "columns": columns,
+                    "allow_single_operand": len(operand_rows) == 1,
                     "tolerance": 1.0,
-                    "confidence": 0.96,
+                    "confidence": semantic_sum_confidence(passed_ratio, checked_count),
                 },
             )
         )
@@ -1144,20 +1410,30 @@ def infer_total_row_rules(table: ValidationTable) -> list[dict[str, Any]]:
         section_total = is_section_total_row_candidate(table, row)
         if kind is None and not section_total:
             continue
-        for candidate_index, operand_rows in enumerate(
-            candidate_total_operand_rows(table, rows, position, kind, section_total, implicit_child_map)
-        ):
+        candidates = candidate_total_operand_rows(table, rows, position, kind, section_total, implicit_child_map)
+        selected = select_total_operand_rows(
+            table,
+            target_row_index=target_row_index,
+            target_row=row,
+            candidates=candidates,
+            columns=columns,
+            kind=kind,
+        )
+        for operand_rows in ([selected] if selected else []):
             if len(operand_rows) < 2 or not columns:
                 continue
             passed_ratio, checked_count = column_sum_match_ratio(table, target_row_index, operand_rows, columns, tolerance=1.0)
             force_year_total = clear_year_total_candidate(table, kind, operand_rows, checked_count)
-            if checked_count < 2 or (passed_ratio < sum_profile_minimum_ratio(checked_count) and not force_year_total):
+            minimum_evidence = minimum_sum_evidence_count(columns, kind)
+            if checked_count < minimum_evidence or (
+                passed_ratio < sum_profile_minimum_ratio(checked_count) and not force_year_total
+            ):
                 continue
             specs.append(
                 rule_spec(
                     "sum",
                     {
-                        "id": f"profile.{table.code}.column_total_r{target_row_index}_{candidate_index + 1}",
+                        "id": f"profile.{table.code}.column_total_r{target_row_index}",
                         "type": "column_sum",
                         "category": "template",
                         "label": f"{clean_display_text(row_label)} = 하위 행 합계",
@@ -1170,6 +1446,73 @@ def infer_total_row_rules(table: ValidationTable) -> list[dict[str, Any]]:
                 )
             )
     return specs
+
+
+def select_total_operand_rows(
+    table: ValidationTable,
+    *,
+    target_row_index: int,
+    target_row: list,
+    candidates: list[list[int]],
+    columns: list[int],
+    kind: str | None,
+) -> list[int]:
+    """Choose one immediate hierarchy level for each aggregate row.
+
+    Grand totals prefer subtotal/section-total rows. This keeps a grand total
+    expressed as ``subtotal A + subtotal B`` instead of re-adding every leaf,
+    while each subtotal still receives its own independent validation rule.
+    """
+
+    target_leaf = normalize_text(row_leaf_label(table, target_row))
+    scored: list[tuple[int, float, int, int, list[int]]] = []
+    for operand_rows in candidates:
+        passed_ratio, checked_count = column_sum_match_ratio(
+            table,
+            target_row_index,
+            operand_rows,
+            columns,
+            tolerance=1.0,
+        )
+        force_year_total = clear_year_total_candidate(table, kind, operand_rows, checked_count)
+        minimum_evidence = minimum_sum_evidence_count(columns, kind)
+        if checked_count < minimum_evidence or (
+            passed_ratio < sum_profile_minimum_ratio(checked_count) and not force_year_total
+        ):
+            continue
+
+        operand_matrix_rows = [table.matrix[index] for index in operand_rows if index < len(table.matrix)]
+        aggregate_children = all(
+            row_total_kind(table, operand_row) == "subtotal"
+            or is_section_total_row_candidate(table, operand_row)
+            for operand_row in operand_matrix_rows
+        )
+        same_leaf_children = bool(target_leaf) and all(
+            normalize_text(row_leaf_label(table, operand_row)) == target_leaf
+            for operand_row in operand_matrix_rows
+        )
+        hierarchy_priority = 5 if aggregate_children else 4 if same_leaf_children else 3
+        if kind == "subtotal" and aggregate_children:
+            hierarchy_priority = 2
+        scored.append(
+            (
+                hierarchy_priority,
+                passed_ratio,
+                checked_count,
+                -len(operand_rows),
+                operand_rows,
+            )
+        )
+
+    return max(scored)[4] if scored else []
+
+
+def minimum_sum_evidence_count(columns: list[int], kind: str | None) -> int:
+    """Require less cross-column evidence only for an explicit aggregate row."""
+
+    if len(columns) == 1 and kind in {"total", "subtotal"}:
+        return 1
+    return 2
 
 
 def sum_profile_minimum_ratio(checked_count: int) -> float:
@@ -1229,6 +1572,11 @@ def candidate_total_operand_rows(
     target_row_index, _ = rows[position]
     following = following_rows_for_total_candidate(table, rows, position, kind, section_total)
     candidates: list[list[int]] = []
+
+    if kind == "total" and position >= len(rows) // 2:
+        preceding_rows = preceding_detail_rows_for_total_candidate(table, rows, position)
+        if len(preceding_rows) >= 2:
+            candidates.append(preceding_rows)
 
     immediate_rows: list[int] = []
     for row_index, row in following:
@@ -1293,6 +1641,21 @@ def candidate_total_operand_rows(
     return unique_row_candidates(candidates)
 
 
+def preceding_detail_rows_for_total_candidate(
+    table: ValidationTable,
+    rows: list[tuple[int, list]],
+    position: int,
+) -> list[int]:
+    operands: list[int] = []
+    for row_index, row in reversed(rows[:position]):
+        if row_total_kind(table, row) is not None or is_section_total_row_candidate(table, row):
+            break
+        if additive_operand_row(table, row):
+            operands.append(row_index)
+    operands.reverse()
+    return operands
+
+
 def collapsed_detail_operand_rows(
     table: ValidationTable,
     following: list[tuple[int, list]],
@@ -1328,6 +1691,20 @@ def implicit_subtotal_child_map(
         if not additive_operand_row(table, target_row):
             continue
 
+        structural_children = structural_nested_child_rows(table, rows, position)
+        if structural_children:
+            passed_ratio, checked_count = column_sum_match_ratio_in_matrix(
+                matrix,
+                target_row_index,
+                structural_children,
+                columns,
+                tolerance=1.0,
+                minimum_operands=1,
+            )
+            if checked_count >= 2 and passed_ratio >= sum_profile_minimum_ratio(checked_count):
+                child_map[target_row_index] = structural_children
+                continue
+
         detail_rows: list[int] = []
         for row_index, row in rows[position + 1 :]:
             if row_total_kind(table, row) is not None or is_section_total_row_candidate(table, row):
@@ -1352,6 +1729,40 @@ def implicit_subtotal_child_map(
                 break
 
     return child_map
+
+
+def structural_nested_child_rows(
+    table: ValidationTable,
+    rows: list[tuple[int, list]],
+    position: int,
+) -> list[int]:
+    label_columns = leading_label_columns(table)
+    if len(label_columns) < 2:
+        return []
+    _, target_row = rows[position]
+    target_depth = row_label_depth(target_row, label_columns)
+    if target_depth is None:
+        return []
+
+    children: list[int] = []
+    for row_index, row in rows[position + 1 :]:
+        depth = row_label_depth(row, label_columns)
+        if depth is None:
+            continue
+        if depth <= target_depth:
+            break
+        if additive_operand_row(table, row):
+            children.append(row_index)
+    return children
+
+
+def row_label_depth(row: list, label_columns: list[int]) -> int | None:
+    populated = [
+        depth
+        for depth, col_index in enumerate(label_columns)
+        if clean_display_text(cell_text_at(row, col_index))
+    ]
+    return min(populated) if populated else None
 
 
 def flat_region_rows_are_not_implicit_children(
@@ -1384,6 +1795,7 @@ def column_sum_match_ratio_in_matrix(
     columns: list[int],
     *,
     tolerance: float,
+    minimum_operands: int = 2,
 ) -> tuple[float, int]:
     if target_row >= len(matrix):
         return 0.0, 0
@@ -1398,7 +1810,7 @@ def column_sum_match_ratio_in_matrix(
             if row_index < len(matrix)
         ]
         numeric_values = [value for value in values if value is not None]
-        if current is None or len(numeric_values) < 2:
+        if current is None or len(numeric_values) < minimum_operands:
             continue
         checked += 1
         if abs(current - sum(numeric_values)) <= tolerance:
@@ -1529,8 +1941,11 @@ def dedupe_check_specs(checks: list[dict[str, Any]]) -> list[dict[str, Any]]:
     deduped: list[dict[str, Any]] = []
     seen: set[tuple[Any, ...]] = set()
     for check in checks:
+        check_type = check.get("type")
+        if check_type in {"region_total", "column_sum"}:
+            check_type = "column_sum"
         key = (
-            check.get("type"),
+            check_type,
             check.get("target_column"),
             check.get("value_column"),
             check.get("rate_column"),
@@ -1542,6 +1957,7 @@ def dedupe_check_specs(checks: list[dict[str, Any]]) -> list[dict[str, Any]]:
             check.get("source_row"),
             check.get("numerator_row"),
             check.get("denominator_row"),
+            tuple(check.get("denominator_rows", [])),
             tuple(check.get("columns", [])),
             tuple(check.get("row_indices", [])),
             tuple(check.get("operand_rows", [])),
@@ -1855,6 +2271,67 @@ def infer_same_row_ratio_rules(table: ValidationTable) -> list[dict[str, Any]]:
     return specs
 
 
+def infer_following_component_ratio_rules(table: ValidationTable) -> list[dict[str, Any]]:
+    """Infer ``part / (part + complement)`` rows such as disclosure rate."""
+
+    rows = table.data_rows()
+    specs: list[dict[str, Any]] = []
+    for position, (target_row_index, target_row) in enumerate(rows):
+        target_label = combined_row_label(table, target_row) or table.row_label(target_row)
+        if not is_ratio_row_label(target_label) or is_growth_rate_label(target_label):
+            continue
+        following_values = [
+            (row_index, row)
+            for row_index, row in rows[position + 1 : position + 4]
+            if row_total_kind(table, row) is None
+            and not is_ratio_row_label(combined_row_label(table, row) or table.row_label(row))
+        ]
+        if len(following_values) < 2:
+            continue
+
+        numerator_row_index, numerator_row = following_values[0]
+        complement_row_index, complement_row = following_values[1]
+        columns = shared_numeric_columns(table, [target_row, numerator_row, complement_row])
+        if len(columns) < 2:
+            continue
+        passed_ratio, checked_count = row_ratio_by_sum_rows_match_ratio(
+            table,
+            target_row=target_row_index,
+            numerator_row=numerator_row_index,
+            denominator_rows=[numerator_row_index, complement_row_index],
+            columns=columns,
+            multiplier=100,
+            tolerance=0.15,
+        )
+        if checked_count < 2 or passed_ratio < 0.8:
+            continue
+
+        numerator_label = combined_row_label(table, numerator_row) or table.row_label(numerator_row)
+        complement_label = combined_row_label(table, complement_row) or table.row_label(complement_row)
+        specs.append(
+            rule_spec(
+                "ratio",
+                {
+                    "id": f"profile.{table.code}.component_ratio_r{target_row_index}",
+                    "type": "row_ratio_by_rows",
+                    "category": "table",
+                    "label": (
+                        f"{clean_display_text(target_label)} = {clean_display_text(numerator_label)} / "
+                        f"({clean_display_text(numerator_label)} + {clean_display_text(complement_label)}) * 100"
+                    ),
+                    "target_row": target_row_index,
+                    "numerator_row": numerator_row_index,
+                    "denominator_rows": [numerator_row_index, complement_row_index],
+                    "columns": columns,
+                    "multiplier": 100,
+                    "tolerance": 0.15,
+                    "confidence": 0.97 if passed_ratio >= 0.95 else 0.9,
+                },
+            )
+        )
+    return specs
+
+
 def infer_column_share_ratio_rules(table: ValidationTable) -> list[dict[str, Any]]:
     label_columns = set(leading_label_columns(table))
     numeric_counts = {col_index: numeric_cell_count(table, col_index) for col_index in range(column_count(table))}
@@ -2015,11 +2492,19 @@ def infer_growth_rate_rules(table: ValidationTable) -> list[dict[str, Any]]:
 
     rules: list[dict[str, Any]] = []
     for col_index in range(column_count(table)):
-        label = table.column_text(col_index)
+        label = effective_column_text(table, col_index)
         normalized = normalize_text(label)
         if col_index in {current_col, previous_col}:
             continue
-        if not any(keyword in normalized for keyword in ("증감률", "증감율", "증가율", "감소율", "growthrate", "changerate")):
+        explicit_rate = any(
+            keyword in normalized
+            for keyword in ("증감률", "증감율", "증가율", "감소율", "growthrate", "changerate")
+        )
+        change_percent = (
+            any(keyword in normalized for keyword in ("증감", "change"))
+            and any(keyword in normalized for keyword in ("비율", "percent", "rate", "%"))
+        )
+        if not explicit_rate and not change_percent:
             continue
         rules.append(
             rule_spec(
@@ -2034,7 +2519,7 @@ def infer_growth_rate_rules(table: ValidationTable) -> list[dict[str, Any]]:
                     "previous_column": previous_col,
                     "denominator": "previous",
                     "multiplier": 100,
-                    "tolerance": 0.15,
+                    "tolerance": target_ratio_tolerance(table, col_index, 100),
                     "confidence": 0.88,
                 },
             )
@@ -2457,6 +2942,8 @@ def static_spelling_check_specs(table: ValidationTable) -> list[dict[str, Any]]:
                     {"current": "Claasifi-cation", "expected": "Classification", "language": "en", "reason": "영문 철자 오류"},
                     {"current": "Ele7ction", "expected": "Election", "language": "en", "reason": "숫자 혼입"},
                     {"current": "Nuber", "expected": "Number", "language": "en", "reason": "영문 철자 누락"},
+                    {"current": "기횎예산처", "expected": "기획예산처", "language": "ko", "reason": "2026 HWPX 파란색 표기 후보에서 확인한 국문 오탈자"},
+                    {"current": "eryeong", "expected": "Uiryeong", "language": "en", "reason": "2026 HWPX 파란색 표기 후보에서 확인한 영문 지명 누락"},
                 ],
                 "failure_status": "오류 의심",
                 "severity": "critical",
@@ -2478,6 +2965,20 @@ def static_terminology_check_specs(table: ValidationTable) -> list[dict[str, Any
                 "label": "국문 표준 용어 제안",
                 "terms": [
                     {"current": "잔액율", "expected": "잔액률", "language": "ko", "reason": "발간 표준 용어 확인"},
+                    {"current": "Ministry of Gender Equality & family", "expected": "Ministry of Gender Equality and Family", "language": "en", "reason": "2026 HWPX 파란색 표기 후보 검토"},
+                    {"current": "Ministry of Trade, Industry & Energy", "expected": "Ministry of Trade, Industry and Energy", "language": "en", "reason": "2026 HWPX 파란색 표기 후보 검토"},
+                    {"current": "Nuclear safety and Security Commission", "expected": "Nuclear Safety and Security Commission", "language": "en", "reason": "2026 HWPX 파란색 표기 후보 검토"},
+                    {"current": "Personal Information Protection commission", "expected": "Personal Information Protection Commission", "language": "en", "reason": "2026 HWPX 파란색 표기 후보 검토"},
+                    {"current": "Military Manpower administration", "expected": "Military Manpower Administration", "language": "en", "reason": "2026 HWPX 파란색 표기 후보 검토"},
+                    {"current": "Anti-corruption and Civil Rights Commission", "expected": "Anti-Corruption and Civil Rights Commission", "language": "en", "reason": "2026 HWPX 파란색 표기 후보 검토"},
+                    {"current": "National Institute For Unification Education", "expected": "National Institute for Unification Education", "language": "en", "reason": "2026 HWPX 파란색 표기 후보 검토"},
+                    {"current": "National Relief Fund", "expected": "Information on Livelihood Recovery Consumer Coupons", "language": "en", "reason": "2026 HWPX 파란색 표기 후보 검토"},
+                    {"current": "Use Of Archives", "expected": "Use of Archives", "language": "en", "reason": "2026 HWPX 파란색 표기 후보 검토"},
+                    {"current": "No. of Program", "expected": "No. of Programs", "language": "en", "reason": "2026 HWPX 파란색 표기 후보 검토"},
+                    {"current": "No. of Completion", "expected": "No. of Completions", "language": "en", "reason": "2026 HWPX 파란색 표기 후보 검토"},
+                    {"current": "Number of Completion", "expected": "Number of Completions", "language": "en", "reason": "2026 HWPX 파란색 표기 후보 검토"},
+                    {"current": "Operational of Safety e-Report", "expected": "Operation of Safety e-Report", "language": "en", "reason": "2026 HWPX 파란색 표기 후보 검토"},
+                    {"current": "Small business", "expected": "Small Business", "language": "en", "reason": "2026 HWPX 파란색 표기 후보 검토"},
                 ],
                 "failure_status": "확인 필요",
                 "severity": "warning",
@@ -2488,7 +2989,7 @@ def static_terminology_check_specs(table: ValidationTable) -> list[dict[str, Any
 
 
 def static_translation_check_specs(table: ValidationTable) -> list[dict[str, Any]]:
-    return [
+    specs = [
         rule_spec(
             "translation",
             {
@@ -2505,6 +3006,11 @@ def static_translation_check_specs(table: ValidationTable) -> list[dict[str, Any
                     {"source": "단위", "expected": "Unit"},
                     {"source": "잔액률", "expected": "Balance Ratio"},
                     {"source": "증감률", "expected": "Rate of Change"},
+                    {"source": "기후에너지환경부", "expected": "Ministry of Climate, Energy and Environment"},
+                    {"source": "국가데이터처", "expected": "National Data Agency"},
+                    {"source": "국가데이터연구원", "expected": "National Data Research Institute"},
+                    {"source": "방송미디어통신위원회", "expected": "Broadcasting, Media and Communications Commission"},
+                    {"source": "민생회복 소비쿠폰 안내", "expected": "Information on Livelihood Recovery Consumer Coupons"},
                 ],
                 "scope": "header_and_label_cells",
                 "failure_status": "확인 필요",
@@ -2513,6 +3019,26 @@ def static_translation_check_specs(table: ValidationTable) -> list[dict[str, Any
             },
         )
     ]
+    title_translation = DRAFT_TITLE_TRANSLATION_OVERRIDES.get(table.code)
+    if title_translation:
+        title_ko, title_en = title_translation
+        specs.append(
+            rule_spec(
+                "translation",
+                {
+                    "id": f"profile.{table.code}.title_translation_static",
+                    "type": "title_translation_static",
+                    "category": "common",
+                    "label": "초안 영문 제목 자동 보정",
+                    "source_title": title_ko,
+                    "expected_title_en": title_en,
+                    "failure_status": "확인 필요",
+                    "severity": "warning",
+                    "confidence": 0.8,
+                },
+            )
+        )
+    return specs
 
 
 def symbol_columns(table: ValidationTable) -> dict[str, int]:

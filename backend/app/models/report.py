@@ -146,6 +146,7 @@ class StatTable(BaseModel):
 
 
 class ReportSummary(BaseModel):
+    report_id: int | None = None
     file_name: str
     base_year: str
     total_tables: int
@@ -153,6 +154,15 @@ class ReportSummary(BaseModel):
     needs_review_count: int
     suspected_error_count: int
     issue_counts: dict[str, int] = Field(default_factory=dict)
+
+
+class ReportOption(BaseModel):
+    id: int
+    year: int
+    title: str
+    file_name: str
+    imported_at: str
+    table_count: int
 
 
 class PressInsight(BaseModel):
@@ -167,6 +177,7 @@ class ReportPayload(BaseModel):
     summary: ReportSummary
     tables: list[StatTable]
     press_insights: list[PressInsight]
+    available_reports: list[ReportOption] = Field(default_factory=list)
 
 
 class ValidationProfileSummary(BaseModel):

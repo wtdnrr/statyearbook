@@ -139,6 +139,7 @@ export interface StatTable {
 }
 
 export interface ReportSummary {
+  report_id: number | null;
   file_name: string;
   base_year: string;
   total_tables: number;
@@ -146,6 +147,15 @@ export interface ReportSummary {
   needs_review_count: number;
   suspected_error_count: number;
   issue_counts: Record<string, number>;
+}
+
+export interface ReportOption {
+  id: number;
+  year: number;
+  title: string;
+  file_name: string;
+  imported_at: string;
+  table_count: number;
 }
 
 export interface PressInsight {
@@ -160,4 +170,5 @@ export interface ReportPayload {
   summary: ReportSummary;
   tables: StatTable[];
   press_insights: PressInsight[];
+  available_reports: ReportOption[];
 }

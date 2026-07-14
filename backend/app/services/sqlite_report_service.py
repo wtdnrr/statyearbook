@@ -51,12 +51,22 @@ class SQLiteReportService:
             summary=self.get_summary(),
             tables=self.list_tables(),
             press_insights=self.get_press_insights(),
+            available_reports=self.list_reports(),
         )
 
-    def get_summary(self) -> ReportSummary:
-        report = self._latest_report()
+    def get_payload_for_report(self, report_id: int | None = None) -> ReportPayload:
+        return ReportPayload(
+            summary=self.get_summary(report_id),
+            tables=self.list_tables(report_id),
+            press_insights=self.get_press_insights(report_id),
+            available_reports=self.list_reports(),
+        )
+
+    def get_summary(self, report_id: int | None = None) -> ReportSummary:
+        report = self._resolve_report(report_id)
         if report is None:
             return ReportSummary(
+                report_id=None,
                 file_name="",
                 base_year="",
                 total_tables=0,
@@ -66,7 +76,7 @@ class SQLiteReportService:
                 issue_counts={},
             )
 
-        tables = self.list_tables()
+        tables = self.list_tables(report_id)
         issue_counts: dict[str, int] = {}
         for table in tables:
             for check in table.checks:
@@ -75,6 +85,7 @@ class SQLiteReportService:
                 issue_counts[check.type] = issue_counts.get(check.type, 0) + 1
 
         return ReportSummary(
+            report_id=int(report["id"]),
             file_name=decode_display_text(report["source_file_name"]),
             base_year=str(report["year"]),
             total_tables=len(tables),
@@ -84,8 +95,8 @@ class SQLiteReportService:
             issue_counts=issue_counts,
         )
 
-    def list_tables(self) -> list[StatTable]:
-        report = self._latest_report()
+    def list_tables(self, report_id: int | None = None) -> list[StatTable]:
+        report = self._resolve_report(report_id)
         if report is None:
             return []
 
@@ -105,11 +116,11 @@ class SQLiteReportService:
             physical_tables = [self._row_to_table(connection, report, row, run_id) for row in rows]
             return group_table_parts(physical_tables)
 
-    def get_table(self, table_id: str) -> StatTable | None:
-        return next((table for table in self.list_tables() if table.id == table_id), None)
+    def get_table(self, table_id: str, report_id: int | None = None) -> StatTable | None:
+        return next((table for table in self.list_tables(report_id) if table.id == table_id), None)
 
-    def get_press_insights(self) -> list[PressInsight]:
-        tables = self.list_tables()
+    def get_press_insights(self, report_id: int | None = None) -> list[PressInsight]:
+        tables = self.list_tables(report_id)
         insights: list[PressInsight] = []
 
         for table in tables:
@@ -130,6 +141,29 @@ class SQLiteReportService:
 
         return insights
 
+    def list_reports(self) -> list:
+        with connect(self._db_path) as connection:
+            init_db(connection)
+            rows = connection.execute(
+                """
+                SELECT r.id, r.year, r.title, r.source_file_name, r.imported_at
+                FROM annual_reports r
+                GROUP BY r.id
+                ORDER BY r.year DESC, r.imported_at DESC, r.id DESC
+                """
+            ).fetchall()
+            return [
+                {
+                    "id": int(row["id"]),
+                    "year": int(row["year"]),
+                    "title": row["title"],
+                    "file_name": decode_display_text(row["source_file_name"]),
+                    "imported_at": row["imported_at"],
+                    "table_count": self._logical_table_count(connection, int(row["id"])),
+                }
+                for row in rows
+            ]
+
     def _latest_report(self) -> sqlite3.Row | None:
         with connect(self._db_path) as connection:
             return connection.execute(
@@ -140,6 +174,27 @@ class SQLiteReportService:
                 LIMIT 1
                 """
             ).fetchone()
+
+    def _report_by_id(self, report_id: int) -> sqlite3.Row | None:
+        with connect(self._db_path) as connection:
+            return connection.execute(
+                "SELECT * FROM annual_reports WHERE id = ?",
+                (report_id,),
+            ).fetchone()
+
+    def _resolve_report(self, report_id: int | None = None) -> sqlite3.Row | None:
+        if report_id is not None:
+            report = self._report_by_id(report_id)
+            if report is not None:
+                return report
+        return self._latest_report()
+
+    def _logical_table_count(self, connection: sqlite3.Connection, report_id: int) -> int:
+        rows = connection.execute(
+            "SELECT code FROM stat_tables WHERE report_id = ?",
+            (report_id,),
+        ).fetchall()
+        return len({re.sub(r"\s+표\d+$", "", row["code"]) for row in rows})
 
     def _row_to_table(
         self,
@@ -478,6 +533,19 @@ def highlight_cells_for(row: sqlite3.Row, spec: dict[str, Any] | None) -> list[V
         target_col = int(spec.get("target_column", col_index if col_index is not None else -1))
         cells.append(highlight_cell(row_index, target_col, "target"))
         cells.extend(highlight_cell(row_index, col, "related") for col in spec_columns(spec, "operand_columns"))
+    elif rule_type == "cell_sum":
+        target_row = int(spec.get("target_row", row_index if row_index is not None else -1))
+        target_col = int(spec.get("target_column", col_index if col_index is not None else -1))
+        cells.append(highlight_cell(target_row, target_col, "target"))
+        for operand in spec.get("operand_cells", []):
+            if isinstance(operand, dict):
+                cells.append(
+                    highlight_cell(
+                        int(operand.get("row", -1)),
+                        int(operand.get("column", -1)),
+                        "related",
+                    )
+                )
     elif rule_type == "row_arithmetic":
         target_col = int(spec.get("target_column", col_index if col_index is not None else -1))
         cells.append(highlight_cell(row_index, target_col, "target"))
@@ -541,14 +609,11 @@ def highlight_cells_for(row: sqlite3.Row, spec: dict[str, Any] | None) -> list[V
     elif rule_type == "row_ratio_by_rows":
         target_row = int(spec.get("target_row", row_index if row_index is not None else -1))
         numerator_row = int(spec.get("numerator_row", -1))
-        denominator_row = int(spec.get("denominator_row", -1))
-        cells.extend(
-            [
-                highlight_cell(target_row, col_index, "target"),
-                highlight_cell(numerator_row, col_index, "related"),
-                highlight_cell(denominator_row, col_index, "related"),
-            ]
-        )
+        cells.extend([highlight_cell(target_row, col_index, "target"), highlight_cell(numerator_row, col_index, "related")])
+        denominator_rows = spec_rows(spec, "denominator_rows")
+        if not denominator_rows:
+            denominator_rows = [int(spec.get("denominator_row", -1))]
+        cells.extend(highlight_cell(denominator_row, col_index, "related") for denominator_row in denominator_rows)
     elif rule_type == "weighted_average":
         target_row = int(spec.get("target_row", row_index if row_index is not None else -1))
         target_col = int(spec.get("target_column", col_index if col_index is not None else -1))
@@ -637,6 +702,7 @@ def highlight_rows_for(row: sqlite3.Row, spec: dict[str, Any] | None) -> list[Va
     rule_type = str(spec.get("type") or "")
     if rule_type in {
         "row_sum",
+        "cell_sum",
         "row_arithmetic",
         "row_ratio",
         "column_share_ratio",
@@ -674,6 +740,7 @@ def highlight_scope_for(row: sqlite3.Row, spec: dict[str, Any] | None, header_co
         return "header"
     if rule_type in {
         "row_sum",
+        "cell_sum",
         "row_arithmetic",
         "row_ratio",
         "column_share_ratio",

@@ -37,6 +37,8 @@ class SQLiteValidationProfileRepository:
                     signature = structure_signature(table)
                     profile = self._profile_by_code_signature(connection, table.code, signature)
                     previous_profile = self._latest_profile_by_code(connection, table.code)
+                    if previous_profile is None:
+                        previous_profile = self._latest_profile_by_title(connection, table.title)
                     if profile is None:
                         draft = draft_provider.draft(table, previous_profile=previous_profile)
                         profile_id = self._insert_profile(connection, report_id=report_id, draft=draft)
@@ -112,6 +114,23 @@ class SQLiteValidationProfileRepository:
             LIMIT 1
             """,
             (table_code,),
+        ).fetchone()
+        return row_to_profile(row) if row else None
+
+    def _latest_profile_by_title(
+        self,
+        connection: sqlite3.Connection,
+        table_title: str,
+    ) -> ValidationProfile | None:
+        row = connection.execute(
+            """
+            SELECT *
+            FROM validation_profiles
+            WHERE table_title = ?
+            ORDER BY updated_at DESC, id DESC
+            LIMIT 1
+            """,
+            (table_title,),
         ).fetchone()
         return row_to_profile(row) if row else None
 

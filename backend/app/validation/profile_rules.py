@@ -178,6 +178,8 @@ class ProfileSpecRule(ValidationRule):
                 spec_issues, spec_checks = self._validate_column_sum(table, profile, spec)
             elif rule_type == "column_sum":
                 spec_issues, spec_checks = self._validate_column_sum(table, profile, spec)
+            elif rule_type == "cell_sum":
+                spec_issues, spec_checks = self._validate_cell_sum(table, profile, spec)
             elif rule_type == "row_sum":
                 spec_issues, spec_checks = self._validate_row_sum(table, profile, spec)
             elif rule_type == "row_arithmetic":
@@ -210,6 +212,8 @@ class ProfileSpecRule(ValidationRule):
                 spec_issues, spec_checks = self._validate_static_terminology(table, profile, spec)
             elif rule_type == "translation_static":
                 spec_issues, spec_checks = self._validate_static_translation(table, profile, spec)
+            elif rule_type == "title_translation_static":
+                spec_issues, spec_checks = self._validate_title_translation(table, profile, spec)
             else:
                 spec_issues, spec_checks = [], []
 
@@ -458,7 +462,10 @@ class ProfileSpecRule(ValidationRule):
 
         issues: list[ValidationIssueRecord] = []
         checks: list[ValidationCheckRecord] = []
+        allowed_rows = {int(row_index) for row_index in spec.get("row_indices", [])}
         for row_index, row in table.data_rows():
+            if allowed_rows and row_index not in allowed_rows:
+                continue
             current = additive_target_cell_number(row, target_col)
             operands = [additive_operand_cell_number(row, col_index) for col_index in operand_columns]
             if current is None or any(value is None for value in operands):
@@ -566,6 +573,12 @@ class ProfileSpecRule(ValidationRule):
                 multiplier=multiplier,
             )
             passed = abs(current - expected) <= tolerance
+            aggregate_note = (
+                " 총계·소계도 비율값을 더하지 않고 해당 행의 합계 분자와 합계 분모로 다시 계산했습니다."
+                if spec.get("aggregate_strategy") == "recalculate_from_numerator_and_denominator"
+                and (is_total_like(combined_row_label(table, row)) or "소계" in combined_row_label(table, row))
+                else ""
+            )
             check = self._calculation_check(
                 table,
                 profile,
@@ -576,7 +589,7 @@ class ProfileSpecRule(ValidationRule):
                 current=current,
                 expected=expected,
                 passed=passed,
-                detail="통계표별 검수 기준에 정의된 비율 산식을 확인했습니다.",
+                detail=f"통계표별 검수 기준에 정의된 비율 산식을 확인했습니다.{aggregate_note}",
             )
             checks.append(check)
             if not passed:
@@ -604,8 +617,6 @@ class ProfileSpecRule(ValidationRule):
         checks: list[ValidationCheckRecord] = []
         multiplier = float(spec.get("multiplier", 100))
         for row_index, row in table.data_rows():
-            if row_index == denominator_row:
-                continue
             current = cell_number(row, target_col)
             numerator = cell_number(row, numerator_col)
             if current is None or numerator is None:
@@ -704,7 +715,13 @@ class ProfileSpecRule(ValidationRule):
                 continue
 
             expected = (current_value - previous_value) / previous_value * multiplier
-            passed = abs(current - expected) <= float(spec.get("tolerance", 0.15))
+            tolerance = displayed_ratio_tolerance(
+                row,
+                target_col,
+                base_tolerance=float(spec.get("tolerance", 0.15)),
+                multiplier=multiplier,
+            )
+            passed = abs(current - expected) <= tolerance
             check = self._calculation_check(
                 table,
                 profile,
@@ -730,9 +747,11 @@ class ProfileSpecRule(ValidationRule):
     ) -> tuple[list[ValidationIssueRecord], list[ValidationCheckRecord]]:
         target_row = int(spec.get("target_row", -1))
         numerator_row = int(spec.get("numerator_row", -1))
-        denominator_row = int(spec.get("denominator_row", -1))
+        denominator_rows = [int(value) for value in spec.get("denominator_rows", [])]
+        if not denominator_rows:
+            denominator_rows = [int(spec.get("denominator_row", -1))]
         columns = [int(col_index) for col_index in spec.get("columns", [])]
-        if not columns or not self._valid_rows(table, [target_row, numerator_row, denominator_row]):
+        if not columns or not self._valid_rows(table, [target_row, numerator_row, *denominator_rows]):
             return [], []
 
         issues: list[ValidationIssueRecord] = []
@@ -743,8 +762,11 @@ class ProfileSpecRule(ValidationRule):
                 continue
             target_value = cell_number(table.matrix[target_row], col_index)
             numerator = cell_number(table.matrix[numerator_row], col_index)
-            denominator = cell_number(table.matrix[denominator_row], col_index)
-            if target_value is None or numerator is None or denominator in {None, 0}:
+            denominator_values = [cell_number(table.matrix[row_index], col_index) for row_index in denominator_rows]
+            if target_value is None or numerator is None or any(value is None for value in denominator_values):
+                continue
+            denominator = sum(value for value in denominator_values if value is not None)
+            if denominator == 0:
                 continue
 
             expected = numerator / denominator * multiplier
@@ -772,6 +794,50 @@ class ProfileSpecRule(ValidationRule):
             if not passed:
                 issues.append(self._issue_from_check(check))
         return issues, checks
+
+    def _validate_cell_sum(
+        self,
+        table: ValidationTable,
+        profile: ValidationProfile,
+        spec: dict[str, Any],
+    ) -> tuple[list[ValidationIssueRecord], list[ValidationCheckRecord]]:
+        target_row = int(spec.get("target_row", -1))
+        target_col = int(spec.get("target_column", -1))
+        operand_cells = [
+            (int(item.get("row", -1)), int(item.get("column", -1)))
+            for item in spec.get("operand_cells", [])
+            if isinstance(item, dict)
+        ]
+        if not operand_cells or not self._valid_rows(table, [target_row]) or not self._valid_columns(table, [target_col]):
+            return [], []
+
+        current = additive_target_cell_number(table.matrix[target_row], target_col)
+        values: list[float] = []
+        for row_index, col_index in operand_cells:
+            if not self._valid_rows(table, [row_index]) or not self._valid_columns(table, [col_index]):
+                continue
+            value = additive_operand_cell_number(table.matrix[row_index], col_index)
+            if value is None:
+                return [], []
+            values.append(value)
+        if current is None or len(values) < 2:
+            return [], []
+
+        expected = sum(values)
+        passed = abs(current - expected) <= float(spec.get("tolerance", 1.0))
+        check = self._calculation_check(
+            table,
+            profile,
+            spec,
+            check_type="합계 검수",
+            row_index=target_row,
+            col_index=target_col,
+            current=current,
+            expected=expected,
+            passed=passed,
+            detail="좌우로 이어진 반복 구역의 모든 세부 셀을 합산해 전체 합계를 확인했습니다.",
+        )
+        return ([self._issue_from_check(check)] if not passed else []), [check]
 
     def _validate_row_year_over_year_rate(
         self,
@@ -1164,6 +1230,31 @@ class ProfileSpecRule(ValidationRule):
             )
         return issues, checks
 
+    def _validate_title_translation(
+        self,
+        table: ValidationTable,
+        profile: ValidationProfile,
+        spec: dict[str, Any],
+    ) -> tuple[list[ValidationIssueRecord], list[ValidationCheckRecord]]:
+        expected = str(spec.get("expected_title_en") or "")
+        source_title = str(spec.get("source_title") or table.title)
+        if not expected:
+            return [], []
+
+        check = self._check_from_pass_fail(
+            table,
+            profile,
+            spec,
+            fallback_check_type="번역 검수",
+            location="표 제목",
+            current_value=source_title,
+            expected_value=expected,
+            difference="영문 제목 자동 보정",
+            passed=False,
+            detail="2026 초안에서 '(영문)'으로 표시된 표 제목에 영문 번역 후보를 삽입했습니다. 최종 표기는 담당자 확인이 필요합니다.",
+        )
+        return [self._issue_from_check(check)], [check]
+
     def _validate_static_translation(
         self,
         table: ValidationTable,
@@ -1186,6 +1277,8 @@ class ProfileSpecRule(ValidationRule):
                     source = str(term.get("source", ""))
                     expected = str(term.get("expected", ""))
                     if not source or not expected or not contains_korean_term(text, source):
+                        continue
+                    if source == "계" and re.search(r"[A-Za-z]", text) and "total" not in text.lower():
                         continue
                     if expected.lower() in text.lower():
                         continue
@@ -1294,6 +1387,7 @@ class ProfileSpecRule(ValidationRule):
         issues: list[ValidationIssueRecord] = []
         checks: list[ValidationCheckRecord] = []
         target_matrix_row = table.matrix[target_row]
+        minimum_operands = 1 if spec.get("allow_single_operand") else 2
         for col_index in columns:
             if not self._valid_columns(table, [col_index]):
                 continue
@@ -1305,7 +1399,7 @@ class ProfileSpecRule(ValidationRule):
                 value = additive_operand_cell_number(table.matrix[row_index], col_index)
                 if value is not None:
                     values.append(value)
-            if current is None or len(values) < 2:
+            if current is None or len(values) < minimum_operands:
                 continue
 
             expected = sum(values)
@@ -1345,6 +1439,8 @@ class ProfileSpecRule(ValidationRule):
         row_label = combined_row_label(table, row) or table.row_label(row) or f"{row_index + 1}행"
         column_label = table.column_text(col_index)
         difference = current - expected
+        evidence = self._calculation_evidence(table, spec, row_index=row_index, col_index=col_index)
+        evidence_detail = f" 연산에 사용한 셀: {evidence}." if evidence else ""
         return self._check_record(
             table,
             profile,
@@ -1356,11 +1452,79 @@ class ProfileSpecRule(ValidationRule):
             difference=None if passed else format_number(difference),
             status=self._status(spec, passed),
             severity=self._severity(spec, passed),
-            detail=f"{detail} 적용 기준: {spec.get('label', spec.get('id', '검수 기준'))}.",
+            detail=(
+                f"{detail} 적용 기준: {spec.get('label', spec.get('id', '검수 기준'))}."
+                f"{evidence_detail}"
+            ),
             row_index=row_index,
             col_index=col_index,
             formula=str(spec.get("label") or spec.get("id") or "profile rule"),
         )
+
+    def _calculation_evidence(
+        self,
+        table: ValidationTable,
+        spec: dict[str, Any],
+        *,
+        row_index: int,
+        col_index: int,
+    ) -> str:
+        rule_type = str(spec.get("type") or "")
+        evidence: list[str] = []
+
+        def add_cell(target_row: int, target_col: int) -> None:
+            if not self._valid_rows(table, [target_row]) or not self._valid_columns(table, [target_col]):
+                return
+            row = table.matrix[target_row]
+            value = clean_display_text(cell_text(row, target_col)) or "빈값(0 처리)"
+            row_label = combined_row_label(table, row) or f"{target_row + 1}행"
+            column_label = table.column_text(target_col)
+            evidence.append(f"{row_label} / {column_label} = {value}")
+
+        if rule_type == "row_sum":
+            for operand_col in [int(value) for value in spec.get("operand_columns", [])]:
+                add_cell(row_index, operand_col)
+        elif rule_type == "row_arithmetic":
+            for term in spec.get("terms", []):
+                if isinstance(term, dict) and term.get("column") is not None:
+                    add_cell(row_index, int(term["column"]))
+        elif rule_type == "row_ratio":
+            add_cell(row_index, int(spec.get("numerator_column", -1)))
+            denominator_columns = [int(value) for value in spec.get("denominator_columns", [])]
+            if not denominator_columns and spec.get("denominator_column") is not None:
+                denominator_columns = [int(spec.get("denominator_column", -1))]
+            for denominator_col in denominator_columns:
+                add_cell(row_index, denominator_col)
+        elif rule_type in {"column_sum", "region_total"}:
+            for operand_row in [int(value) for value in spec.get("operand_rows", [])]:
+                add_cell(operand_row, col_index)
+        elif rule_type == "cell_sum":
+            for operand in spec.get("operand_cells", []):
+                if isinstance(operand, dict):
+                    add_cell(int(operand.get("row", -1)), int(operand.get("column", -1)))
+        elif rule_type == "column_share_ratio":
+            add_cell(row_index, int(spec.get("numerator_column", -1)))
+            add_cell(
+                int(spec.get("denominator_row", -1)),
+                int(spec.get("denominator_column", spec.get("numerator_column", -1))),
+            )
+        elif rule_type == "row_ratio_by_rows":
+            add_cell(int(spec.get("numerator_row", -1)), col_index)
+            denominator_rows = [int(value) for value in spec.get("denominator_rows", [])]
+            if not denominator_rows:
+                denominator_rows = [int(spec.get("denominator_row", -1))]
+            for denominator_row in denominator_rows:
+                add_cell(denominator_row, col_index)
+        elif rule_type in {"row_year_over_year_rate", "row_year_over_year_change_amount"}:
+            source_row = int(spec.get("source_row", -1))
+            columns = sorted(int(value) for value in spec.get("columns", []))
+            previous_columns = [value for value in columns if value < col_index]
+            add_cell(source_row, previous_columns[-1] if previous_columns else -1)
+            add_cell(source_row, col_index)
+
+        if len(evidence) > 8:
+            return "; ".join(evidence[:8]) + f" 외 {len(evidence) - 8}개"
+        return "; ".join(evidence)
 
     def _check_record(
         self,

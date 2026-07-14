@@ -1,4 +1,4 @@
-from app.models.report import PressInsight, ReportPayload, ReportSummary, StatTable
+from app.models.report import PressInsight, ReportOption, ReportPayload, ReportSummary, StatTable
 
 
 FALLBACK_ORIGINAL_FILE = "2025_통계연보_추출.xlsx"
@@ -17,6 +17,16 @@ class ReportService:
             summary=self.get_summary(),
             tables=self.list_tables(),
             press_insights=self.get_press_insights(),
+            available_reports=[
+                ReportOption(
+                    id=0,
+                    year=2025,
+                    title="2025 통계연보 더미",
+                    file_name=FALLBACK_ORIGINAL_FILE,
+                    imported_at="",
+                    table_count=len(self._tables),
+                )
+            ],
         )
 
     def get_summary(self) -> ReportSummary:
@@ -27,6 +37,7 @@ class ReportService:
                     issue_counts[check.type] = issue_counts.get(check.type, 0) + 1
 
         return ReportSummary(
+            report_id=0,
             file_name=FALLBACK_ORIGINAL_FILE,
             base_year="2025",
             total_tables=len(self._tables),
@@ -36,10 +47,10 @@ class ReportService:
             issue_counts=issue_counts,
         )
 
-    def list_tables(self) -> list[StatTable]:
+    def list_tables(self, report_id: int | None = None) -> list[StatTable]:
         return self._tables
 
-    def get_table(self, table_id: str) -> StatTable | None:
+    def get_table(self, table_id: str, report_id: int | None = None) -> StatTable | None:
         return next((table for table in self._tables if table.id == table_id), None)
 
     def get_press_insights(self) -> list[PressInsight]:
