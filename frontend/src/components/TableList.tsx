@@ -1,6 +1,7 @@
 import { Search, SlidersHorizontal } from "lucide-react";
 
 import type { StatTable, TableStatus } from "../types";
+import { groupedValidationIssueCount } from "../utils/validationGrouping";
 import { StatusBadge } from "./StatusBadge";
 
 interface TableListProps {
@@ -69,8 +70,8 @@ export function TableList({
         </div>
         <div className="list-table__body">
           {tables.map((table) => {
-            const reviewCount = table.checks.filter((check) => check.status === "확인 필요").length;
-            const criticalCount = table.checks.filter((check) => check.status === "오류 의심").length;
+            const reviewCount = groupedValidationIssueCount(table.checks, "확인 필요");
+            const criticalCount = groupedValidationIssueCount(table.checks, "오류 의심");
 
             return (
               <button

@@ -519,13 +519,6 @@ def formula_previous_column(spec: dict[str, Any] | None, current_col: int | None
     return previous_columns[-1] if previous_columns else None
 
 
-def expand_column_sum_highlight_columns(columns: list[int]) -> bool:
-    if len(columns) <= 1 or len(columns) > 3:
-        return False
-    ordered = sorted(columns)
-    return ordered == list(range(ordered[0], ordered[-1] + 1))
-
-
 def highlight_cells_for(row: sqlite3.Row, spec: dict[str, Any] | None) -> list[ValidationHighlightCell]:
     row_index = int_or_none(row["row_index"])
     col_index = int_or_none(row["col_index"])
@@ -575,7 +568,6 @@ def highlight_cells_for(row: sqlite3.Row, spec: dict[str, Any] | None) -> list[V
             ]
         )
         cells.extend(highlight_cell(row_index, denominator_col, "related") for denominator_col in denominator_columns)
-        cells.extend(highlight_cell(row_index, dependency_col, "related") for dependency_col in spec_columns(spec, "dependency_columns"))
     elif rule_type == "column_share_ratio":
         target_col = int(spec.get("target_column", col_index if col_index is not None else -1))
         numerator_col = int(spec.get("numerator_column", -1))
@@ -603,15 +595,10 @@ def highlight_cells_for(row: sqlite3.Row, spec: dict[str, Any] | None) -> list[V
         target_row = int(spec.get("target_row", row_index if row_index is not None else -1))
         rule_columns = spec_columns(spec, "columns")
         current_col = col_index if col_index is not None else (rule_columns[0] if rule_columns else -1)
-        target_columns = (
-            [current_col, *[column for column in rule_columns if column != current_col]]
-            if expand_column_sum_highlight_columns(rule_columns)
-            else [current_col]
-        )
-        cells.extend(highlight_cell(target_row, column, "target") for column in target_columns)
+        cells.append(highlight_cell(target_row, current_col, "target"))
         operand_rows = spec_rows(spec, "operand_rows")
         for operand_row in operand_rows:
-            cells.extend(highlight_cell(operand_row, column, "related") for column in target_columns)
+            cells.append(highlight_cell(operand_row, current_col, "related"))
     elif rule_type == "row_ratio_by_rows":
         target_row = int(spec.get("target_row", row_index if row_index is not None else -1))
         numerator_row = int(spec.get("numerator_row", -1))

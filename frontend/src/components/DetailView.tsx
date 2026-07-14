@@ -14,6 +14,10 @@ import type {
   ValidationHighlightRow,
   ValidationIssue,
 } from "../types";
+import {
+  repeatedCalculationGroupKey,
+  validationDisplayGroupKey,
+} from "../utils/validationGrouping";
 import { firstFocusableCheck, resolveIssueLocation } from "../utils/validationLocation";
 import { DataGrid } from "./DataGrid";
 import { StatusBadge } from "./StatusBadge";
@@ -84,16 +88,8 @@ function checksForFilter<T extends { status: string }>(
   return allChecks;
 }
 
-function calculationFamilyKeyForCheck(check: ValidationIssue) {
-  return [check.rule_id ?? check.id, check.type, check.formula ?? "", check.detail].join("::");
-}
-
-function groupKeyForCheck(check: ValidationIssue) {
-  return [calculationFamilyKeyForCheck(check), check.status].join("::");
-}
-
 function shouldExpandCalculationFamily(check: ValidationIssue) {
-  return Boolean(check.rule_id) && ["합계 검수", "비율 검수", "증감액 검수", "증감률 검수"].includes(check.type);
+  return Boolean(repeatedCalculationGroupKey(check)) && check.status !== "오류 의심";
 }
 
 function aggregateStatus(checks: ValidationIssue[]) {
@@ -129,6 +125,15 @@ function summarizeRepeatedValues(values: Array<string | undefined>, fallback: st
     return fallback;
   }
   return unique.length === 1 ? unique[0] : fallback;
+}
+
+function summaryDetailForGroupedCheck(check: ValidationIssue, targetCount: number) {
+  const baseDetail = check.detail.split("연산에 사용한 셀:")[0].trim();
+  if (!baseDetail) {
+    return `같은 방식으로 ${targetCount}개 셀에 적용된 검수입니다.`;
+  }
+  const normalizedDetail = baseDetail.endsWith(".") ? baseDetail : `${baseDetail}.`;
+  return `${normalizedDetail} 같은 방식으로 ${targetCount}개 셀에 적용된 검수입니다.`;
 }
 
 function columnLabelAt(part: StatTablePart, colIndex: number | undefined) {
@@ -367,14 +372,74 @@ function highlightForCheck(_part: StatTablePart, check: DisplayCheck | undefined
   };
 }
 
+function sortChecksByCalculationHierarchy(checks: DisplayCheck[]) {
+  if (checks.length < 2) {
+    return checks;
+  }
+
+  const targetKeys = checks.map(
+    (check) =>
+      new Set(
+        check.highlight_cells
+          .filter((cell) => cell.role === "target")
+          .map((cell) => highlightCellKey(cell)),
+      ),
+  );
+  const relatedKeys = checks.map(
+    (check) =>
+      new Set(
+        check.highlight_cells
+          .filter((cell) => cell.role === "related")
+          .map((cell) => highlightCellKey(cell)),
+      ),
+  );
+  const children = checks.map(() => new Set<number>());
+  const indegree = checks.map(() => 0);
+
+  for (let parentIndex = 0; parentIndex < checks.length; parentIndex += 1) {
+    for (let childIndex = 0; childIndex < checks.length; childIndex += 1) {
+      if (parentIndex === childIndex || checks[parentIndex].type !== checks[childIndex].type) {
+        continue;
+      }
+      const childIsOperand = Array.from(targetKeys[childIndex]).some((key) => relatedKeys[parentIndex].has(key));
+      if (!childIsOperand || children[parentIndex].has(childIndex)) {
+        continue;
+      }
+      children[parentIndex].add(childIndex);
+      indegree[childIndex] += 1;
+    }
+  }
+
+  const ready = checks
+    .map((_, index) => index)
+    .filter((index) => indegree[index] === 0);
+  const ordered: DisplayCheck[] = [];
+  while (ready.length > 0) {
+    ready.sort((left, right) => left - right);
+    const index = ready.shift();
+    if (index === undefined) {
+      break;
+    }
+    ordered.push(checks[index]);
+    for (const childIndex of children[index]) {
+      indegree[childIndex] -= 1;
+      if (indegree[childIndex] === 0) {
+        ready.push(childIndex);
+      }
+    }
+  }
+
+  return ordered.length === checks.length ? ordered : checks;
+}
+
 function groupChecksForDisplay(part: StatTablePart, sourceChecks: ValidationIssue[]): DisplayCheck[] {
   const groups = new Map<string, ValidationIssue[]>();
   for (const check of sourceChecks) {
-    const key = groupKeyForCheck(check);
+    const key = validationDisplayGroupKey(check);
     groups.set(key, [...(groups.get(key) ?? []), check]);
   }
 
-  return Array.from(groups.values()).map((checks) => {
+  const displayChecks = Array.from(groups.values()).map((checks) => {
     const first = checks[0];
     const failedChecks = checks.filter((check) => check.status !== "정상");
     const representative = failedChecks[0] ?? first;
@@ -405,7 +470,7 @@ function groupChecksForDisplay(part: StatTablePart, sourceChecks: ValidationIssu
 
     return {
       ...representative,
-      id: `group-${groupKeyForCheck(first)}`,
+      id: `group-${validationDisplayGroupKey(first)}`,
       location: `${summarizeValues(rows, "행")} / ${summarizeValues(columns, "열")}`,
       current_value: failedChecks.length > 0 ? representative.current_value : `${targetCount}개 셀`,
       expected_value: summarizeRepeatedValues(
@@ -415,7 +480,7 @@ function groupChecksForDisplay(part: StatTablePart, sourceChecks: ValidationIssu
       difference: failedChecks.length > 0 ? `${failedChecks.length}건` : undefined,
       status: aggregated.status,
       severity: aggregated.severity,
-      detail: `${first.detail} 같은 방식으로 ${targetCount}개 셀에 적용된 검수입니다.`,
+      detail: summaryDetailForGroupedCheck(first, targetCount),
       checks,
       targetLocations,
       targetCount,
@@ -426,6 +491,8 @@ function groupChecksForDisplay(part: StatTablePart, sourceChecks: ValidationIssu
       focus_cell: focusCell,
     };
   });
+
+  return sortChecksByCalculationHierarchy(displayChecks);
 }
 
 function expandCalculationFamilyForHighlight(
@@ -437,10 +504,13 @@ function expandCalculationFamilyForHighlight(
     return check;
   }
 
-  const familyKey = calculationFamilyKeyForCheck(check);
+  const familyKey = repeatedCalculationGroupKey(check);
   const existingIds = new Set(check.checks.map((item) => item.id));
   const siblingChecks = sourceChecks.filter(
-    (item) => calculationFamilyKeyForCheck(item) === familyKey && !existingIds.has(item.id),
+    (item) =>
+      repeatedCalculationGroupKey(item) === familyKey &&
+      item.status === check.status &&
+      !existingIds.has(item.id),
   );
   if (siblingChecks.length === 0) {
     return check;

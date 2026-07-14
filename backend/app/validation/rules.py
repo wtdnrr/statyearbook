@@ -34,6 +34,7 @@ REGION_NAMES = {
 }
 
 
+SUM_RATIO_MIN_TOLERANCE = 1.0
 TOTAL_LABEL_KEYWORDS = ("계", "합계", "총계", "소계")
 RATIO_KEYWORDS = ("비율", "비중", "증감률", "잔액율", "잔액률", "율", "%", "rate", "ratio", "percent", "percentage")
 NON_ADDITIVE_KEYWORDS = (
@@ -181,6 +182,10 @@ def values_match(current: float, expected: float, *, tolerance: float = 1.0) -> 
     return abs(current - expected) <= tolerance
 
 
+def sum_ratio_values_match(current: float, expected: float, *, tolerance: float = 1.0) -> bool:
+    return values_match(current, expected, tolerance=max(tolerance, SUM_RATIO_MIN_TOLERANCE))
+
+
 class ValidationRule(ABC):
     rule_id: str
     issue_type: str
@@ -323,7 +328,7 @@ class RowTotalColumnRule(ValidationRule):
 
                 expected_value = sum(values)
                 difference = current_value - expected_value
-                if values_match(current_value, expected_value):
+                if sum_ratio_values_match(current_value, expected_value):
                     continue
 
                 row_label = combined_row_label(table, row) or f"{row_index + 1}행"
@@ -432,7 +437,7 @@ class ColumnTotalRowRule(ValidationRule):
 
                 expected_value = sum(values)
                 difference = current_value - expected_value
-                if values_match(current_value, expected_value):
+                if sum_ratio_values_match(current_value, expected_value):
                     continue
 
                 issues.append(
@@ -521,7 +526,7 @@ class ExplicitRatioFormulaRule(ValidationRule):
 
                 expected_value = numerator / denominator * multiplier
                 difference = current_value - expected_value
-                if values_match(current_value, expected_value, tolerance=0.15):
+                if sum_ratio_values_match(current_value, expected_value, tolerance=0.15):
                     continue
 
                 row_label = combined_row_label(table, row) or f"{row_index + 1}행"
@@ -681,7 +686,7 @@ class RowRatioRule(ValidationRule):
 
                 expected_value = numerator / denominator * 100
                 difference = current_value - expected_value
-                if values_match(current_value, expected_value, tolerance=0.15):
+                if sum_ratio_values_match(current_value, expected_value, tolerance=0.15):
                     continue
 
                 issues.append(
@@ -860,7 +865,7 @@ class RegionTotalSumRule(ValidationRule):
 
     def _matches(self, current: float, expected: float) -> bool:
         tolerance = 0.5 if current.is_integer() and expected.is_integer() else 0.05
-        return abs(current - expected) <= tolerance
+        return sum_ratio_values_match(current, expected, tolerance=tolerance)
 
 
 class HeaderFormulaRule(ValidationRule):
@@ -893,7 +898,7 @@ class HeaderFormulaRule(ValidationRule):
                     continue
 
                 difference = current - expected
-                if abs(difference) <= 0.5:
+                if abs(difference) <= SUM_RATIO_MIN_TOLERANCE:
                     continue
 
                 label = table.column_text(target_col)

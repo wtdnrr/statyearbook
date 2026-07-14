@@ -465,7 +465,34 @@ def is_total_column_candidate(table: ValidationTable, col_index: int) -> bool:
 
 def is_calculation_row_label(table: ValidationTable, row: list) -> bool:
     label = combined_row_label(table, row) or table.row_label(row)
-    return is_ratio_row_label(label) or is_growth_rate_label(label)
+    return (
+        is_ratio_row_label(label)
+        or is_growth_rate_label(label)
+        or is_per_unit_measure_label(label)
+        or is_average_row_label(label)
+    )
+
+
+def is_per_unit_measure_label(label: str) -> bool:
+    cleaned = clean_display_text(label)
+    normalized = normalize_text(cleaned)
+    if re.search(r"(?:1인|인|건|개|명|회|가구|세대|대|기관)당", normalized):
+        return True
+    return bool(
+        re.search(
+            r"\b(?:per\s+(?:person|capita|case|task|item|household|organization|unit)|"
+            r"(?:cost|amount|cases?|tasks?|items?)\s+per\s+\w+)",
+            cleaned,
+            re.IGNORECASE,
+        )
+    )
+
+
+def is_average_row_label(label: str) -> bool:
+    normalized = normalize_text(label)
+    if any(keyword in normalized for keyword in ("평균", "평균액", "average", "mean")):
+        return True
+    return False
 
 
 def row_sum_match_ratio(
@@ -495,6 +522,8 @@ def row_sum_match_summary(
     passed = 0
     total_difference = 0.0
     for _, row in table.data_rows():
+        if is_calculation_row_label(table, row):
+            continue
         current = additive_target_cell_number(row, target_col)
         operands = [additive_operand_cell_number(row, col_index) for col_index in operand_columns]
         if current is None or any(value is None for value in operands):
@@ -704,6 +733,7 @@ def infer_profile_checks(
     checks.extend(infer_growth_rate_rules(table))
     checks.extend(infer_year_rows_change_rate_rules(table))
     checks.extend(infer_named_row_ratio_rules(table))
+    checks.extend(infer_per_unit_ratio_rules(table))
     checks.extend(infer_row_based_ratio_rules(table))
     checks.extend(infer_row_based_growth_rate_rules(table))
     checks.extend(infer_wrapped_total_cell_rules(table))
@@ -1049,8 +1079,13 @@ def direct_child_sum_operand_columns(
 ) -> list[int]:
     target_path = effective_header_path(table, target_col)
     total_position = total_like_header_position(target_path)
-    if not target_path or total_position is None or total_position == 0:
+    if not target_path or total_position is None:
         return []
+
+    if total_position == 0:
+        top_level_children = top_level_summary_operand_columns(table, target_col, numeric_columns)
+        best, _ = best_matching_row_sum_candidate(table, target_col, [top_level_children])
+        return best
 
     candidate_groups: list[list[int]] = []
     nested_children: list[int] = []
@@ -1114,6 +1149,8 @@ def matching_row_sum_indices(
 ) -> list[int]:
     matching: list[int] = []
     for row_index, row in table.data_rows():
+        if is_calculation_row_label(table, row):
+            continue
         current = additive_target_cell_number(row, target_col)
         operands = [additive_operand_cell_number(row, col_index) for col_index in operand_columns]
         if current is None or any(value is None for value in operands):
@@ -1256,7 +1293,7 @@ def top_level_summary_operand_columns(
     groups: dict[str, list[int]] = {}
     group_order: list[str] = []
     for col_index in numeric_columns:
-        if col_index == target_col or is_total_column_candidate(table, col_index):
+        if col_index == target_col:
             continue
         path = effective_header_path(table, col_index)
         if not path:
@@ -1273,25 +1310,16 @@ def top_level_summary_operand_columns(
     operands: list[int] = []
     for group_key in group_order:
         columns = groups[group_key]
-        if len(columns) == 1:
-            operands.append(columns[0])
-            continue
-        representative = representative_header_group_column(table, columns)
-        if representative is not None:
-            operands.append(representative)
+        aggregate_columns = [
+            col_index
+            for col_index in columns
+            if is_total_column_candidate(table, col_index)
+        ]
+        if aggregate_columns:
+            operands.extend(aggregate_columns)
+        else:
+            operands.extend(columns)
     return operands
-
-
-def representative_header_group_column(table: ValidationTable, columns: list[int]) -> int | None:
-    if not columns:
-        return None
-    root = effective_header_path(table, columns[0])[0]
-    root_key = normalize_text(root)
-    for col_index in columns:
-        leaf_key = normalize_text(leaf_header(table, col_index))
-        if leaf_key and (leaf_key in root_key or root_key in leaf_key):
-            return col_index
-    return columns[0]
 
 
 def best_matching_row_sum_candidate(
@@ -1705,6 +1733,9 @@ def implicit_subtotal_child_map(
                 child_map[target_row_index] = structural_children
                 continue
 
+        if not implicit_subtotal_value_candidate(table, target_row):
+            continue
+
         detail_rows: list[int] = []
         for row_index, row in rows[position + 1 :]:
             if row_total_kind(table, row) is not None or is_section_total_row_candidate(table, row):
@@ -1722,13 +1753,64 @@ def implicit_subtotal_child_map(
                 target_row_index,
                 candidate_rows,
                 columns,
-                tolerance=1.0,
+                tolerance=implicit_subtotal_inference_tolerance(table, target_row),
             )
             if checked_count >= 2 and passed_ratio >= 0.95:
                 child_map[target_row_index] = candidate_rows
                 break
 
     return child_map
+
+
+def implicit_subtotal_value_candidate(table: ValidationTable, row: list) -> bool:
+    """Reject ordered data rows that only happen to resemble a subtotal.
+
+    Value-only subtotal inference is intentionally stricter than execution.
+    Ranks, years, dates, and numbered event rows describe an ordered series;
+    they are not aggregate labels even when nearby values or dashes add up.
+    """
+
+    parts = [clean_display_text(value) for value in row_label_parts(table, row) if clean_display_text(value)]
+    if not parts:
+        return False
+    first_display = parts[0]
+    first = normalize_text(first_display)
+    if re.fullmatch(r"\d{1,4}", first):
+        return False
+    if re.match(r"^[’']?\d{2,4}[./-]\d", first_display):
+        return False
+    return True
+
+
+def implicit_subtotal_inference_tolerance(table: ValidationTable, row: list) -> float:
+    label_display = clean_display_text(combined_row_label(table, row) or table.row_label(row))
+    label = normalize_text(label_display)
+    has_total_word = bool(
+        re.search(r"(?:^|[\s/])(?:계|합계|총계|소계)(?=$|[\s/(:])", label_display, re.IGNORECASE)
+        or re.search(r"\b(?:grand\s+total|sub[ -]?total|total)\b", label_display, re.IGNORECASE)
+    )
+    aggregate_keywords = (
+        "전체",
+        "전국",
+        "규모",
+        "수입",
+        "자산",
+        "예산",
+        "운행대수",
+        "지방자치단체",
+        "일반직",
+        "특별회계",
+        "일반회계",
+        "조세",
+        "소속기관",
+        "total",
+        "aggregate",
+        "scale",
+        "revenue",
+        "assets",
+        "budget",
+    )
+    return 1.0 if has_total_word or any(keyword in label for keyword in aggregate_keywords) else 0.01
 
 
 def structural_nested_child_rows(
@@ -2694,6 +2776,68 @@ def infer_row_based_ratio_rules(table: ValidationTable) -> list[dict[str, Any]]:
                     "multiplier": 100,
                     "tolerance": 0.15,
                     "confidence": confidence if position - numerator_position <= 2 else min(confidence, 0.82),
+                },
+            )
+        )
+    return specs
+
+
+def infer_per_unit_ratio_rules(table: ValidationTable) -> list[dict[str, Any]]:
+    """Infer per-unit rows such as cost per task from the two source rows above."""
+
+    rows = table.data_rows()
+    specs: list[dict[str, Any]] = []
+    for position, (target_row_index, target_row) in enumerate(rows):
+        target_label = combined_row_label(table, target_row) or table.row_label(target_row)
+        if not is_per_unit_measure_label(target_label):
+            continue
+
+        numerator_item = previous_value_row(table, rows, position)
+        if numerator_item is None:
+            continue
+        numerator_position, numerator_row_index, numerator_row = numerator_item
+        denominator_item = previous_value_row(table, rows, numerator_position)
+        if denominator_item is None:
+            continue
+        _, denominator_row_index, denominator_row = denominator_item
+
+        columns = shared_numeric_columns(table, [target_row, numerator_row, denominator_row])
+        if len(columns) < 2:
+            continue
+
+        passed_ratio, checked_count = row_ratio_by_rows_match_ratio(
+            table,
+            target_row_index,
+            numerator_row_index,
+            denominator_row_index,
+            columns,
+            multiplier=1,
+            tolerance=1.0,
+        )
+        if checked_count < 2 or passed_ratio < 0.8:
+            continue
+
+        numerator_label = combined_row_label(table, numerator_row) or table.row_label(numerator_row)
+        denominator_label = combined_row_label(table, denominator_row) or table.row_label(denominator_row)
+        specs.append(
+            rule_spec(
+                "ratio",
+                {
+                    "id": f"profile.{table.code}.per_unit_ratio_r{target_row_index}",
+                    "type": "row_ratio_by_rows",
+                    "category": "table",
+                    "label": (
+                        f"{clean_display_text(target_label)} = "
+                        f"{clean_display_text(numerator_label)} / {clean_display_text(denominator_label)}"
+                    ),
+                    "target_row": target_row_index,
+                    "numerator_row": numerator_row_index,
+                    "denominator_row": denominator_row_index,
+                    "columns": columns,
+                    "multiplier": 1,
+                    "tolerance": 0.05,
+                    "confidence": 0.96 if passed_ratio >= 0.95 else 0.9,
+                    "aggregate_strategy": "recalculate_from_numerator_and_denominator",
                 },
             )
         )

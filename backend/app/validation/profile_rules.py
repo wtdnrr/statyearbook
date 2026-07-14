@@ -12,7 +12,7 @@ from app.validation.models import (
     normalize_text,
     parse_numeric_text,
 )
-from app.validation.profiles import ValidationProfile
+from app.validation.profiles import ValidationProfile, is_calculation_row_label
 from app.validation.rules import (
     ValidationRule,
     cell_number,
@@ -43,6 +43,17 @@ def contains_korean_term(text: str, term: str) -> bool:
 
 
 KNOWN_SPELLING_TYPOS = ("Claasification", "Claasifi-cation", "Ele7ction", "Nuber")
+SUM_RATIO_MIN_TOLERANCE = 1.0
+SUM_RATIO_RULE_TYPES = {
+    "region_total",
+    "column_sum",
+    "cell_sum",
+    "row_sum",
+    "row_arithmetic",
+    "row_ratio",
+    "column_share_ratio",
+    "row_ratio_by_rows",
+}
 
 
 def contains_known_spelling_typo(text: str) -> bool:
@@ -65,7 +76,7 @@ def displayed_ratio_tolerance(
     base_tolerance: float,
     multiplier: float,
 ) -> float:
-    if multiplier != 100 or base_tolerance > 0.15 or col_index >= len(row):
+    if base_tolerance > 0.15 or col_index >= len(row):
         return base_tolerance
     cell = row[col_index]
     if cell is None:
@@ -74,6 +85,36 @@ def displayed_ratio_tolerance(
     if re.fullmatch(r"[-+]?\d+", text):
         return max(base_tolerance, 0.5)
     return base_tolerance
+
+
+def is_sum_or_ratio_spec(spec: dict[str, Any]) -> bool:
+    return spec.get("check_group") in {"sum", "ratio"} or str(spec.get("type") or "") in SUM_RATIO_RULE_TYPES
+
+
+def sum_ratio_tolerance(spec: dict[str, Any], default: float) -> float:
+    tolerance = float(spec.get("tolerance", default))
+    if is_sum_or_ratio_spec(spec):
+        return max(tolerance, SUM_RATIO_MIN_TOLERANCE)
+    return tolerance
+
+
+def displayed_sum_ratio_tolerance(
+    row: list,
+    col_index: int,
+    spec: dict[str, Any],
+    *,
+    default: float,
+    multiplier: float,
+) -> float:
+    return max(
+        sum_ratio_tolerance(spec, default),
+        displayed_ratio_tolerance(
+            row,
+            col_index,
+            base_tolerance=float(spec.get("tolerance", default)),
+            multiplier=multiplier,
+        ),
+    )
 
 
 def additive_cell_number(row: list, col_index: int) -> float | None:
@@ -466,13 +507,15 @@ class ProfileSpecRule(ValidationRule):
         for row_index, row in table.data_rows():
             if allowed_rows and row_index not in allowed_rows:
                 continue
+            if is_calculation_row_label(table, row):
+                continue
             current = additive_target_cell_number(row, target_col)
             operands = [additive_operand_cell_number(row, col_index) for col_index in operand_columns]
             if current is None or any(value is None for value in operands):
                 continue
 
             expected = sum(value for value in operands if value is not None)
-            passed = abs(current - expected) <= float(spec.get("tolerance", 1.0))
+            passed = abs(current - expected) <= sum_ratio_tolerance(spec, 1.0)
             check = self._calculation_check(
                 table,
                 profile,
@@ -519,7 +562,7 @@ class ProfileSpecRule(ValidationRule):
             if expected is None:
                 continue
 
-            passed = abs(current - expected) <= float(spec.get("tolerance", 0.5))
+            passed = abs(current - expected) <= sum_ratio_tolerance(spec, 0.5)
             check = self._calculation_check(
                 table,
                 profile,
@@ -566,10 +609,11 @@ class ProfileSpecRule(ValidationRule):
                 continue
 
             expected = numerator / denominator * multiplier
-            tolerance = displayed_ratio_tolerance(
+            tolerance = displayed_sum_ratio_tolerance(
                 row,
                 target_col,
-                base_tolerance=float(spec.get("tolerance", 0.15)),
+                spec,
+                default=0.15,
                 multiplier=multiplier,
             )
             passed = abs(current - expected) <= tolerance
@@ -623,10 +667,11 @@ class ProfileSpecRule(ValidationRule):
                 continue
 
             expected = numerator / denominator * multiplier
-            tolerance = displayed_ratio_tolerance(
+            tolerance = displayed_sum_ratio_tolerance(
                 row,
                 target_col,
-                base_tolerance=float(spec.get("tolerance", 0.15)),
+                spec,
+                default=0.15,
                 multiplier=multiplier,
             )
             passed = abs(current - expected) <= tolerance
@@ -771,13 +816,20 @@ class ProfileSpecRule(ValidationRule):
 
             expected = numerator / denominator * multiplier
             target_row_values = table.matrix[target_row]
-            tolerance = displayed_ratio_tolerance(
+            tolerance = displayed_sum_ratio_tolerance(
                 target_row_values,
                 col_index,
-                base_tolerance=float(spec.get("tolerance", 0.15)),
+                spec,
+                default=0.15,
                 multiplier=multiplier,
             )
             passed = abs(target_value - expected) <= tolerance
+            aggregate_note = (
+                " 총계·소계 비율도 개별 비율을 더하지 않고 해당 열의 합계 분자와 합계 분모로 다시 계산했습니다."
+                if spec.get("aggregate_strategy") == "recalculate_from_numerator_and_denominator"
+                and is_total_like(table.column_text(col_index))
+                else ""
+            )
             check = self._calculation_check(
                 table,
                 profile,
@@ -788,7 +840,7 @@ class ProfileSpecRule(ValidationRule):
                 current=target_value,
                 expected=expected,
                 passed=passed,
-                detail="같은 연도 열에서 분자 행과 분모 행으로 계산한 비율을 확인했습니다.",
+                detail=f"같은 연도 열에서 분자 행과 분모 행으로 계산한 비율을 확인했습니다.{aggregate_note}",
             )
             checks.append(check)
             if not passed:
@@ -824,7 +876,7 @@ class ProfileSpecRule(ValidationRule):
             return [], []
 
         expected = sum(values)
-        passed = abs(current - expected) <= float(spec.get("tolerance", 1.0))
+        passed = abs(current - expected) <= sum_ratio_tolerance(spec, 1.0)
         check = self._calculation_check(
             table,
             profile,
@@ -1403,7 +1455,7 @@ class ProfileSpecRule(ValidationRule):
                 continue
 
             expected = sum(values)
-            passed = abs(current - expected) <= float(spec.get("tolerance", 1.0))
+            passed = abs(current - expected) <= sum_ratio_tolerance(spec, 1.0)
             check = self._calculation_check(
                 table,
                 profile,

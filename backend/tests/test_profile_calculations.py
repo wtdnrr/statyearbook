@@ -93,6 +93,55 @@ class ProfileCalculationTest(unittest.TestCase):
         self.assertTrue(any(check.get("target_row") == 2 for check in sums))
         self.assertTrue(any(check.get("target_row") == 5 for check in sums))
 
+    def test_rank_rows_are_not_inferred_as_implicit_subtotals(self) -> None:
+        table = make_table(
+            [
+                ["순위", "2024", "2025"],
+                ["1", "0.8", "0.9"],
+                ["2", "0.3", "0.4"],
+                ["3", "0.5", "0.5"],
+            ],
+            unit="지수",
+        )
+
+        checks = infer_profile_checks(table, analysis=analyze_table(table), templates=detect_templates(table))
+
+        self.assertFalse(any("implicit_subtotal" in check.get("id", "") for check in checks))
+
+    def test_unlabeled_but_exact_subtotal_keeps_its_direct_children(self) -> None:
+        table = make_table(
+            [
+                ["구분", "2024", "2025"],
+                ["일반직", "30", "40"],
+                ["직급 A", "10", "15"],
+                ["직급 B", "20", "25"],
+                ["특정직", "5", "6"],
+            ]
+        )
+
+        checks = infer_profile_checks(table, analysis=analyze_table(table), templates=detect_templates(table))
+        subtotal = next(check for check in checks if "implicit_subtotal" in check.get("id", ""))
+
+        self.assertEqual(subtotal["target_row"], 1)
+        self.assertEqual(subtotal["operand_rows"], [2, 3])
+
+    def test_semantic_subtotal_allows_display_rounding_difference(self) -> None:
+        table = make_table(
+            [
+                ["구분", "2023", "2024", "2025"],
+                ["자산", "210", "223.2", "231.7"],
+                ["부채", "54.4", "56.3", "61.3"],
+                ["자본", "155.6", "166.9", "170.3"],
+            ],
+            unit="조원",
+        )
+
+        checks = infer_profile_checks(table, analysis=analyze_table(table), templates=detect_templates(table))
+        subtotal = next(check for check in checks if "implicit_subtotal" in check.get("id", ""))
+
+        self.assertEqual(subtotal["target_row"], 1)
+        self.assertEqual(subtotal["operand_rows"], [2, 3])
+
     def test_ratio_total_is_recalculated_from_total_components(self) -> None:
         table = make_table(
             [
@@ -117,6 +166,93 @@ class ProfileCalculationTest(unittest.TestCase):
         total_result = next(result for result in results if result.row_index == 1)
         self.assertEqual(total_result.status, "정상")
         self.assertIn("총계", total_result.detail)
+
+    def test_ratio_row_is_not_treated_as_a_sum_across_years(self) -> None:
+        table = make_table(
+            [
+                ["구분", "계", "2024", "2025"],
+                ["전체 과제 수", "30", "10", "20"],
+                ["수의계약 과제 수", "12", "4", "8"],
+                ["수의계약 비율", "40", "40", "40"],
+            ],
+            code="2-2-8-3",
+            unit="건, %",
+        )
+        checks = infer_profile_checks(table, analysis=analyze_table(table), templates=detect_templates(table))
+        row_sum = next(check for check in checks if check.get("type") == "row_sum")
+        profile = profile_for(table, [row_sum])
+
+        _, results = ProfileSpecRule({table.code: profile}).evaluate(table)
+
+        self.assertEqual({result.row_index for result in results}, {1, 2})
+
+    def test_per_task_cost_is_checked_from_total_cost_and_total_tasks(self) -> None:
+        table = make_table(
+            [
+                ["구분", "계", "2024", "2025"],
+                ["정책연구용역 실적 Cases of Policy Study Tasks", "100", "40", "60"],
+                ["용역비 Service Cost", "1,100", "400", "700"],
+                ["건당 비용 Cost Per Task", "10.5", "10", "11.7"],
+            ],
+            code="2-2-8-1",
+            unit="건, 백만원",
+        )
+        checks = infer_profile_checks(table, analysis=analyze_table(table), templates=detect_templates(table))
+        ratio = next(check for check in checks if check.get("id", "").endswith("per_unit_ratio_r3"))
+        self.assertEqual(ratio["numerator_row"], 2)
+        self.assertEqual(ratio["denominator_row"], 1)
+        self.assertEqual(ratio["columns"], [1, 2, 3])
+
+        profile = profile_for(table, [ratio])
+        _, results = ProfileSpecRule({table.code: profile}).evaluate(table)
+        total_result = next(result for result in results if result.col_index == 1)
+        self.assertEqual(total_result.expected_value, "11")
+        self.assertEqual(total_result.status, "정상")
+        self.assertIn("개별 비율을 더하지 않고", total_result.detail)
+
+    def test_sum_or_ratio_difference_up_to_one_is_not_an_error(self) -> None:
+        table = make_table(
+            [
+                ["구분", "계", "A", "B", "비율"],
+                ["합계", "11", "5", "5", "101"],
+                ["불일치", "12.1", "5", "5", "101.1"],
+            ],
+            unit="건, %",
+        )
+        profile = profile_for(
+            table,
+            [
+                {
+                    "id": "test.sum_tolerance",
+                    "type": "row_sum",
+                    "check_group": "sum",
+                    "target_column": 1,
+                    "operand_columns": [2, 3],
+                    "tolerance": 0.0,
+                    "failure_status": "오류 의심",
+                    "severity": "critical",
+                },
+                {
+                    "id": "test.ratio_tolerance",
+                    "type": "row_ratio",
+                    "check_group": "ratio",
+                    "target_column": 4,
+                    "numerator_column": 2,
+                    "denominator_column": 3,
+                    "multiplier": 100,
+                    "tolerance": 0.15,
+                    "failure_status": "오류 의심",
+                    "severity": "critical",
+                },
+            ],
+        )
+
+        _, results = ProfileSpecRule({table.code: profile}).evaluate(table)
+
+        sum_results = [result for result in results if result.rule_id == "test.sum_tolerance"]
+        ratio_results = [result for result in results if result.rule_id == "test.ratio_tolerance"]
+        self.assertEqual([result.status for result in sum_results], ["정상", "오류 의심"])
+        self.assertEqual([result.status for result in ratio_results], ["정상", "오류 의심"])
 
     def test_ratio_can_use_part_plus_complement_as_denominator(self) -> None:
         table = make_table(
@@ -172,6 +308,26 @@ class ProfileCalculationTest(unittest.TestCase):
         checks = infer_profile_checks(table, analysis=analyze_table(table), templates=detect_templates(table))
         rule = next(check for check in checks if check.get("target_column") == 1 and check.get("type") == "row_sum")
         self.assertEqual(rule["operand_columns"], [2, 3])
+
+    def test_top_level_total_uses_subtotal_and_unaggregated_sibling_columns(self) -> None:
+        table = make_table(
+            [
+                ["기관", "총계", "일반직", "", "", "특정직", ""],
+                ["기관", "총계", "소계", "임기제", "고위", "경찰·소방", "교육"],
+                ["계", "42", "30", "10", "20", "5", "7"],
+                ["기관 A", "21", "15", "5", "10", "2", "4"],
+                ["기관 B", "21", "15", "5", "10", "3", "3"],
+            ],
+            code="nested-top-level",
+            header_rows=2,
+        )
+        checks = infer_profile_checks(table, analysis=analyze_table(table), templates=detect_templates(table))
+        sums = [check for check in checks if check.get("type") == "row_sum"]
+        grand_total = next(check for check in sums if check.get("target_column") == 1)
+        subtotal = next(check for check in sums if check.get("target_column") == 2)
+
+        self.assertEqual(grand_total["operand_columns"], [2, 5, 6])
+        self.assertEqual(subtotal["operand_columns"], [3, 4])
 
     def test_replaced_header_total_uses_sibling_subgroups(self) -> None:
         table = make_table(

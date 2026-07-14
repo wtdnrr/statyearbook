@@ -13,7 +13,11 @@ from app.validation.source_review import append_source_format_review_checks
 from app.validation.sqlite_repository import SQLiteValidationRepository
 
 
-def run_validations(db_path: Path = DB_PATH) -> dict[str, int | str]:
+def run_validations(
+    db_path: Path = DB_PATH,
+    *,
+    include_llm: bool = False,
+) -> dict[str, int | str]:
     repository = SQLiteValidationRepository(db_path)
     report = repository.latest_report()
     if report is None:
@@ -42,7 +46,7 @@ def run_validations(db_path: Path = DB_PATH) -> dict[str, int | str]:
         run_id=run_id,
     )
     settings = llm_review_settings()
-    if settings["api_key"] and settings["enabled"]:
+    if include_llm and settings["api_key"] and settings["enabled"]:
         try:
             append_llm_translation_reviews(
                 db_path,
@@ -76,13 +80,18 @@ def validation_issue_count(db_path: Path, run_id: int) -> int:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Run rule-based validations for the latest report.")
     parser.add_argument("--db", type=Path, default=DB_PATH, help="SQLite database path")
+    parser.add_argument(
+        "--with-llm",
+        action="store_true",
+        help="규칙 검수 후 LLM 번역·오탈자 검수를 명시적으로 추가합니다.",
+    )
     return parser
 
 
 def main() -> None:
     parser = build_parser()
     args = parser.parse_args()
-    result = run_validations(args.db)
+    result = run_validations(args.db, include_llm=args.with_llm)
     print(
         "Validation run {run_id}: checked {tables} tables and found {issues} issues".format(
             **result
