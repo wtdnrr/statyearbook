@@ -19,8 +19,23 @@ export function compactNumber(value: number) {
   }).format(value);
 }
 
+const issueTypeOrder = new Map(
+  [
+    "합계 검수",
+    "비율 검수",
+    "오탈자 검수",
+    "번역 검수",
+    "용어 제안",
+    "파란색 표기 확인",
+    "이상치 검수",
+    "메타정보 검수",
+  ].map((type, index) => [type, index]),
+);
+
 export function issueCountLabel(issueCounts: Record<string, number>) {
-  const entries = Object.entries(issueCounts);
+  const entries = Object.entries(issueCounts).sort(
+    ([left], [right]) => (issueTypeOrder.get(left) ?? 999) - (issueTypeOrder.get(right) ?? 999),
+  );
 
   if (entries.length === 0) {
     return "검수 특이사항 없음";

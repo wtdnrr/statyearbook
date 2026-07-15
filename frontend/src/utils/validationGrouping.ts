@@ -3,9 +3,6 @@ import type { ValidationIssue } from "../types";
 const REPEATABLE_CALCULATION_TYPES = new Set([
   "합계 검수",
   "비율 검수",
-  "증감액 검수",
-  "증감률 검수",
-  "평균 검수",
 ]);
 
 export function repeatedCalculationGroupKey(check: ValidationIssue) {
@@ -13,7 +10,8 @@ export function repeatedCalculationGroupKey(check: ValidationIssue) {
     return undefined;
   }
 
-  const basis = [check.rule_id, check.formula].filter(Boolean).join("::");
+  const formula = check.formula?.trim();
+  const basis = formula || check.rule_id;
   if (!basis) {
     return undefined;
   }

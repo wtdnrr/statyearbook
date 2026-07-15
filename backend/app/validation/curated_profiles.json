@@ -164,6 +164,56 @@
           "confidence": 1.0
         }
       ]
+    },
+    "5-1-10": {
+      "status": "ready",
+      "decision": "curated_sum_profile",
+      "label": "지방출자·출연기관 지역·유형 합계 산식 승인",
+      "table_type": "regional_summary_table",
+      "notes": "큐레이션: 계 행은 시도별 값을 합산하고, 각 지역 행의 계는 출자기관과 출연기관을 더해 검수합니다.",
+      "suppress_checks": [
+        {
+          "type": "region_total"
+        },
+        {
+          "type": "column_sum"
+        },
+        {
+          "type": "row_sum"
+        }
+      ],
+      "checks": [
+        {
+          "id": "curated.5-1-10.region_column_totals",
+          "type": "column_sum",
+          "category": "table",
+          "check_group": "sum",
+          "check_type": "합계 검수",
+          "failure_status": "오류 의심",
+          "severity": "critical",
+          "label": "계 행 = 시도별 값 합계",
+          "target_row": 1,
+          "operand_rows": [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18],
+          "columns": [1, 2, 3],
+          "tolerance": 1.0,
+          "confidence": 1.0
+        },
+        {
+          "id": "curated.5-1-10.type_row_totals",
+          "type": "row_sum",
+          "category": "table",
+          "check_group": "sum",
+          "check_type": "합계 검수",
+          "failure_status": "오류 의심",
+          "severity": "critical",
+          "label": "계 = 출자기관 + 출연기관",
+          "target_column": 1,
+          "operand_columns": [2, 3],
+          "row_indices": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18],
+          "tolerance": 1.0,
+          "confidence": 1.0
+        }
+      ]
     }
   },
   "groups": [

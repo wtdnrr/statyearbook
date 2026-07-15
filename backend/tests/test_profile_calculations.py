@@ -63,6 +63,53 @@ def profile_for(table: ValidationTable, checks: list[dict]) -> ValidationProfile
 
 
 class ProfileCalculationTest(unittest.TestCase):
+    def test_metadata_fields_use_one_common_check(self) -> None:
+        table = make_table([["구분", "2025"], ["계", "10"]])
+
+        checks = infer_profile_checks(table, analysis=analyze_table(table), templates=detect_templates(table))
+        metadata_checks = [
+            check
+            for check in checks
+            if check.get("type") in {"unit_required", "metadata_required"}
+        ]
+
+        self.assertEqual(len(metadata_checks), 1)
+        self.assertEqual(metadata_checks[0]["type"], "metadata_required")
+        self.assertEqual(metadata_checks[0]["check_type"], "메타정보 검수")
+        self.assertEqual(metadata_checks[0]["fields"], ["unit", "base_date", "source"])
+
+    def test_unit_and_metadata_specs_are_merged_at_runtime(self) -> None:
+        table = make_table([["구분", "2025"], ["계", "10"]])
+        table.unit = ""
+        table.base_date = ""
+        profile = profile_for(
+            table,
+            [
+                {
+                    "id": "profile.test.unit_required",
+                    "type": "unit_required",
+                    "check_type": "단위 검수",
+                    "expected_unit": "건",
+                },
+                {
+                    "id": "profile.test.metadata_required",
+                    "type": "metadata_required",
+                    "check_type": "메타정보 검수",
+                    "fields": ["base_date", "source"],
+                },
+                {"id": "profile.test.retired_structure_check", "type": "retired_structure_check"},
+            ],
+        )
+
+        issues, checks = ProfileSpecRule({table.code: profile}).evaluate(table)
+
+        self.assertEqual(len(checks), 1)
+        self.assertEqual(len(issues), 1)
+        self.assertEqual(checks[0].check_type, "메타정보 검수")
+        self.assertEqual(checks[0].location, "출처·메타정보")
+        self.assertEqual(checks[0].difference, "누락: 단위, 기준일")
+        self.assertIn("출처: 담당자", checks[0].current_value)
+
     def test_total_label_does_not_treat_korean_words_as_totals(self) -> None:
         self.assertEqual(total_label_kind("계 Total"), "total")
         self.assertEqual(total_label_kind("소계 Sub-total"), "subtotal")

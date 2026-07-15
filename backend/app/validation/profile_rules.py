@@ -10,7 +10,6 @@ from app.validation.models import (
     clean_display_text,
     format_number,
     normalize_text,
-    parse_numeric_text,
 )
 from app.validation.profiles import ValidationProfile, is_calculation_row_label
 from app.validation.rules import (
@@ -53,6 +52,30 @@ SUM_RATIO_RULE_TYPES = {
     "row_ratio",
     "column_share_ratio",
     "row_ratio_by_rows",
+}
+SUPPORTED_PROFILE_SPEC_TYPES = {
+    "unit_required",
+    "metadata_required",
+    "region_total",
+    "column_sum",
+    "cell_sum",
+    "row_sum",
+    "row_arithmetic",
+    "row_ratio",
+    "column_share_ratio",
+    "row_ratio_by_rows",
+    "weighted_average",
+    "growth_rate_scan",
+    "row_growth_rate",
+    "row_year_over_year_rate",
+    "row_year_over_year_change_amount",
+    "year_rows_change_rate",
+    "year_rows_change_amount",
+    "outlier_columns",
+    "spelling_static",
+    "terminology_static",
+    "translation_static",
+    "title_translation_static",
 }
 
 
@@ -201,20 +224,12 @@ class ProfileSpecRule(ValidationRule):
 
         issues: list[ValidationIssueRecord] = []
         checks: list[ValidationCheckRecord] = []
-        for spec in profile.check_specs:
+        for spec in self._check_specs_with_merged_metadata(table, profile.check_specs):
             if not self._should_execute(spec):
                 continue
             rule_type = spec.get("type")
-            if rule_type == "unit_required":
-                spec_issues, spec_checks = self._validate_unit(table, profile, spec)
-            elif rule_type == "metadata_required":
+            if rule_type == "metadata_required":
                 spec_issues, spec_checks = self._validate_metadata(table, profile, spec)
-            elif rule_type == "row_label_required":
-                spec_issues, spec_checks = self._validate_row_labels(table, profile, spec)
-            elif rule_type == "numeric_format":
-                spec_issues, spec_checks = self._validate_numeric_format(table, profile, spec)
-            elif rule_type == "year_sequence":
-                spec_issues, spec_checks = self._validate_year_sequence(table, profile, spec)
             elif rule_type == "region_total":
                 spec_issues, spec_checks = self._validate_column_sum(table, profile, spec)
             elif rule_type == "column_sum":
@@ -262,6 +277,57 @@ class ProfileSpecRule(ValidationRule):
             checks.extend(spec_checks)
 
         return issues, checks
+
+    def _check_specs_with_merged_metadata(
+        self,
+        table: ValidationTable,
+        check_specs: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """Expose one metadata check even for profiles stored before profile v3."""
+
+        active_specs = [
+            spec
+            for spec in check_specs
+            if spec.get("type") in SUPPORTED_PROFILE_SPEC_TYPES
+        ]
+        metadata_specs = [
+            spec
+            for spec in active_specs
+            if spec.get("type") in {"unit_required", "metadata_required"}
+        ]
+        if not metadata_specs:
+            return active_specs
+        remaining_specs = [
+            spec
+            for spec in active_specs
+            if spec.get("type") not in {"unit_required", "metadata_required"}
+        ]
+        expected_unit = next(
+            (
+                str(spec.get("expected_unit") or "").strip()
+                for spec in metadata_specs
+                if str(spec.get("expected_unit") or "").strip()
+            ),
+            table.unit.strip(),
+        )
+        confidence = max(
+            (float(spec.get("confidence", 1.0)) for spec in metadata_specs),
+            default=1.0,
+        )
+        metadata_spec = {
+            "id": f"profile.{table.code}.metadata_required",
+            "type": "metadata_required",
+            "category": "common",
+            "check_group": "metadata",
+            "check_type": "메타정보 검수",
+            "label": "단위·기준일·출처 메타정보 확인",
+            "fields": ["unit", "base_date", "source"],
+            "expected_unit": expected_unit,
+            "failure_status": "확인 필요",
+            "severity": "warning",
+            "confidence": confidence,
+        }
+        return [metadata_spec, *remaining_specs]
 
     def _should_execute(self, spec: dict[str, Any]) -> bool:
         if spec.get("execute") is False:
@@ -319,38 +385,6 @@ class ProfileSpecRule(ValidationRule):
             formula=formula,
         )
 
-    def _validate_unit(
-        self,
-        table: ValidationTable,
-        profile: ValidationProfile,
-        spec: dict[str, Any],
-    ) -> tuple[list[ValidationIssueRecord], list[ValidationCheckRecord]]:
-        current = table.unit.strip()
-        expected = str(spec.get("expected_unit") or "").strip()
-        has_unit = bool(current)
-        matches_profile = not expected or normalize_text(current) == normalize_text(expected)
-        passed = has_unit and matches_profile
-        difference = "누락" if not has_unit else "프로파일 단위와 다름"
-        if not has_unit:
-            detail = "단위 메타데이터가 누락되어 있습니다. 원문 또는 원 시스템 DB의 단위 매핑을 확인하세요."
-        elif not matches_profile:
-            detail = "현재 단위가 저장된 검수 프로파일의 단위 기준과 다릅니다."
-        else:
-            detail = "단위가 입력되어 있고 저장된 검수 프로파일의 단위 기준과 일치합니다."
-        check = self._check_from_pass_fail(
-            table,
-            profile,
-            spec,
-            fallback_check_type="단위 검수",
-            location="메타정보 단위",
-            current_value=current or "없음",
-            expected_value=expected or "단위 입력",
-            difference=difference,
-            passed=passed,
-            detail=detail,
-        )
-        return ([] if passed else [self._issue_from_check(check)]), [check]
-
     def _validate_metadata(
         self,
         table: ValidationTable,
@@ -358,135 +392,56 @@ class ProfileSpecRule(ValidationRule):
         spec: dict[str, Any],
     ) -> tuple[list[ValidationIssueRecord], list[ValidationCheckRecord]]:
         values = {
-            "unit": ("단위", table.unit),
-            "base_date": ("기준일", table.base_date),
-            "source": ("출처", table.source),
+            "unit": ("단위", table.unit.strip()),
+            "base_date": ("기준일", table.base_date.strip()),
+            "source": ("출처", table.source.strip()),
         }
-        issues: list[ValidationIssueRecord] = []
-        checks: list[ValidationCheckRecord] = []
-
-        for field in spec.get("fields", []):
-            label, value = values.get(field, (field, ""))
-            passed = bool(str(value).strip())
-            check = self._check_record(
-                table,
-                profile,
-                spec,
-                check_type=self._check_type(spec, "빈값 검수"),
-                location=f"메타정보 {label}",
-                current_value=str(value).strip() or "없음",
-                expected_value=label,
-                difference=None if passed else "누락",
-                status=self._status(spec, passed),
-                severity=self._severity(spec, passed),
-                detail=f"{label} 메타데이터가 {'입력되어 있습니다' if passed else '누락되어 있습니다'}.",
-            )
-            checks.append(check)
-            if not passed:
-                issues.append(self._issue_from_check(check))
-
-        return issues, checks
-
-    def _validate_row_labels(
-        self,
-        table: ValidationTable,
-        profile: ValidationProfile,
-        spec: dict[str, Any],
-    ) -> tuple[list[ValidationIssueRecord], list[ValidationCheckRecord]]:
-        missing_rows: list[int] = []
-        for row_index, row in table.data_rows():
-            label = combined_row_label(table, row) or table.row_label(row)
-            populated_cells = [cell for cell in row[1:] if cell and cell.text_value.strip()]
-            if not label.strip() and len(populated_cells) >= 2:
-                missing_rows.append(row_index)
-
-        passed = not missing_rows
-        check = self._check_record(
-            table,
-            profile,
-            spec,
-            check_type=self._check_type(spec, "빈값 검수"),
-            location="데이터 행 항목명",
-            current_value=f"누락 {len(missing_rows)}건",
-            expected_value="누락 0건",
-            difference=None if passed else f"{len(missing_rows)}건",
-            status=self._status(spec, passed),
-            severity=self._severity(spec, passed),
-            detail="데이터가 있는 행의 항목명 빈값 여부를 확인했습니다.",
-            row_index=missing_rows[0] if missing_rows else None,
-            col_index=0 if missing_rows else None,
+        missing_labels = [
+            values[field][0]
+            for field in spec.get("fields", ["unit", "base_date", "source"])
+            if field in values and not values[field][1]
+        ]
+        expected_unit = str(spec.get("expected_unit") or "").strip()
+        unit_matches = not expected_unit or not values["unit"][1] or (
+            normalize_text(values["unit"][1]) == normalize_text(expected_unit)
         )
-        return ([] if passed else [self._issue_from_check(check)]), [check]
+        differences: list[str] = []
+        if missing_labels:
+            differences.append(f"누락: {', '.join(missing_labels)}")
+        if not unit_matches:
+            differences.append("단위 불일치")
+        passed = not differences
 
-    def _validate_numeric_format(
-        self,
-        table: ValidationTable,
-        profile: ValidationProfile,
-        spec: dict[str, Any],
-    ) -> tuple[list[ValidationIssueRecord], list[ValidationCheckRecord]]:
-        suspicious: list[tuple[int, int, str]] = []
-        for row_index, row in table.data_rows():
-            for col_index, cell in enumerate(row):
-                if cell is None or not cell.text_value.strip():
-                    continue
-                text = cell.text_value.strip()
-                if any(char.isdigit() for char in text) and cell.numeric_value is None:
-                    looks_like_broken_number = text.startswith("`") or text.endswith("`")
-                    looks_like_plain_numeric = bool(re.fullmatch(r"[`+\-.,\d\s%]+", text))
-                    if looks_like_broken_number or (looks_like_plain_numeric and parse_numeric_text(text) is None):
-                        suspicious.append((row_index, col_index, text))
-
-        passed = not suspicious
-        first = suspicious[0] if suspicious else None
-        check = self._check_record(
-            table,
-            profile,
-            spec,
-            check_type=self._check_type(spec, "계산용 숫자 형식 검수"),
-            location=f"{first[0] + 1}행 {first[1] + 1}열" if first else "전체 숫자형 셀",
-            current_value=first[2] if first else "모든 숫자형 셀 정상",
-            expected_value="합계·비율·증감률 계산에 사용할 수 있는 숫자 형식",
-            difference=None if passed else f"{len(suspicious)}건",
-            status=self._status(spec, passed),
-            severity=self._severity(spec, passed),
-            detail="숫자처럼 보이는 값이 실제 계산에 사용할 수 있는 숫자로 파싱되는지 확인했습니다.",
-            row_index=first[0] if first else None,
-            col_index=first[1] if first else None,
+        current_value = " | ".join(
+            f"{label}: {value or '없음'}"
+            for label, value in values.values()
         )
-        return ([] if passed else [self._issue_from_check(check)]), [check]
+        expected_value = "단위·기준일·출처 입력"
+        if expected_unit:
+            expected_value += f" / 단위 기준: {expected_unit}"
+        if passed:
+            detail = "출처·메타정보 탭의 단위, 기준일, 출처가 모두 입력되어 있고 단위가 저장된 프로파일 기준과 일치합니다."
+        else:
+            problem_messages: list[str] = []
+            if missing_labels:
+                problem_messages.append(f"{', '.join(missing_labels)} 항목이 누락되어 있습니다.")
+            if not unit_matches:
+                problem_messages.append(
+                    f"단위가 저장된 프로파일 기준({expected_unit})과 일치하지 않습니다."
+                )
+            detail = f"출처·메타정보 탭에서 {' '.join(problem_messages)}"
 
-    def _validate_year_sequence(
-        self,
-        table: ValidationTable,
-        profile: ValidationProfile,
-        spec: dict[str, Any],
-    ) -> tuple[list[ValidationIssueRecord], list[ValidationCheckRecord]]:
-        years: list[int] = []
-        for row_index in spec.get("row_indices", []):
-            row = table.matrix[row_index] if row_index < len(table.matrix) else []
-            label = combined_row_label(table, row) or table.row_label(row)
-            if label.strip().isdigit():
-                years.append(int(label.strip()))
-        for col_index in spec.get("columns", []):
-            label = clean_display_text(table.column_text(int(col_index)))
-            if label.isdigit():
-                years.append(int(label))
-
-        unique_years = sorted(set(years))
-        passed = len(unique_years) >= 2
-        expected = f"{unique_years[0]}~{unique_years[-1]}" if passed else "연도 2개 이상"
-        check = self._check_record(
+        check = self._check_from_pass_fail(
             table,
             profile,
             spec,
-            check_type=self._check_type(spec, "빈값 검수"),
-            location="연도 행/열",
-            current_value=", ".join(str(year) for year in unique_years[:8]) + ("..." if len(unique_years) > 8 else ""),
-            expected_value=expected,
-            difference=None,
-            status=self._status(spec, passed),
-            severity=self._severity(spec, passed),
-            detail="연도별 추이표로 판단된 표에서 연도 축을 인식했습니다.",
+            fallback_check_type="메타정보 검수",
+            location="출처·메타정보",
+            current_value=current_value,
+            expected_value=expected_value,
+            difference="; ".join(differences),
+            passed=passed,
+            detail=detail,
         )
         return ([] if passed else [self._issue_from_check(check)]), [check]
 
@@ -1528,7 +1483,7 @@ class ProfileSpecRule(ValidationRule):
             if not self._valid_rows(table, [target_row]) or not self._valid_columns(table, [target_col]):
                 return
             row = table.matrix[target_row]
-            value = clean_display_text(cell_text(row, target_col)) or "빈값(0 처리)"
+            value = clean_display_text(cell_text(row, target_col)) or "공란(0 처리)"
             row_label = combined_row_label(table, row) or f"{target_row + 1}행"
             column_label = table.column_text(target_col)
             evidence.append(f"{row_label} / {column_label} = {value}")

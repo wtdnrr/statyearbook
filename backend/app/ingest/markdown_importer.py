@@ -11,7 +11,7 @@ from typing import Iterable
 
 from app.db.schema import DB_PATH, connect, init_db
 from app.ingest.anomaly import annotate_adjacent_duplicate_tables
-from app.ingest.cell_text import split_cell_text
+from app.ingest.cell_text import footnote_markers_from_texts, split_cell_text
 from app.ingest.table_repairs import repair_region_split_rows
 from app.ingest.hwpx_importer import (
     ENGLISH_ONLY_RE,
@@ -275,7 +275,7 @@ def single_cell_metadata_text(row: list[str]) -> str:
 
 
 def line_is_embedded_note(line: str) -> bool:
-    return line.startswith("#") or line.startswith("* 주") or line.startswith("*주")
+    return line_is_hash_note(line) or line.startswith("* 주") or line.startswith("*주")
 
 
 def append_table_part(
@@ -483,7 +483,13 @@ def line_is_source(line: str) -> bool:
 
 
 def line_is_note(line: str) -> bool:
-    return line.startswith("#") or line.startswith("※") or line.startswith("- ") or "출처" in line
+    return line_is_hash_note(line) or line.startswith("※") or line.startswith("- ") or "출처" in line
+
+
+def line_is_hash_note(line: str) -> bool:
+    if re.match(r"^#{2,}\s*", line):
+        return False
+    return bool(re.match(r"^#\s*(?:주|\d+\)|[A-Za-z])", line))
 
 
 def parse_appendix_title_block(
@@ -666,17 +672,22 @@ def is_publication_info_table(matrix: list[list[str]]) -> bool:
     )
 
 
-def normalize_matrix_with_footnotes(parts: Iterable[TablePart]) -> tuple[list[list[str]], list[list[str]]]:
+def normalize_matrix_with_footnotes(
+    parts: Iterable[TablePart],
+    *,
+    footnote_markers: Iterable[str] = (),
+) -> tuple[list[list[str]], list[list[str]]]:
     rows: list[list[str]] = []
     footnote_rows: list[list[str]] = []
     max_cols = 0
     header_signatures: set[tuple[str, ...]] = set()
     seen_data_signatures: set[tuple[str, ...]] = set()
     data_started = False
+    known_markers = set(footnote_markers)
 
     for part in parts:
         for source_row in part.matrix:
-            parsed_cells = [split_cell_text(cell) for cell in source_row]
+            parsed_cells = [split_cell_text(cell, known_markers) for cell in source_row]
             cleaned_row = [text for text, _ in parsed_cells]
             footnote_row = [marker for _, marker in parsed_cells]
             if not any(cleaned_row) or is_metadata_row(cleaned_row):
@@ -903,7 +914,10 @@ def insert_report(
     inherited_units: dict[str, set[str]] = {}
     inherited_base_dates: dict[tuple[str, str], str] = {}
     for table in prepared_tables:
-        matrix, footnote_matrix = normalize_matrix_with_footnotes(table.parts)
+        matrix, footnote_matrix = normalize_matrix_with_footnotes(
+            table.parts,
+            footnote_markers=footnote_markers_from_texts(table.notes),
+        )
         if not matrix or max((len(row) for row in matrix), default=0) < 2:
             continue
 

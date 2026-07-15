@@ -15,7 +15,7 @@ from app.core.contact_metadata import clean_source_text
 from app.db.schema import DB_PATH, connect, init_db
 from app.core.numeric_text import parse_numeric_value
 from app.ingest.anomaly import annotate_adjacent_duplicate_tables
-from app.ingest.cell_text import split_cell_text
+from app.ingest.cell_text import footnote_markers_from_texts, split_cell_text
 from app.ingest.table_repairs import repair_region_split_rows
 
 
@@ -82,6 +82,7 @@ class TablePart:
     section_file: str
     matrix: list[list[str]]
     raw_text: str
+    footnote_matrix: list[list[str]] = field(default_factory=list)
 
 
 @dataclass
@@ -150,26 +151,65 @@ def cell_position(cell: ET.Element) -> tuple[int, int, int, int]:
     return row, col, row_span, col_span
 
 
-def table_matrix(table: ET.Element) -> list[list[str]]:
-    cells: list[tuple[str, int, int, int, int]] = []
+def superscript_char_ids(header_xml: bytes) -> set[str]:
+    root = ET.fromstring(header_xml)
+    return {
+        element.attrib["id"]
+        for element in root.iter()
+        if local_name(element.tag) == "charPr"
+        and element.attrib.get("id")
+        and any(local_name(child.tag) == "supscript" for child in element)
+    }
+
+
+def cell_text_with_footnote(
+    cell: ET.Element,
+    superscript_ids: set[str],
+) -> tuple[str, str]:
+    text = element_text(cell)
+    markers: list[str] = []
+    for run in (item for item in cell.iter() if local_name(item.tag) == "run"):
+        if run.attrib.get("charPrIDRef") not in superscript_ids:
+            continue
+        marker = element_text(run).replace(" ", "")
+        if re.fullmatch(r"\d+\)", marker) and marker not in markers:
+            markers.append(marker)
+
+    for marker in markers:
+        text = re.sub(rf"\s*{re.escape(marker)}\s*$", "", text).strip()
+    return text, " ".join(markers)
+
+
+def table_matrix_with_footnotes(
+    table: ET.Element,
+    superscript_ids: set[str],
+) -> tuple[list[list[str]], list[list[str]]]:
+    cells: list[tuple[str, str, int, int, int, int]] = []
     max_row = 0
     max_col = 0
 
     for row in [item for item in list(table) if local_name(item.tag) == "tr"]:
         for cell in [item for item in list(row) if local_name(item.tag) == "tc"]:
             row_index, col_index, row_span, col_span = cell_position(cell)
-            text = element_text(cell)
-            cells.append((text, row_index, col_index, row_span, col_span))
+            text, footnote_marker = cell_text_with_footnote(cell, superscript_ids)
+            cells.append((text, footnote_marker, row_index, col_index, row_span, col_span))
             max_row = max(max_row, row_index + row_span)
             max_col = max(max_col, col_index + col_span)
 
     matrix = [["" for _ in range(max_col)] for _ in range(max_row)]
-    for text, row_index, col_index, row_span, col_span in cells:
+    footnote_matrix = [["" for _ in range(max_col)] for _ in range(max_row)]
+    for text, footnote_marker, row_index, col_index, row_span, col_span in cells:
         for target_row in range(row_index, row_index + row_span):
             for target_col in range(col_index, col_index + col_span):
                 if target_row < max_row and target_col < max_col and not matrix[target_row][target_col]:
                     matrix[target_row][target_col] = text if target_col == col_index else ""
+                    footnote_matrix[target_row][target_col] = footnote_marker if target_col == col_index else ""
 
+    return matrix, footnote_matrix
+
+
+def table_matrix(table: ET.Element) -> list[list[str]]:
+    matrix, _ = table_matrix_with_footnotes(table, set())
     return matrix
 
 
@@ -197,6 +237,7 @@ def parse_hwpx(source_path: Path) -> list[LogicalTable]:
     current: LogicalTable | None = None
 
     with ZipFile(source_path) as archive:
+        superscript_ids = superscript_char_ids(archive.read("Contents/header.xml"))
         section_names = [
             name
             for name in archive.namelist()
@@ -214,7 +255,7 @@ def parse_hwpx(source_path: Path) -> list[LogicalTable]:
 
                 if event == "end" and tag_name == "tbl":
                     if table_depth == 1:
-                        matrix = table_matrix(element)
+                        matrix, footnote_matrix = table_matrix_with_footnotes(element, superscript_ids)
                         text = element_text(element)
                         title = parse_title_block(text)
 
@@ -235,6 +276,7 @@ def parse_hwpx(source_path: Path) -> list[LogicalTable]:
                                     section_file=section_name,
                                     matrix=matrix,
                                     raw_text=text,
+                                    footnote_matrix=footnote_matrix,
                                 )
                             )
 
@@ -325,22 +367,47 @@ def is_metadata_row(row: list[str]) -> bool:
     return False
 
 
-def normalize_matrix_with_footnotes(parts: Iterable[TablePart]) -> tuple[list[list[str]], list[list[str]]]:
+def merge_footnote_markers(*values: str) -> str:
+    markers: list[str] = []
+    for value in values:
+        for marker in value.split():
+            if marker and marker not in markers:
+                markers.append(marker)
+    return " ".join(markers)
+
+
+def normalize_matrix_with_footnotes(
+    parts: Iterable[TablePart],
+    *,
+    footnote_markers: Iterable[str] = (),
+) -> tuple[list[list[str]], list[list[str]]]:
     rows: list[list[str]] = []
     footnote_rows: list[list[str]] = []
     max_cols = 0
     seen_data_signatures: set[tuple[str, ...]] = set()
     data_started = False
+    known_markers = set(footnote_markers)
 
     for part in parts:
-        for row in part.matrix:
+        for row_index, row in enumerate(part.matrix):
             if not any(cell.strip() for cell in row):
                 continue
             if is_metadata_row(row):
                 continue
-            parsed_cells = [split_cell_text(cell) for cell in row]
+            parsed_cells = [split_cell_text(cell, known_markers) for cell in row]
             cleaned_row = [text for text, _ in parsed_cells]
-            footnote_row = [marker for _, marker in parsed_cells]
+            footnote_row = [
+                merge_footnote_markers(
+                    (
+                        part.footnote_matrix[row_index][col_index]
+                        if row_index < len(part.footnote_matrix)
+                        and col_index < len(part.footnote_matrix[row_index])
+                        else ""
+                    ),
+                    marker,
+                )
+                for col_index, (_, marker) in enumerate(parsed_cells)
+            ]
             row_signature = tuple(cleaned_row)
             if data_started and row_signature in seen_data_signatures:
                 continue
@@ -489,7 +556,10 @@ def import_hwpx(
         inserted_tables = 0
         inserted_cells = 0
         for table in annotate_adjacent_duplicate_tables(parsed_tables):
-            matrix, footnote_matrix = normalize_matrix_with_footnotes(table.parts)
+            matrix, footnote_matrix = normalize_matrix_with_footnotes(
+                table.parts,
+                footnote_markers=footnote_markers_from_texts(table.notes),
+            )
             if not matrix or max((len(row) for row in matrix), default=0) < 2:
                 continue
 

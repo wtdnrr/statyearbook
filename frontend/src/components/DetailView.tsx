@@ -69,6 +69,19 @@ const tabs: Array<{ id: DetailTab; label: string }> = [
   { id: "metadata", label: "출처·메타정보" },
 ];
 
+const checkTypeOrder = new Map(
+  [
+    "합계 검수",
+    "비율 검수",
+    "오탈자 검수",
+    "번역 검수",
+    "용어 제안",
+    "파란색 표기 확인",
+    "이상치 검수",
+    "메타정보 검수",
+  ].map((type, index) => [type, index]),
+);
+
 function checksForFilter<T extends { status: string }>(
   filter: CheckFilter,
   allChecks: T[],
@@ -134,6 +147,38 @@ function summaryDetailForGroupedCheck(check: ValidationIssue, targetCount: numbe
   }
   const normalizedDetail = baseDetail.endsWith(".") ? baseDetail : `${baseDetail}.`;
   return `${normalizedDetail} 같은 방식으로 ${targetCount}개 셀에 적용된 검수입니다.`;
+}
+
+function checkDisplayTitle(check: Pick<ValidationIssue, "formula" | "type">) {
+  return check.formula?.trim() || check.type;
+}
+
+function checkDisplayEyebrow(check: Pick<ValidationIssue, "formula" | "type">) {
+  return check.formula?.trim() ? check.type : "검수 항목";
+}
+
+function uniqueSourceChecks(sourceChecks: ValidationIssue[]) {
+  const seen = new Set<string>();
+
+  return sourceChecks.filter((check) => {
+    const key = [
+      check.rule_id ?? "",
+      check.type,
+      check.status,
+      check.location,
+      check.row_index ?? "",
+      check.col_index ?? "",
+      check.current_value,
+      check.expected_value ?? "",
+      check.difference ?? "",
+      check.formula ?? "",
+    ].join("::");
+    if (seen.has(key)) {
+      return false;
+    }
+    seen.add(key);
+    return true;
+  });
 }
 
 function columnLabelAt(part: StatTablePart, colIndex: number | undefined) {
@@ -415,7 +460,11 @@ function sortChecksByCalculationHierarchy(checks: DisplayCheck[]) {
     .filter((index) => indegree[index] === 0);
   const ordered: DisplayCheck[] = [];
   while (ready.length > 0) {
-    ready.sort((left, right) => left - right);
+    ready.sort((left, right) => {
+      const typeOrder =
+        (checkTypeOrder.get(checks[left].type) ?? 999) - (checkTypeOrder.get(checks[right].type) ?? 999);
+      return typeOrder || left - right;
+    });
     const index = ready.shift();
     if (index === undefined) {
       break;
@@ -434,7 +483,7 @@ function sortChecksByCalculationHierarchy(checks: DisplayCheck[]) {
 
 function groupChecksForDisplay(part: StatTablePart, sourceChecks: ValidationIssue[]): DisplayCheck[] {
   const groups = new Map<string, ValidationIssue[]>();
-  for (const check of sourceChecks) {
+  for (const check of uniqueSourceChecks(sourceChecks)) {
     const key = validationDisplayGroupKey(check);
     groups.set(key, [...(groups.get(key) ?? []), check]);
   }
@@ -578,7 +627,7 @@ function CalculationUsageList({ part, check }: { part: StatTablePart; check: Dis
             <article className="calculation-usage__item" key={rawCheck.id}>
               <div className="calculation-usage__item-head">
                 <span>{rawCheck.status}</span>
-                <strong>{rawCheck.type}</strong>
+                <strong>{checkDisplayTitle(rawCheck)}</strong>
               </div>
 
               <dl className="calculation-usage__target">
@@ -635,6 +684,53 @@ function CalculationUsageList({ part, check }: { part: StatTablePart; check: Dis
   );
 }
 
+function MetadataGrid({
+  part,
+  difference,
+}: {
+  part: StatTablePart;
+  difference?: string;
+}) {
+  const hasProblem = (label: string) => difference?.includes(label) ?? false;
+
+  return (
+    <dl className="metadata-grid">
+      <div className={hasProblem("기준일") ? "is-problem" : ""}>
+        <dt>기준일</dt>
+        <dd>{part.metadata.base_date_display || "-"}</dd>
+      </div>
+      <div className={hasProblem("단위") ? "is-problem" : ""}>
+        <dt>단위</dt>
+        <dd>{part.metadata.unit_display || "-"}</dd>
+      </div>
+      <div>
+        <dt>최종 수정 일자</dt>
+        <dd>{part.updated_at}</dd>
+      </div>
+      <div className={hasProblem("출처") ? "is-problem" : ""}>
+        <dt>소속</dt>
+        <dd>{part.metadata.source_department || "-"}</dd>
+      </div>
+      <div className={hasProblem("출처") ? "is-problem" : ""}>
+        <dt>이름</dt>
+        <dd>{part.metadata.source_officer || "-"}</dd>
+      </div>
+      <div className={hasProblem("출처") ? "is-problem" : ""}>
+        <dt>내선번호</dt>
+        <dd>{part.metadata.source_extension || "-"}</dd>
+      </div>
+      <div className={`metadata-grid__wide ${hasProblem("출처") ? "is-problem" : ""}`}>
+        <dt>출처</dt>
+        <dd>{part.metadata.source_reference || part.metadata.source || "-"}</dd>
+      </div>
+      <div className="metadata-grid__wide">
+        <dt>주석</dt>
+        <dd>{part.metadata.note || "-"}</dd>
+      </div>
+    </dl>
+  );
+}
+
 export function DetailView({
   table,
   showOutlierChecks,
@@ -670,6 +766,7 @@ export function DetailView({
     displayChecks.find((check) => check.id === selectedCheckId) ??
     displayChecks[0];
   const selectedIssue = expandCalculationFamilyForHighlight(activePart, selectedIssueBase, allRawChecks);
+  const isMetadataIssue = selectedIssue?.highlight_scope === "metadata";
   const activeIssueIndex = Math.max(filteredChecks.findIndex((check) => check.id === selectedIssue?.id), 0);
   const selectedIssueHighlight = highlightForCheck(activePart, selectedIssue);
   const parentHierarchy = table.hierarchy.slice(0, -1);
@@ -867,43 +964,49 @@ export function DetailView({
                 <article className={`check-card check-card--${selectedIssue.severity}`}>
                   <div className="check-card__headline">
                     <div>
-                      <span>검수 항목</span>
-                      <h3>{selectedIssue.type}</h3>
+                      <span>{checkDisplayEyebrow(selectedIssue)}</span>
+                      <h3>{checkDisplayTitle(selectedIssue)}</h3>
                     </div>
                     <strong>{selectedIssue.status}</strong>
                   </div>
-                  <dl className="check-card__location">
-                    <div>
-                      <dt>행</dt>
-                      <dd>{selectedIssue.rowSummary}</dd>
-                    </div>
-                    <div>
-                      <dt>열</dt>
-                      <dd>{selectedIssue.columnSummary}</dd>
-                    </div>
-                  </dl>
-                  <dl className="check-card__values">
-                    <div>
-                      <dt>현재값</dt>
-                      <dd>{selectedIssue.current_value}</dd>
-                    </div>
-                    <div>
-                      <dt>검수값</dt>
-                      <dd>{selectedIssue.expected_value ?? "-"}</dd>
-                    </div>
-                    <div>
-                      <dt>차이</dt>
-                      <dd>{selectedIssue.difference ?? "-"}</dd>
-                    </div>
-                  </dl>
+                  {isMetadataIssue ? (
+                    <MetadataGrid part={activePart} difference={selectedIssue.difference} />
+                  ) : (
+                    <>
+                      <dl className="check-card__location">
+                        <div>
+                          <dt>행</dt>
+                          <dd>{selectedIssue.rowSummary}</dd>
+                        </div>
+                        <div>
+                          <dt>열</dt>
+                          <dd>{selectedIssue.columnSummary}</dd>
+                        </div>
+                      </dl>
+                      <dl className="check-card__values">
+                        <div>
+                          <dt>현재값</dt>
+                          <dd>{selectedIssue.current_value}</dd>
+                        </div>
+                        <div>
+                          <dt>검수값</dt>
+                          <dd>{selectedIssue.expected_value ?? "-"}</dd>
+                        </div>
+                        <div>
+                          <dt>차이</dt>
+                          <dd>{selectedIssue.difference ?? "-"}</dd>
+                        </div>
+                      </dl>
+                    </>
+                  )}
                   <p>{selectedIssue.detail}</p>
-                  {selectedIssue.formula ? (
+                  {selectedIssue.formula && selectedIssue.formula !== checkDisplayTitle(selectedIssue) ? (
                     <div className="formula-box">
                       <FileCode2 aria-hidden="true" size={16} />
                       <span>{selectedIssue.formula}</span>
                     </div>
                   ) : null}
-                  <CalculationUsageList part={activePart} check={selectedIssue} />
+                  {!isMetadataIssue ? <CalculationUsageList part={activePart} check={selectedIssue} /> : null}
                 </article>
               ) : (
                 <p className="empty-copy">이 분류에 해당하는 검수 결과가 없습니다.</p>
@@ -985,40 +1088,7 @@ export function DetailView({
                     <h2>출처·메타정보</h2>
                   </div>
                 </div>
-                <dl className="metadata-grid">
-                  <div>
-                    <dt>기준일</dt>
-                    <dd>{activePart.metadata.base_date_display}</dd>
-                  </div>
-                  <div>
-                    <dt>단위</dt>
-                    <dd>{activePart.metadata.unit_display}</dd>
-                  </div>
-                  <div>
-                    <dt>최종 수정 일자</dt>
-                    <dd>{activePart.updated_at}</dd>
-                  </div>
-                  <div>
-                    <dt>소속</dt>
-                    <dd>{activePart.metadata.source_department || "-"}</dd>
-                  </div>
-                  <div>
-                    <dt>이름</dt>
-                    <dd>{activePart.metadata.source_officer || "-"}</dd>
-                  </div>
-                  <div>
-                    <dt>내선번호</dt>
-                    <dd>{activePart.metadata.source_extension || "-"}</dd>
-                  </div>
-                  <div className="metadata-grid__wide">
-                    <dt>출처</dt>
-                    <dd>{activePart.metadata.source_reference || activePart.metadata.source || "-"}</dd>
-                  </div>
-                  <div className="metadata-grid__wide">
-                    <dt>주석</dt>
-                    <dd>{activePart.metadata.note}</dd>
-                  </div>
-                </dl>
+                <MetadataGrid part={activePart} />
               </div>
             ) : null}
           </section>

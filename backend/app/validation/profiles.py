@@ -24,7 +24,7 @@ from app.validation.rules import (
 )
 
 
-PROFILE_VERSION = "validation-profile-v2"
+PROFILE_VERSION = "validation-profile-v3"
 
 COMMON_RULE_IDS = [
     "sum",
@@ -33,8 +33,7 @@ COMMON_RULE_IDS = [
     "outlier",
     "spelling",
     "translation",
-    "unit",
-    "empty",
+    "metadata",
 ]
 
 DRAFT_TITLE_TRANSLATION_OVERRIDES: dict[str, tuple[str, str]] = {
@@ -145,11 +144,8 @@ class HeuristicProfileDraftProvider:
         table_type = curated.table_type
         status = curated.status
         notes = curated.notes
-        table_rules = [
-            check
-            for check in checks
-            if check.get("category") in {"template", "table"} and check.get("type") not in {"year_sequence"}
-        ]
+        needs_llm_review = needs_llm_review and status != "ready"
+        table_rules = [check for check in checks if check.get("category") in {"template", "table"}]
 
         return ProfileDraft(
             table_code=table.code,
@@ -722,8 +718,6 @@ def infer_profile_checks(
 
     if "regional_table" in templates:
         checks.extend(region_total_check_specs(table))
-    if "year_trend_table" in templates:
-        checks.extend(year_sequence_check_specs(table))
 
     checks.extend(infer_gender_total_rules(table))
     checks.extend(infer_header_formula_rules(table))
@@ -754,48 +748,17 @@ def infer_profile_checks(
 def common_check_specs(table: ValidationTable) -> list[dict[str, Any]]:
     return [
         rule_spec(
-            "unit",
-            {
-                "id": f"profile.{table.code}.unit_required",
-                "type": "unit_required",
-                "category": "common",
-                "label": "단위 필수 및 프로파일 단위 일치",
-                "expected_unit": table.unit,
-                "confidence": 1.0,
-            },
-        ),
-        rule_spec(
-            "empty",
+            "metadata",
             {
                 "id": f"profile.{table.code}.metadata_required",
                 "type": "metadata_required",
                 "category": "common",
-                "label": "기준일/출처 필수",
-                "fields": ["base_date", "source"],
+                "label": "단위·기준일·출처 메타정보 확인",
+                "fields": ["unit", "base_date", "source"],
+                "expected_unit": table.unit,
                 "confidence": 1.0,
             },
         ),
-        rule_spec(
-            "empty",
-            {
-                "id": f"profile.{table.code}.row_label_required",
-                "type": "row_label_required",
-                "category": "common",
-                "label": "데이터 행 항목명 필수",
-                "confidence": 0.95,
-            },
-        ),
-        {
-            "id": f"profile.{table.code}.numeric_format",
-            "type": "numeric_format",
-            "category": "common",
-            "check_type": "계산용 숫자 형식 검수",
-            "label": "계산용 숫자 형식 검수",
-            "fields": [],
-            "severity": "warning",
-            "failure_status": "확인 필요",
-            "confidence": 0.9,
-        },
     ]
 
 
@@ -911,35 +874,6 @@ def has_schedule_descriptor_column(table: ValidationTable) -> bool:
         is_schedule_descriptor_column(table.column_text(col_index))
         for col_index in range(column_count(table))
     )
-
-
-def year_sequence_check_specs(table: ValidationTable) -> list[dict[str, Any]]:
-    year_rows = [
-        row_index
-        for row_index, row in table.data_rows()
-        if re.fullmatch(r"\d{4}", normalize_text(combined_row_label(table, row) or table.row_label(row)))
-    ]
-    year_columns = [
-        col_index
-        for col_index in range(column_count(table))
-        if re.fullmatch(r"\d{4}", normalize_text(leaf_header(table, col_index)))
-    ]
-    if len(year_rows) < 2 and len(year_columns) < 2:
-        return []
-    return [
-        rule_spec(
-            "empty",
-            {
-            "id": f"profile.{table.code}.year_axis",
-            "type": "year_sequence",
-            "category": "template",
-            "label": "연도 축 인식 및 연속성 확인",
-            "row_indices": year_rows,
-            "columns": year_columns,
-            "confidence": 0.75,
-            },
-        )
-    ]
 
 
 def infer_wrapped_total_cell_rules(table: ValidationTable) -> list[dict[str, Any]]:

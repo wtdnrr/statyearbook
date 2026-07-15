@@ -70,20 +70,12 @@ REQUIRED_RULE_DEFINITIONS: tuple[ValidationRuleDefinition, ...] = (
         description="국문 항목과 영문 병기가 기본 용어집과 맞는지 확인합니다.",
     ),
     ValidationRuleDefinition(
-        key="unit",
-        name="단위 검수",
+        key="metadata",
+        name="메타정보 검수",
         default_status=REVIEW_STATUS,
         default_severity="warning",
         owner_role="규칙 엔진/담당자",
-        description="단위 누락, 기존 프로파일과 다른 단위, 단위 표기 후보를 확인합니다.",
-    ),
-    ValidationRuleDefinition(
-        key="empty",
-        name="빈값 검수",
-        default_status=REVIEW_STATUS,
-        default_severity="warning",
-        owner_role="규칙 엔진",
-        description="필수 메타데이터와 데이터 행·열 라벨의 빈값을 확인합니다.",
+        description="단위, 기준일, 출처의 누락 여부와 저장된 프로파일의 단위 기준 일치 여부를 함께 확인합니다.",
     ),
 )
 

@@ -189,6 +189,10 @@ def ensure_column(
 
 def seed_validation_rule_definitions(connection: sqlite3.Connection) -> None:
     connection.executemany(
+        "DELETE FROM validation_rule_definitions WHERE key = ?",
+        [("unit",), ("empty",)],
+    )
+    connection.executemany(
         """
         INSERT INTO validation_rule_definitions (
             key, name, default_status, default_severity, owner_role, description

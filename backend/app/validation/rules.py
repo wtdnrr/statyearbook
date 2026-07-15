@@ -226,67 +226,30 @@ class ValidationRule(ABC):
 
 class RequiredMetadataRule(ValidationRule):
     rule_id = "metadata.required"
-    issue_type = "메타정보 확인"
+    issue_type = "메타정보 검수"
 
     def validate(self, table: ValidationTable) -> list[ValidationIssueRecord]:
         checks = [
-            ("단위", table.unit, "표 단위"),
-            ("기준일", table.base_date, "기준일"),
-            ("출처", table.source, "담당 부서 또는 출처"),
+            ("단위", table.unit),
+            ("기준일", table.base_date),
+            ("출처", table.source),
         ]
-        issues: list[ValidationIssueRecord] = []
+        missing = [label for label, value in checks if not value.strip()]
+        if not missing:
+            return []
 
-        for label, value, expected in checks:
-            if value.strip():
-                continue
-            issues.append(
-                self.issue(
-                    table,
-                    location=f"메타정보 {label}",
-                    current_value="없음",
-                    expected_value=expected,
-                    difference="누락",
-                    severity="warning",
-                    detail=f"{table.code} {table.title} 표의 {label} 정보가 비어 있습니다. 원 시스템 메타데이터 매핑 또는 원문 추출 결과를 확인하세요.",
-                )
+        current = " | ".join(f"{label}: {value.strip() or '없음'}" for label, value in checks)
+        return [
+            self.issue(
+                table,
+                location="출처·메타정보",
+                current_value=current,
+                expected_value="단위·기준일·출처 입력",
+                difference=f"누락: {', '.join(missing)}",
+                severity="warning",
+                detail=f"출처·메타정보 탭에서 누락된 {', '.join(missing)} 항목을 확인하세요.",
             )
-
-        return issues
-
-
-class RowLabelRequiredRule(ValidationRule):
-    rule_id = "cell.row_label_required"
-    issue_type = "빈값 확인"
-
-    def validate(self, table: ValidationTable) -> list[ValidationIssueRecord]:
-        issues: list[ValidationIssueRecord] = []
-
-        for row_index, row in table.data_rows():
-            first_cell = row[0] if row else None
-            if first_cell and first_cell.text_value.strip():
-                continue
-
-            populated_cells = [cell for cell in row[1:] if cell and cell.text_value.strip()]
-            if len(populated_cells) < 2:
-                continue
-
-            issues.append(
-                self.issue(
-                    table,
-                    location=f"{row_index + 1}행 1열",
-                    current_value="",
-                    expected_value="항목명",
-                    difference="빈값",
-                    severity="warning",
-                    detail="데이터가 있는 행의 첫 번째 항목명이 비어 있습니다. 행 병합, 줄바꿈, 표 구조화 과정에서 항목명이 누락되었는지 확인하세요.",
-                    row_index=row_index,
-                    col_index=0,
-                )
-            )
-            if len(issues) >= 5:
-                break
-
-        return issues
+        ]
 
 
 class RowTotalColumnRule(ValidationRule):
@@ -1045,7 +1008,6 @@ class StaticEnglishSpellingRule(ValidationRule):
 
 DEFAULT_RULES: list[ValidationRule] = [
     RequiredMetadataRule(),
-    RowLabelRequiredRule(),
     RowTotalColumnRule(),
     ColumnTotalRowRule(),
     RegionTotalSumRule(),

@@ -2122,6 +2122,11 @@ button {
   border: 1px solid var(--line);
 }
 
+.metadata-grid div.is-problem {
+  background: rgba(255, 247, 226, 0.88);
+  border-color: #d9a94f;
+}
+
 .metadata-grid__wide {
   grid-column: 1 / -1;
 }

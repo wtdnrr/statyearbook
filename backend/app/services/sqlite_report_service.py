@@ -30,6 +30,17 @@ from app.models.report import (
 from app.validation.models import restore_hyphenated_line_breaks
 
 
+DISPLAY_CHECK_TYPE_MAP = {
+    "증감액 검수": "합계 검수",
+    "증감률 검수": "비율 검수",
+    "평균 검수": "비율 검수",
+}
+
+
+def display_check_type(check_type: str) -> str:
+    return DISPLAY_CHECK_TYPE_MAP.get(check_type, check_type)
+
+
 class SQLiteReportService:
     def __init__(self, db_path: Path = DB_PATH) -> None:
         self._db_path = db_path
@@ -329,7 +340,7 @@ def build_validation_issues(
             ValidationIssue(
                 id=f"check-{row['id']}",
                 rule_id=row["rule_id"],
-                type=row["check_type"],
+                type=display_check_type(row["check_type"]),
                 location=row["location"],
                 row_index=row["row_index"],
                 col_index=row["col_index"],
@@ -371,7 +382,7 @@ def build_validation_issues(
         ValidationIssue(
             id=f"issue-{row['id']}",
             rule_id=row["rule_id"],
-            type=row["issue_type"],
+            type=display_check_type(row["issue_type"]),
             location=row["location"],
             row_index=row["row_index"],
             col_index=row["col_index"],
@@ -676,10 +687,7 @@ def highlight_cells_for(row: sqlite3.Row, spec: dict[str, Any] | None) -> list[V
     elif rule_type in {
         "spelling_static",
         "translation_static",
-        "numeric_format",
-        "row_label_required",
         "growth_rate_scan",
-        "year_sequence",
     }:
         cells.append(highlight_cell(row_index, col_index, "target"))
     else:

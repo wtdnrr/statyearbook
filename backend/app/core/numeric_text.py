@@ -19,7 +19,7 @@ COMMA_GROUPED_INTEGER_RE = re.compile(r"^[+-]?\d{1,3}(?:,\d{3})+$")
 
 
 @dataclass(frozen=True)
-class NumericFormatAnomaly:
+class NumericTextAnomaly:
     reason: str
     suggested_value: str = ""
 
@@ -51,12 +51,12 @@ def parse_numeric_value(value: str) -> float | None:
     return float(cleaned.removesuffix("%").replace(",", ""))
 
 
-def numeric_format_anomaly(
+def numeric_text_anomaly(
     value: str,
     *,
     unit: str = "",
     peer_values: list[str] | None = None,
-) -> NumericFormatAnomaly | None:
+) -> NumericTextAnomaly | None:
     cleaned = normalized_numeric_token(value)
     if cleaned in PLACEHOLDER_TOKENS:
         return None
@@ -72,10 +72,10 @@ def numeric_format_anomaly(
 
     if MALFORMED_DIGIT_SEPARATOR_RE.search(cleaned):
         suggested = MALFORMED_DIGIT_SEPARATOR_RE.sub(",", cleaned)
-        return NumericFormatAnomaly("숫자 사이에 천 단위 구분자로 보기 어려운 문자가 있습니다.", suggested)
+        return NumericTextAnomaly("숫자 사이에 천 단위 구분자로 보기 어려운 문자가 있습니다.", suggested)
 
     if REPEATED_SEPARATOR_RE.search(cleaned):
-        return NumericFormatAnomaly("숫자 사이의 구분기호가 중복되었습니다.")
+        return NumericTextAnomaly("숫자 사이의 구분기호가 중복되었습니다.")
 
     unmatched_numeric_parenthesis = re.fullmatch(
         r"[+-]?(?:\d+|\d{1,3}(?:,\d{3})+)(?:\.\d+)?%?\)",
@@ -83,20 +83,20 @@ def numeric_format_anomaly(
     )
     if unmatched_numeric_parenthesis:
         if _has_numeric_peer_context(peers):
-            return NumericFormatAnomaly("숫자 뒤에 대응하는 여는 괄호가 없는 닫는 괄호가 있습니다.", cleaned[:-1])
+            return NumericTextAnomaly("숫자 뒤에 대응하는 여는 괄호가 없는 닫는 괄호가 있습니다.", cleaned[:-1])
         return None
 
     if "," in cleaned and not _valid_comma_number(cleaned):
-        return NumericFormatAnomaly("쉼표가 세 자리 천 단위 묶음과 맞지 않습니다.")
+        return NumericTextAnomaly("쉼표가 세 자리 천 단위 묶음과 맞지 않습니다.")
 
     if _dot_grouping_is_suspicious(cleaned, unit=unit, peers=peers):
-        return NumericFormatAnomaly(
+        return NumericTextAnomaly(
             "정수형 통계 열에서 마침표가 소수점이 아니라 천 단위 구분자로 잘못 입력되었을 가능성이 있습니다.",
             cleaned.replace(".", ","),
         )
 
     if _looks_numeric_but_is_invalid(cleaned):
-        return NumericFormatAnomaly("숫자로 보이지만 계산 가능한 숫자 표기 형식이 아닙니다.")
+        return NumericTextAnomaly("숫자로 보이지만 계산 가능한 숫자 표기 형식이 아닙니다.")
     return None
 
 

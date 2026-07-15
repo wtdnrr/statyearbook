@@ -5,13 +5,13 @@ from pathlib import Path
 import re
 import sqlite3
 
-from app.core.numeric_text import numeric_format_anomaly
+from app.core.numeric_text import numeric_text_anomaly
 from app.db.schema import connect, init_db
 from app.validation.blue_review import normalize_review_text
 
 
 SOURCE_FORMAT_RULE_ID = "source.format_review"
-SOURCE_FORMAT_TYPE = "원문 표기 확인"
+SOURCE_FORMAT_TYPE = "오탈자 검수"
 
 
 def append_source_format_review_checks(
@@ -60,7 +60,7 @@ def append_source_format_review_checks(
                 if key in existing:
                     continue
 
-                anomaly = numeric_format_anomaly(
+                anomaly = numeric_text_anomaly(
                     text,
                     unit=table_units.get(table_id, ""),
                     peer_values=peers_by_column.get((table_id, col_index), []),
@@ -157,7 +157,7 @@ def insert_source_candidate(
     label: str,
 ) -> None:
     location = f"{row_index + 1}행 {col_index + 1}열"
-    detail = f"규칙 엔진이 원문 표기 이상 후보를 발견했습니다. {reason} LLM이 같은 행·열 문맥을 확인합니다."
+    detail = f"규칙 엔진이 원문 표기 이상 후보를 발견했습니다. {reason} 담당자 또는 LLM이 같은 행·열 문맥을 확인해야 합니다."
     connection.execute(
         """
         INSERT INTO validation_issues (
