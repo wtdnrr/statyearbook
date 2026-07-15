@@ -1258,7 +1258,7 @@ class ProfileSpecRule(ValidationRule):
             expected_value=expected,
             difference="영문 제목 자동 보정",
             passed=False,
-            detail="2026 초안에서 '(영문)'으로 표시된 표 제목에 영문 번역 후보를 삽입했습니다. 최종 표기는 담당자 확인이 필요합니다.",
+            detail="2026 초안에서 '(영문)'으로 표시된 표 제목에 문맥과 번역 사전을 적용한 영문 검수안을 삽입했습니다.",
         )
         return [self._issue_from_check(check)], [check]
 

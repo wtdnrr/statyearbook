@@ -1,0 +1,170 @@
+{
+  "sources": {
+    "central_agencies_2026": {
+      "title": "중앙행정기관의 약칭과 영어 명칭(정부조직 약칭과 영어 명칭에 관한 규칙 별표)",
+      "url": "https://law.go.kr/LSW/flDownload.do?bylClsCd=200201&flNm=%5B%EB%B3%84%ED%91%9C%5D+%EC%A4%91%EC%95%99%ED%96%89%EC%A0%95%EA%B8%B0%EA%B4%80%EC%9D%98+%EC%95%BD%EC%B9%AD%EA%B3%BC+%EC%98%81%EC%96%B4+%EB%AA%85%EC%B9%AD%28%EC%A0%9C14%EC%A1%B0+%EA%B4%80%EB%A0%A8%29&flSeq=161476809",
+      "verified_at": "2026-07-15"
+    },
+    "korea_local_governments": {
+      "title": "Korea.net Local Governments and Website Directory",
+      "url": "https://www.korea.net/Government/Constitution-and-Government/Local-Governments",
+      "verified_at": "2026-07-15"
+    },
+    "gangwon_official": {
+      "title": "강원특별자치도 공식 누리집",
+      "url": "https://state.gwd.go.kr/",
+      "verified_at": "2026-07-15"
+    },
+    "jeonbuk_official": {
+      "title": "Jeonbuk State Official Website",
+      "url": "https://www.jeonbuk.go.kr/eng/index.jeonbuk",
+      "verified_at": "2026-07-15"
+    },
+    "sejong_official": {
+      "title": "Sejong Special Self-Governing City Council Official Website",
+      "url": "https://council.sejong.go.kr/jsp/english/content/greeting.jsp",
+      "verified_at": "2026-07-15"
+    },
+    "jeju_official": {
+      "title": "Jeju Special Self-Governing Province Official Website",
+      "url": "https://www.jeju.go.kr/",
+      "verified_at": "2026-07-15"
+    },
+    "public_term_database": {
+      "title": "국립국어원 공공용어 번역 정보",
+      "url": "https://www.korean.go.kr/front/pubWord/pubWordDataList.do?cateLarge=ALL&flag=1&langGubun=ALL&originGubun=ALL",
+      "verified_at": "2026-07-15"
+    },
+    "ngii_admin_regions": {
+      "title": "국토교통부 국토지리정보원 시계열행정구역 데이터",
+      "url": "https://data.edmgr.kr/dataView.do?id=www-data-go-kr-data-filedata-15122710",
+      "verified_at": "2026-07-15"
+    },
+    "kosis_terms": {
+      "title": "KOSIS 통계조회 도움말",
+      "url": "https://kosis.kr/civilComplaint/kosisGuideIndex.do?q_no=5",
+      "verified_at": "2026-07-15"
+    },
+    "children_safety_expo": {
+      "title": "2026 어린이안전박람회 개최 보도자료",
+      "url": "https://www.mois.go.kr/frt/bbs/type010/commonSelectBoardArticle.do?bbsId=BBSMSTR_000000000008&nttId=125507",
+      "verified_at": "2026-07-15"
+    },
+    "korea_safety_expo": {
+      "title": "2026 대한민국 안전산업박람회 안전산업혁신대상 신청 공고",
+      "url": "https://www.mois.go.kr/frt/bbs/type013/commonSelectBoardArticle.do?bbsId=BBSMSTR_000000000006&nttId=127565",
+      "verified_at": "2026-07-15"
+    },
+    "december_29_memorial": {
+      "title": "'기억하라 12·29' 여객기 참사 1주기 추모행사",
+      "url": "https://www.korea.kr/news/policyNewsView.do?newsId=148956690",
+      "verified_at": "2026-07-15"
+    }
+  },
+  "entries": [
+    {"source":"재정경제부","target":"Ministry of Finance and Economy","category":"기관명","subcategory":"중앙부처","source_id":"central_agencies_2026","status":"official_verified","aliases":["재경부"]},
+    {"source":"과학기술정보통신부","target":"Ministry of Science and ICT","category":"기관명","subcategory":"중앙부처","source_id":"central_agencies_2026","status":"official_verified","aliases":["과기정통부"]},
+    {"source":"교육부","target":"Ministry of Education","category":"기관명","subcategory":"중앙부처","source_id":"central_agencies_2026","status":"official_verified"},
+    {"source":"외교부","target":"Ministry of Foreign Affairs","category":"기관명","subcategory":"중앙부처","source_id":"central_agencies_2026","status":"official_verified"},
+    {"source":"통일부","target":"Ministry of Unification","category":"기관명","subcategory":"중앙부처","source_id":"central_agencies_2026","status":"official_verified"},
+    {"source":"법무부","target":"Ministry of Justice","category":"기관명","subcategory":"중앙부처","source_id":"central_agencies_2026","status":"official_verified"},
+    {"source":"국방부","target":"Ministry of National Defense","category":"기관명","subcategory":"중앙부처","source_id":"central_agencies_2026","status":"official_verified"},
+    {"source":"행정안전부","target":"Ministry of the Interior and Safety","category":"기관명","subcategory":"중앙부처","source_id":"central_agencies_2026","status":"official_verified","aliases":["행안부"]},
+    {"source":"국가보훈부","target":"Ministry of Patriots and Veterans Affairs","category":"기관명","subcategory":"중앙부처","source_id":"central_agencies_2026","status":"official_verified","aliases":["보훈부"]},
+    {"source":"문화체육관광부","target":"Ministry of Culture, Sports and Tourism","category":"기관명","subcategory":"중앙부처","source_id":"central_agencies_2026","status":"official_verified","aliases":["문체부"]},
+    {"source":"농림축산식품부","target":"Ministry of Agriculture, Food and Rural Affairs","category":"기관명","subcategory":"중앙부처","source_id":"central_agencies_2026","status":"official_verified","aliases":["농식품부"]},
+    {"source":"산업통상부","target":"Ministry of Trade, Industry and Resources","category":"기관명","subcategory":"중앙부처","source_id":"central_agencies_2026","status":"official_verified","aliases":["산업부"]},
+    {"source":"보건복지부","target":"Ministry of Health and Welfare","category":"기관명","subcategory":"중앙부처","source_id":"central_agencies_2026","status":"official_verified","aliases":["복지부"]},
+    {"source":"기후에너지환경부","target":"Ministry of Climate, Energy and Environment","category":"기관명","subcategory":"중앙부처","source_id":"central_agencies_2026","status":"official_verified","aliases":["기후부"]},
+    {"source":"고용노동부","target":"Ministry of Employment and Labor","category":"기관명","subcategory":"중앙부처","source_id":"central_agencies_2026","status":"official_verified","aliases":["노동부"]},
+    {"source":"성평등가족부","target":"Ministry of Gender Equality and Family","category":"기관명","subcategory":"중앙부처","source_id":"central_agencies_2026","status":"official_verified","aliases":["성평등부","여성가족부"]},
+    {"source":"국토교통부","target":"Ministry of Land, Infrastructure and Transport","category":"기관명","subcategory":"중앙부처","source_id":"central_agencies_2026","status":"official_verified","aliases":["국토부"]},
+    {"source":"해양수산부","target":"Ministry of Oceans and Fisheries","category":"기관명","subcategory":"중앙부처","source_id":"central_agencies_2026","status":"official_verified","aliases":["해수부"]},
+    {"source":"중소벤처기업부","target":"Ministry of SMEs and Startups","category":"기관명","subcategory":"중앙부처","source_id":"central_agencies_2026","status":"official_verified","aliases":["중기부"]},
+    {"source":"기획예산처","target":"Ministry of Planning and Budget","category":"기관명","subcategory":"중앙부처","source_id":"central_agencies_2026","status":"official_verified","aliases":["기획처"]},
+    {"source":"인사혁신처","target":"Ministry of Personnel Management","category":"기관명","subcategory":"중앙부처","source_id":"central_agencies_2026","status":"official_verified","aliases":["인사처"]},
+    {"source":"법제처","target":"Ministry of Government Legislation","category":"기관명","subcategory":"중앙부처","source_id":"central_agencies_2026","status":"official_verified"},
+    {"source":"식품의약품안전처","target":"Ministry of Food and Drug Safety","category":"기관명","subcategory":"중앙부처","source_id":"central_agencies_2026","status":"official_verified","aliases":["식약처"]},
+    {"source":"국가데이터처","target":"Ministry of Data and Statistics","category":"기관명","subcategory":"중앙부처","source_id":"central_agencies_2026","status":"official_verified","aliases":["데이터처"]},
+    {"source":"지식재산처","target":"Ministry of Intellectual Property","category":"기관명","subcategory":"중앙부처","source_id":"central_agencies_2026","status":"official_verified","aliases":["지재처"]},
+    {"source":"국세청","target":"National Tax Service","category":"기관명","subcategory":"산하기관","source_id":"central_agencies_2026","status":"official_verified"},
+    {"source":"관세청","target":"Korea Customs Service","category":"기관명","subcategory":"산하기관","source_id":"central_agencies_2026","status":"official_verified"},
+    {"source":"조달청","target":"Public Procurement Service","category":"기관명","subcategory":"산하기관","source_id":"central_agencies_2026","status":"official_verified"},
+    {"source":"우주항공청","target":"Korea AeroSpace Administration","category":"기관명","subcategory":"산하기관","source_id":"central_agencies_2026","status":"official_verified","aliases":["우주청"]},
+    {"source":"재외동포청","target":"Overseas Koreans Agency","category":"기관명","subcategory":"산하기관","source_id":"central_agencies_2026","status":"official_verified","aliases":["동포청"]},
+    {"source":"대검찰청","target":"Supreme Prosecutors' Office","category":"기관명","subcategory":"산하기관","source_id":"central_agencies_2026","status":"official_verified"},
+    {"source":"병무청","target":"Military Manpower Administration","category":"기관명","subcategory":"산하기관","source_id":"central_agencies_2026","status":"official_verified"},
+    {"source":"방위사업청","target":"Defense Acquisition Program Administration","category":"기관명","subcategory":"산하기관","source_id":"central_agencies_2026","status":"official_verified","aliases":["방사청"]},
+    {"source":"경찰청","target":"National Police Agency","category":"기관명","subcategory":"산하기관","source_id":"central_agencies_2026","status":"official_verified"},
+    {"source":"소방청","target":"National Fire Agency","category":"기관명","subcategory":"산하기관","source_id":"central_agencies_2026","status":"official_verified"},
+    {"source":"국가유산청","target":"Korea Heritage Service","category":"기관명","subcategory":"산하기관","source_id":"central_agencies_2026","status":"official_verified"},
+    {"source":"농촌진흥청","target":"Rural Development Administration","category":"기관명","subcategory":"산하기관","source_id":"central_agencies_2026","status":"official_verified","aliases":["농진청"]},
+    {"source":"산림청","target":"Korea Forest Service","category":"기관명","subcategory":"산하기관","source_id":"central_agencies_2026","status":"official_verified"},
+    {"source":"질병관리청","target":"Korea Disease Control and Prevention Agency","category":"기관명","subcategory":"산하기관","source_id":"central_agencies_2026","status":"official_verified","aliases":["질병청"]},
+    {"source":"기상청","target":"Korea Meteorological Administration","category":"기관명","subcategory":"산하기관","source_id":"central_agencies_2026","status":"official_verified"},
+    {"source":"행정중심복합도시건설청","target":"National Agency for Administrative City Construction","category":"기관명","subcategory":"산하기관","source_id":"central_agencies_2026","status":"official_verified","aliases":["행복청"]},
+    {"source":"새만금개발청","target":"Saemangeum Development and Investment Agency","category":"기관명","subcategory":"산하기관","source_id":"central_agencies_2026","status":"official_verified","aliases":["새만금청"]},
+    {"source":"해양경찰청","target":"Korea Coast Guard","category":"기관명","subcategory":"산하기관","source_id":"central_agencies_2026","status":"official_verified","aliases":["해경청"]},
+    {"source":"방송미디어통신위원회","target":"Korea Media and Communications Commission","category":"기관명","subcategory":"위원회","source_id":"central_agencies_2026","status":"official_verified","aliases":["방미통위"]},
+    {"source":"공정거래위원회","target":"Korea Fair Trade Commission","category":"기관명","subcategory":"위원회","source_id":"central_agencies_2026","status":"official_verified","aliases":["공정위"]},
+    {"source":"국민권익위원회","target":"Anti-corruption & Civil Rights Commission","category":"기관명","subcategory":"위원회","source_id":"central_agencies_2026","status":"official_verified","aliases":["국민권익위"]},
+    {"source":"금융위원회","target":"Financial Services Commission","category":"기관명","subcategory":"위원회","source_id":"central_agencies_2026","status":"official_verified","aliases":["금융위"]},
+    {"source":"개인정보보호위원회","target":"Personal Information Protection Commission","category":"기관명","subcategory":"위원회","source_id":"central_agencies_2026","status":"official_verified","aliases":["개인정보위"]},
+    {"source":"원자력안전위원회","target":"Nuclear Safety and Security Commission","category":"기관명","subcategory":"위원회","source_id":"central_agencies_2026","status":"official_verified","aliases":["원안위"]},
+    {"source":"대통령비서실","target":"Office of the President","category":"기관명","subcategory":"산하기관","source_id":"central_agencies_2026","status":"official_verified"},
+    {"source":"국가안보실","target":"Office of National Security","category":"기관명","subcategory":"산하기관","source_id":"central_agencies_2026","status":"official_verified"},
+    {"source":"대통령경호처","target":"Presidential Security Service","category":"기관명","subcategory":"산하기관","source_id":"central_agencies_2026","status":"official_verified","aliases":["경호처"]},
+    {"source":"감사원","target":"Board of Audit and Inspection","category":"기관명","subcategory":"산하기관","source_id":"central_agencies_2026","status":"official_verified"},
+    {"source":"국가정보원","target":"National Intelligence Service","category":"기관명","subcategory":"산하기관","source_id":"central_agencies_2026","status":"official_verified","aliases":["국정원"]},
+    {"source":"국무조정실","target":"Office for Government Policy Coordination","category":"기관명","subcategory":"산하기관","source_id":"central_agencies_2026","status":"official_verified","aliases":["국조실"]},
+    {"source":"국무총리비서실","target":"Prime Minister's Secretariat","category":"기관명","subcategory":"산하기관","source_id":"central_agencies_2026","status":"official_verified","aliases":["총리비서실"]},
+    {"source":"고위공직자범죄수사처","target":"Corruption Investigation Office for High-ranking Officials","category":"기관명","subcategory":"산하기관","source_id":"central_agencies_2026","status":"official_verified","aliases":["공수처"]},
+    {"source":"국가교육위원회","target":"National Education Commission","category":"기관명","subcategory":"위원회","source_id":"central_agencies_2026","status":"official_verified","aliases":["국교위"]},
+    {"source":"국가인권위원회","target":"National Human Rights Commission","category":"기관명","subcategory":"위원회","source_id":"central_agencies_2026","status":"official_verified","aliases":["인권위"]},
+
+    {"source":"서울특별시","target":"Seoul Special City","category":"행정구역명","subcategory":"시도","source_id":"korea_local_governments","status":"reference","aliases":["서울","서울시"]},
+    {"source":"부산광역시","target":"Busan Metropolitan City","category":"행정구역명","subcategory":"시도","source_id":"korea_local_governments","status":"reference","aliases":["부산","부산시"]},
+    {"source":"대구광역시","target":"Daegu Metropolitan City","category":"행정구역명","subcategory":"시도","source_id":"korea_local_governments","status":"reference","aliases":["대구","대구시"]},
+    {"source":"인천광역시","target":"Incheon Metropolitan City","category":"행정구역명","subcategory":"시도","source_id":"korea_local_governments","status":"reference","aliases":["인천","인천시"]},
+    {"source":"광주광역시","target":"Gwangju Metropolitan City","category":"행정구역명","subcategory":"시도","source_id":"korea_local_governments","status":"reference","aliases":["광주","광주시"]},
+    {"source":"대전광역시","target":"Daejeon Metropolitan City","category":"행정구역명","subcategory":"시도","source_id":"korea_local_governments","status":"reference","aliases":["대전","대전시"]},
+    {"source":"울산광역시","target":"Ulsan Metropolitan City","category":"행정구역명","subcategory":"시도","source_id":"korea_local_governments","status":"reference","aliases":["울산","울산시"]},
+    {"source":"서울특별시","target":"Seoul","category":"행정구역명","subcategory":"시도","source_id":"ngii_admin_regions","status":"official_verified","aliases":["서울"]},
+    {"source":"부산광역시","target":"Busan","category":"행정구역명","subcategory":"시도","source_id":"ngii_admin_regions","status":"official_verified","aliases":["부산"]},
+    {"source":"대구광역시","target":"Daegu","category":"행정구역명","subcategory":"시도","source_id":"ngii_admin_regions","status":"official_verified","aliases":["대구"]},
+    {"source":"인천광역시","target":"Incheon","category":"행정구역명","subcategory":"시도","source_id":"ngii_admin_regions","status":"official_verified","aliases":["인천"]},
+    {"source":"광주광역시","target":"Gwangju","category":"행정구역명","subcategory":"시도","source_id":"ngii_admin_regions","status":"official_verified","aliases":["광주"]},
+    {"source":"대전광역시","target":"Daejeon","category":"행정구역명","subcategory":"시도","source_id":"ngii_admin_regions","status":"official_verified","aliases":["대전"]},
+    {"source":"울산광역시","target":"Ulsan","category":"행정구역명","subcategory":"시도","source_id":"ngii_admin_regions","status":"official_verified","aliases":["울산"]},
+    {"source":"세종특별자치시","target":"Sejong Special Self-Governing City","category":"행정구역명","subcategory":"시도","source_id":"sejong_official","status":"official_verified","aliases":["세종","세종시"]},
+    {"source":"경기도","target":"Gyeonggi-do","category":"행정구역명","subcategory":"시도","source_id":"ngii_admin_regions","status":"official_verified","aliases":["경기"]},
+    {"source":"강원특별자치도","target":"Gangwon State","category":"행정구역명","subcategory":"시도","source_id":"gangwon_official","status":"official_verified","aliases":["강원"]},
+    {"source":"충청북도","target":"Chungcheongbuk-do","category":"행정구역명","subcategory":"시도","source_id":"ngii_admin_regions","status":"official_verified","aliases":["충북"]},
+    {"source":"충청남도","target":"Chungcheongnam-do","category":"행정구역명","subcategory":"시도","source_id":"ngii_admin_regions","status":"official_verified","aliases":["충남"]},
+    {"source":"전북특별자치도","target":"Jeonbuk State","category":"행정구역명","subcategory":"시도","source_id":"jeonbuk_official","status":"official_verified","aliases":["전북"]},
+    {"source":"전라남도","target":"Jeollanam-do","category":"행정구역명","subcategory":"시도","source_id":"ngii_admin_regions","status":"official_verified","aliases":["전남"]},
+    {"source":"경상북도","target":"Gyeongsangbuk-do","category":"행정구역명","subcategory":"시도","source_id":"ngii_admin_regions","status":"official_verified","aliases":["경북"]},
+    {"source":"경상남도","target":"Gyeongsangnam-do","category":"행정구역명","subcategory":"시도","source_id":"ngii_admin_regions","status":"official_verified","aliases":["경남"]},
+    {"source":"제주특별자치도","target":"Jeju Special Self-Governing Province","category":"행정구역명","subcategory":"시도","source_id":"jeju_official","status":"official_verified","aliases":["제주","제주도"]},
+
+    {"source":"합계","target":"Total","category":"통계 표준어","subcategory":"합계","source_id":"kosis_terms","status":"reference"},
+    {"source":"계","target":"Total","category":"통계 표준어","subcategory":"합계","source_id":"kosis_terms","status":"reference"},
+    {"source":"소계","target":"Subtotal","category":"통계 표준어","subcategory":"합계","source_id":"kosis_terms","status":"reference"},
+    {"source":"누계","target":"Cumulative Total","category":"통계 표준어","subcategory":"누계","source_id":"kosis_terms","status":"reference"},
+    {"source":"비율","target":"Ratio","category":"통계 표준어","subcategory":"비율","source_id":"kosis_terms","status":"reference"},
+    {"source":"구성비","target":"Composition Ratio","category":"통계 표준어","subcategory":"비율","source_id":"kosis_terms","status":"reference"},
+    {"source":"증감","target":"Change","category":"통계 표준어","subcategory":"증감","source_id":"kosis_terms","status":"reference"},
+    {"source":"증감액","target":"Amount of Change","category":"통계 표준어","subcategory":"증감","source_id":"kosis_terms","status":"reference"},
+    {"source":"증감률","target":"Rate of Change","category":"통계 표준어","subcategory":"증감률","source_id":"kosis_terms","status":"reference"},
+    {"source":"평균","target":"Average","category":"통계 표준어","subcategory":"평균","source_id":"kosis_terms","status":"reference"},
+    {"source":"전년 대비","target":"Year-on-Year","category":"통계 표준어","subcategory":"증감률","source_id":"kosis_terms","status":"reference"},
+    {"source":"전월 대비","target":"Month-on-Month","category":"통계 표준어","subcategory":"증감률","source_id":"kosis_terms","status":"reference"},
+    {"source":"구분","target":"Classification","category":"일반 용어","subcategory":"표 항목","source_id":"public_term_database","status":"reference"},
+    {"source":"연도","target":"Year","category":"일반 용어","subcategory":"표 항목","source_id":"public_term_database","status":"reference"},
+    {"source":"단위","target":"Unit","category":"일반 용어","subcategory":"표 항목","source_id":"public_term_database","status":"reference"},
+
+    {"source":"어린이안전박람회","target":"Children's Safety Expo","category":"행사·사업명","subcategory":"박람회","source_id":"children_safety_expo","status":"reference","aliases":["어린이 안전박람회"]},
+    {"source":"대한민국 안전산업박람회","target":"Korea Safety Expo","category":"행사·사업명","subcategory":"박람회","source_id":"korea_safety_expo","status":"reference","aliases":["안전산업박람회"]},
+    {"source":"12·29 여객기 참사 추모행사","target":"Memorial Event for the Victims of the December 29 Passenger Plane Disaster","category":"행사·사업명","subcategory":"기념행사","source_id":"december_29_memorial","status":"reference","aliases":["12･29 여객기 참사 추모행사"]}
+  ]
+}

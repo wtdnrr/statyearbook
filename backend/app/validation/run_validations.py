@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 import argparse
-import os
 from pathlib import Path
 
 from app.db.schema import DB_PATH, connect, init_db
 from app.validation.blue_review import append_blue_text_review_checks
 from app.validation.engine import ValidationEngine
-from app.validation.llm_translation_review import append_llm_translation_reviews, llm_review_settings
+from app.validation.llm_translation_review import (
+    append_llm_translation_reviews,
+    apply_reusable_linguistic_reviews,
+)
+from app.validation.linguistic_review import prepare_linguistic_reviews
 from app.validation.profile_repository import SQLiteValidationProfileRepository
 from app.validation.source_review import append_source_format_review_checks
 from app.validation.sqlite_repository import SQLiteValidationRepository
@@ -45,18 +48,34 @@ def run_validations(
         report_id=report["id"],
         run_id=run_id,
     )
-    settings = llm_review_settings()
-    if include_llm and settings["api_key"] and settings["enabled"]:
-        try:
-            append_llm_translation_reviews(
-                db_path,
-                report_id=report["id"],
-                run_id=run_id,
-                limit=settings["limit"],
-            )
-        except RuntimeError:
-            if os.getenv("OPENAI_LLM_REVIEW_STRICT", "").strip().lower() in {"1", "true", "yes", "on"}:
-                raise
+    with connect(db_path) as connection:
+        init_db(connection)
+        linguistic_summary = prepare_linguistic_reviews(
+            connection,
+            report_id=report["id"],
+            run_id=run_id,
+        )
+        refresh_stored_issue_count(connection, run_id)
+    reusable_counts = apply_reusable_linguistic_reviews(
+        db_path,
+        run_id=run_id,
+    )
+    if include_llm:
+        llm_result = append_llm_translation_reviews(
+            db_path,
+            report_id=report["id"],
+            run_id=run_id,
+            limit=None,
+        )
+        if llm_result.skipped_reason:
+            raise RuntimeError(f"LLM 전수 언어 검수가 실행되지 않았습니다: {llm_result.skipped_reason}")
+
+    language_counts = linguistic_review_counts(db_path, run_id)
+    if include_llm and language_counts["pending"]:
+        raise RuntimeError(
+            "LLM 전수 언어 검수가 완료되지 않았습니다: "
+            f"{language_counts['pending']}/{language_counts['total']}건 대기"
+        )
 
     return {
         "run_id": run_id,
@@ -64,6 +83,10 @@ def run_validations(
         "tables": len(tables),
         "issues": validation_issue_count(db_path, run_id)
         or len(outcome.issues) + blue_review_issues + source_format_issues,
+        "language_candidates": language_counts["total"] or linguistic_summary.candidates,
+        "language_pending": language_counts["pending"],
+        "language_reused": reusable_counts[2],
+        "language_status": "완료" if language_counts["pending"] == 0 else "대기",
     }
 
 
@@ -77,13 +100,45 @@ def validation_issue_count(db_path: Path, run_id: int) -> int:
         return int(row["issue_count"]) if row else 0
 
 
+def refresh_stored_issue_count(connection, run_id: int) -> int:
+    row = connection.execute(
+        "SELECT COUNT(*) AS issue_count FROM validation_issues WHERE run_id = ?",
+        (run_id,),
+    ).fetchone()
+    issue_count = int(row["issue_count"]) if row else 0
+    connection.execute(
+        "UPDATE validation_runs SET issue_count = ? WHERE id = ?",
+        (issue_count, run_id),
+    )
+    connection.commit()
+    return issue_count
+
+
+def linguistic_review_counts(db_path: Path, run_id: int) -> dict[str, int]:
+    with connect(db_path) as connection:
+        init_db(connection)
+        row = connection.execute(
+            """
+            SELECT COUNT(*) AS total,
+                   SUM(CASE WHEN status <> 'reviewed' THEN 1 ELSE 0 END) AS pending
+            FROM linguistic_review_candidates
+            WHERE run_id = ?
+            """,
+            (run_id,),
+        ).fetchone()
+        return {
+            "total": int(row["total"] or 0),
+            "pending": int(row["pending"] or 0),
+        }
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Run rule-based validations for the latest report.")
     parser.add_argument("--db", type=Path, default=DB_PATH, help="SQLite database path")
     parser.add_argument(
         "--with-llm",
         action="store_true",
-        help="규칙 검수 후 LLM 번역·오탈자 검수를 명시적으로 추가합니다.",
+        help="규칙·사전 검수 후 LLM 오탈자·용어·번역 검수를 명시적으로 추가합니다.",
     )
     return parser
 
@@ -93,7 +148,8 @@ def main() -> None:
     args = parser.parse_args()
     result = run_validations(args.db, include_llm=args.with_llm)
     print(
-        "Validation run {run_id}: checked {tables} tables and found {issues} issues".format(
+        "Validation run {run_id}: checked {tables} tables and found {issues} issues; "
+        "language review {language_status} ({language_pending}/{language_candidates} pending)".format(
             **result
         )
     )

@@ -939,7 +939,7 @@ class HeaderFormulaRule(ValidationRule):
 
 class StaticKoreanSpellingRule(ValidationRule):
     rule_id = "spelling.ko.static"
-    issue_type = "용어 제안"
+    issue_type = "오탈자 검수"
 
     TERMS = {
         "잔액율": "잔액률",

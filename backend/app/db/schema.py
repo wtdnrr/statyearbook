@@ -156,6 +156,97 @@ CREATE TABLE IF NOT EXISTS validation_checks (
 
 CREATE INDEX IF NOT EXISTS idx_validation_checks_run_table
 ON validation_checks(run_id, table_id);
+
+CREATE TABLE IF NOT EXISTS translation_glossary (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    origin_key TEXT NOT NULL UNIQUE,
+    source_text TEXT NOT NULL,
+    source_normalized TEXT NOT NULL,
+    target_text TEXT NOT NULL,
+    target_normalized TEXT NOT NULL,
+    category TEXT NOT NULL DEFAULT 'general',
+    subcategory TEXT NOT NULL DEFAULT '',
+    source_kind TEXT NOT NULL DEFAULT 'yearbook',
+    source_report_id INTEGER,
+    source_table_id INTEGER,
+    status TEXT NOT NULL DEFAULT 'reference',
+    priority INTEGER NOT NULL DEFAULT 0,
+    occurrence_count INTEGER NOT NULL DEFAULT 1,
+    evidence TEXT NOT NULL DEFAULT '',
+    source_url TEXT NOT NULL DEFAULT '',
+    source_title TEXT NOT NULL DEFAULT '',
+    aliases_json TEXT NOT NULL DEFAULT '[]',
+    valid_from TEXT NOT NULL DEFAULT '',
+    valid_to TEXT NOT NULL DEFAULT '',
+    verified_at TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (source_report_id) REFERENCES annual_reports(id) ON DELETE SET NULL,
+    FOREIGN KEY (source_table_id) REFERENCES stat_tables(id) ON DELETE SET NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_translation_glossary_source
+ON translation_glossary(source_normalized, status, priority DESC);
+
+CREATE TABLE IF NOT EXISTS translation_glossary_aliases (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    glossary_id INTEGER NOT NULL,
+    alias_text TEXT NOT NULL,
+    alias_normalized TEXT NOT NULL,
+    alias_kind TEXT NOT NULL DEFAULT 'alias',
+    FOREIGN KEY (glossary_id) REFERENCES translation_glossary(id) ON DELETE CASCADE,
+    UNIQUE (glossary_id, alias_normalized)
+);
+
+CREATE INDEX IF NOT EXISTS idx_translation_glossary_alias
+ON translation_glossary_aliases(alias_normalized, glossary_id);
+
+CREATE TABLE IF NOT EXISTS linguistic_review_candidates (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id INTEGER NOT NULL,
+    table_id INTEGER NOT NULL,
+    review_type TEXT NOT NULL,
+    candidate_kind TEXT NOT NULL,
+    location TEXT NOT NULL,
+    row_index INTEGER,
+    col_index INTEGER,
+    current_value TEXT NOT NULL,
+    korean_text TEXT NOT NULL DEFAULT '',
+    english_text TEXT NOT NULL DEFAULT '',
+    glossary_json TEXT NOT NULL DEFAULT '[]',
+    reason TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'pending',
+    prompt_version TEXT NOT NULL DEFAULT '',
+    reviewed_model TEXT NOT NULL DEFAULT '',
+    review_result_json TEXT NOT NULL DEFAULT '',
+    review_fingerprint TEXT NOT NULL DEFAULT '',
+    resolution_source TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    reviewed_at TEXT,
+    FOREIGN KEY (run_id) REFERENCES validation_runs(id) ON DELETE CASCADE,
+    FOREIGN KEY (table_id) REFERENCES stat_tables(id) ON DELETE CASCADE,
+    UNIQUE (run_id, table_id, review_type, location, current_value)
+);
+
+CREATE INDEX IF NOT EXISTS idx_linguistic_candidates_pending
+ON linguistic_review_candidates(run_id, status, review_type, table_id);
+
+CREATE TABLE IF NOT EXISTS linguistic_review_cache (
+    fingerprint TEXT PRIMARY KEY,
+    review_type TEXT NOT NULL,
+    current_value TEXT NOT NULL,
+    context_signature TEXT NOT NULL,
+    prompt_version TEXT NOT NULL,
+    reviewed_model TEXT NOT NULL,
+    glossary_fingerprint TEXT NOT NULL DEFAULT '',
+    decision_json TEXT NOT NULL,
+    use_count INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    last_used_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_linguistic_review_cache_lookup
+ON linguistic_review_cache(review_type, prompt_version, reviewed_model);
 """
 
 
@@ -171,6 +262,18 @@ def connect(db_path: Path | None = None) -> sqlite3.Connection:
 def init_db(connection: sqlite3.Connection) -> None:
     connection.executescript(SCHEMA_SQL)
     ensure_column(connection, "stat_table_cells", "footnote_marker", "TEXT NOT NULL DEFAULT ''")
+    ensure_column(connection, "translation_glossary", "subcategory", "TEXT NOT NULL DEFAULT ''")
+    ensure_column(connection, "translation_glossary", "source_url", "TEXT NOT NULL DEFAULT ''")
+    ensure_column(connection, "translation_glossary", "source_title", "TEXT NOT NULL DEFAULT ''")
+    ensure_column(connection, "translation_glossary", "aliases_json", "TEXT NOT NULL DEFAULT '[]'")
+    ensure_column(connection, "translation_glossary", "valid_from", "TEXT NOT NULL DEFAULT ''")
+    ensure_column(connection, "translation_glossary", "valid_to", "TEXT NOT NULL DEFAULT ''")
+    ensure_column(connection, "translation_glossary", "verified_at", "TEXT NOT NULL DEFAULT ''")
+    ensure_column(connection, "linguistic_review_candidates", "prompt_version", "TEXT NOT NULL DEFAULT ''")
+    ensure_column(connection, "linguistic_review_candidates", "reviewed_model", "TEXT NOT NULL DEFAULT ''")
+    ensure_column(connection, "linguistic_review_candidates", "review_result_json", "TEXT NOT NULL DEFAULT ''")
+    ensure_column(connection, "linguistic_review_candidates", "review_fingerprint", "TEXT NOT NULL DEFAULT ''")
+    ensure_column(connection, "linguistic_review_candidates", "resolution_source", "TEXT NOT NULL DEFAULT ''")
     seed_validation_rule_definitions(connection)
     connection.commit()
 

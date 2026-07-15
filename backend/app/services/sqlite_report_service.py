@@ -1039,6 +1039,7 @@ def clean_label(text: str) -> str:
     koreanish = re.sub(r"^구분(?=\S)", "구분 / ", koreanish)
     koreanish = re.sub(r"(\d{4})(?=[가-힣])", r"\1 ", koreanish)
     koreanish = koreanish.replace("()", "").strip(" /")
+    koreanish = remove_unmatched_closing_parentheses(koreanish, preserve_numbered_markers=True)
     return koreanish or cleaned
 
 
@@ -1048,7 +1049,30 @@ def english_label(text: str) -> str | None:
         return "Region"
     matches = re.findall(r"[A-Za-z][A-Za-z0-9 /&().,%·･+\-']*", text)
     value = " ".join(item.strip() for item in matches if item.strip())
+    value = remove_unmatched_closing_parentheses(value)
     return value or None
+
+
+def remove_unmatched_closing_parentheses(value: str, *, preserve_numbered_markers: bool = False) -> str:
+    """Drop parser artifacts such as `Person)` while retaining balanced units and optional `1)` footnotes."""
+
+    result: list[str] = []
+    depth = 0
+    for index, character in enumerate(value):
+        if character == "(":
+            depth += 1
+            result.append(character)
+            continue
+        if character != ")":
+            result.append(character)
+            continue
+        if depth:
+            depth -= 1
+            result.append(character)
+            continue
+        if preserve_numbered_markers and index > 0 and value[index - 1].isdigit():
+            result.append(character)
+    return re.sub(r"\s+", " ", "".join(result)).strip()
 
 
 def clean_label_korean_only(text: str) -> str:
@@ -1134,6 +1158,9 @@ def leading_label_column_indexes(matrix: list[list[str]], header_count: int) -> 
             continue
         break
 
+    if independent_descriptor_label_columns(matrix, header_count, label_indexes):
+        return [0]
+
     if len(label_indexes) > 3:
         return [0]
 
@@ -1149,6 +1176,35 @@ def leading_label_column_indexes(matrix: list[list[str]], header_count: int) -> 
             return [0]
 
     return label_indexes or [0]
+
+
+def independent_descriptor_label_columns(
+    matrix: list[list[str]],
+    header_count: int,
+    label_indexes: list[int],
+) -> bool:
+    """Keep registry-style text dimensions as columns instead of a hierarchical row path."""
+
+    if len(label_indexes) < 2:
+        return False
+    descriptor_hints = (
+        "위원회명",
+        "설치근거",
+        "설립근거",
+        "위원장",
+        "기관명",
+        "기관장",
+        "대표자",
+        "소재지",
+        "주소",
+        "주요기능",
+        "주요업무",
+    )
+    headers = [
+        re.sub(r"\s+", "", header_text_for_column(matrix, header_count, col_index))
+        for col_index in label_indexes
+    ]
+    return sum(any(hint in header for hint in descriptor_hints) for header in headers) >= 2
 
 
 def label_path_for_row(row: list[str], label_column_indexes: list[int], target_col_index: int) -> str:

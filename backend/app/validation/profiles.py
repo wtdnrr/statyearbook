@@ -9,6 +9,11 @@ from typing import Any, Protocol
 
 from app.validation.catalog import rule_definition_payload, rule_spec
 from app.validation.curated_profiles import apply_curated_profile
+from app.validation.linguistic_policy import (
+    BASE_TRANSLATIONS,
+    SPELLING_REPLACEMENTS,
+    TERMINOLOGY_REPLACEMENTS,
+)
 from app.validation.models import ValidationTable, clean_display_text, normalize_text
 from app.validation.rules import (
     REGION_NAMES,
@@ -32,6 +37,7 @@ COMMON_RULE_IDS = [
     "growth_rate",
     "outlier",
     "spelling",
+    "terminology",
     "translation",
     "metadata",
 ]
@@ -131,7 +137,7 @@ class HeuristicProfileDraftProvider:
         elif needs_llm_review:
             notes = "기존 통계표와 구조 서명이 달라 새 표별 검수 기준을 생성했습니다. 실제 서비스에서는 GPT API가 변경된 표 구조를 다시 해석해야 합니다."
         if status == "needs_review":
-            notes = f"{notes} 일부 검수 후보의 확신도가 낮아 담당자 확인이 필요합니다."
+            notes = f"{notes} 일부 검수 후보의 확신도가 낮아 프로파일 재해석 대상으로 분류했습니다."
 
         curated = apply_curated_profile(
             table.code,
@@ -3015,14 +3021,7 @@ def static_spelling_check_specs(table: ValidationTable) -> list[dict[str, Any]]:
                 "type": "spelling_static",
                 "category": "common",
                 "label": "국문/영문 명백 오탈자 사전",
-                "terms": [
-                    {"current": "Claasification", "expected": "Classification", "language": "en", "reason": "영문 철자 오류"},
-                    {"current": "Claasifi-cation", "expected": "Classification", "language": "en", "reason": "영문 철자 오류"},
-                    {"current": "Ele7ction", "expected": "Election", "language": "en", "reason": "숫자 혼입"},
-                    {"current": "Nuber", "expected": "Number", "language": "en", "reason": "영문 철자 누락"},
-                    {"current": "기횎예산처", "expected": "기획예산처", "language": "ko", "reason": "2026 HWPX 파란색 표기 후보에서 확인한 국문 오탈자"},
-                    {"current": "eryeong", "expected": "Uiryeong", "language": "en", "reason": "2026 HWPX 파란색 표기 후보에서 확인한 영문 지명 누락"},
-                ],
+                "terms": list(SPELLING_REPLACEMENTS),
                 "failure_status": "오류 의심",
                 "severity": "critical",
                 "confidence": 0.9,
@@ -3034,30 +3033,14 @@ def static_spelling_check_specs(table: ValidationTable) -> list[dict[str, Any]]:
 def static_terminology_check_specs(table: ValidationTable) -> list[dict[str, Any]]:
     return [
         rule_spec(
-            "translation",
+            "terminology",
             {
                 "id": f"profile.{table.code}.terminology_static",
                 "type": "terminology_static",
                 "category": "common",
                 "check_type": "용어 제안",
                 "label": "국문 표준 용어 제안",
-                "terms": [
-                    {"current": "잔액율", "expected": "잔액률", "language": "ko", "reason": "발간 표준 용어 확인"},
-                    {"current": "Ministry of Gender Equality & family", "expected": "Ministry of Gender Equality and Family", "language": "en", "reason": "2026 HWPX 파란색 표기 후보 검토"},
-                    {"current": "Ministry of Trade, Industry & Energy", "expected": "Ministry of Trade, Industry and Energy", "language": "en", "reason": "2026 HWPX 파란색 표기 후보 검토"},
-                    {"current": "Nuclear safety and Security Commission", "expected": "Nuclear Safety and Security Commission", "language": "en", "reason": "2026 HWPX 파란색 표기 후보 검토"},
-                    {"current": "Personal Information Protection commission", "expected": "Personal Information Protection Commission", "language": "en", "reason": "2026 HWPX 파란색 표기 후보 검토"},
-                    {"current": "Military Manpower administration", "expected": "Military Manpower Administration", "language": "en", "reason": "2026 HWPX 파란색 표기 후보 검토"},
-                    {"current": "Anti-corruption and Civil Rights Commission", "expected": "Anti-Corruption and Civil Rights Commission", "language": "en", "reason": "2026 HWPX 파란색 표기 후보 검토"},
-                    {"current": "National Institute For Unification Education", "expected": "National Institute for Unification Education", "language": "en", "reason": "2026 HWPX 파란색 표기 후보 검토"},
-                    {"current": "National Relief Fund", "expected": "Information on Livelihood Recovery Consumer Coupons", "language": "en", "reason": "2026 HWPX 파란색 표기 후보 검토"},
-                    {"current": "Use Of Archives", "expected": "Use of Archives", "language": "en", "reason": "2026 HWPX 파란색 표기 후보 검토"},
-                    {"current": "No. of Program", "expected": "No. of Programs", "language": "en", "reason": "2026 HWPX 파란색 표기 후보 검토"},
-                    {"current": "No. of Completion", "expected": "No. of Completions", "language": "en", "reason": "2026 HWPX 파란색 표기 후보 검토"},
-                    {"current": "Number of Completion", "expected": "Number of Completions", "language": "en", "reason": "2026 HWPX 파란색 표기 후보 검토"},
-                    {"current": "Operational of Safety e-Report", "expected": "Operation of Safety e-Report", "language": "en", "reason": "2026 HWPX 파란색 표기 후보 검토"},
-                    {"current": "Small business", "expected": "Small Business", "language": "en", "reason": "2026 HWPX 파란색 표기 후보 검토"},
-                ],
+                "terms": list(TERMINOLOGY_REPLACEMENTS),
                 "failure_status": "확인 필요",
                 "severity": "warning",
                 "confidence": 0.75,
@@ -3075,21 +3058,7 @@ def static_translation_check_specs(table: ValidationTable) -> list[dict[str, Any
                 "type": "translation_static",
                 "category": "common",
                 "label": "기본 국문/영문 병기 용어집",
-                "terms": [
-                    {"source": "구분", "expected": "Classification"},
-                    {"source": "합계", "expected": "Total"},
-                    {"source": "계", "expected": "Total"},
-                    {"source": "남성", "expected": "Male"},
-                    {"source": "여성", "expected": "Female"},
-                    {"source": "단위", "expected": "Unit"},
-                    {"source": "잔액률", "expected": "Balance Ratio"},
-                    {"source": "증감률", "expected": "Rate of Change"},
-                    {"source": "기후에너지환경부", "expected": "Ministry of Climate, Energy and Environment"},
-                    {"source": "국가데이터처", "expected": "National Data Agency"},
-                    {"source": "국가데이터연구원", "expected": "National Data Research Institute"},
-                    {"source": "방송미디어통신위원회", "expected": "Broadcasting, Media and Communications Commission"},
-                    {"source": "민생회복 소비쿠폰 안내", "expected": "Information on Livelihood Recovery Consumer Coupons"},
-                ],
+                "terms": list(BASE_TRANSLATIONS),
                 "scope": "header_and_label_cells",
                 "failure_status": "확인 필요",
                 "severity": "warning",
