@@ -133,6 +133,7 @@ button {
 
 .report-summary-panel {
   display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
   gap: 10px;
   padding: 12px;
   background: var(--surface);
@@ -142,6 +143,8 @@ button {
 
 .dataset-selector {
   display: flex;
+  grid-column: 1;
+  grid-row: 1;
   justify-content: flex-start;
 }
 
@@ -170,6 +173,8 @@ button {
 
 .mini-summary-grid {
   display: grid;
+  grid-column: 1 / -1;
+  grid-row: 2;
   grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 8px;
 }
@@ -233,21 +238,108 @@ button {
   border-color: #f4b8b8;
 }
 
-.summary-option-toggle {
+.validation-type-filter {
+  position: relative;
+  justify-self: start;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.report-summary-panel > .validation-type-filter {
+  grid-column: 2;
+  grid-row: 1;
+  align-self: center;
+  justify-self: end;
+}
+
+.validation-type-filter summary {
   display: inline-flex;
   align-items: center;
-  justify-self: start;
   gap: 7px;
   min-height: 34px;
   padding: 6px 9px;
-  color: var(--muted);
+  list-style: none;
+  cursor: pointer;
   background: var(--surface-muted);
   border: 1px solid var(--line);
-  font-size: 12px;
-  font-weight: 900;
 }
 
-.summary-option-toggle input {
+.validation-type-filter summary::-webkit-details-marker {
+  display: none;
+}
+
+.validation-type-filter summary strong {
+  min-width: 31px;
+  padding-left: 7px;
+  color: var(--text);
+  text-align: right;
+  border-left: 1px solid var(--line);
+}
+
+.validation-type-filter[open] summary,
+.validation-type-filter summary:hover {
+  color: var(--text);
+  border-color: #8eabc7;
+}
+
+.validation-type-filter__menu {
+  position: absolute;
+  z-index: 40;
+  top: calc(100% + 6px);
+  left: 0;
+  width: 260px;
+  padding: 10px;
+  background: var(--surface);
+  border: 1px solid var(--line-strong);
+  box-shadow: var(--shadow);
+}
+
+.validation-type-filter--right .validation-type-filter__menu {
+  right: 0;
+  left: auto;
+}
+
+.validation-type-filter__heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 0 2px 8px;
+  border-bottom: 1px solid var(--line);
+}
+
+.validation-type-filter__heading strong {
+  color: var(--text);
+  font-size: 13px;
+}
+
+.validation-type-filter__heading button {
+  padding: 3px 5px;
+  color: #315f8a;
+  background: transparent;
+  border: 0;
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.validation-type-filter__options {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 2px 8px;
+  padding-top: 8px;
+}
+
+.validation-type-filter__options label {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 30px;
+  min-width: 0;
+  color: #425268;
+}
+
+.validation-type-filter__options input {
   width: 14px;
   height: 14px;
   margin: 0;
@@ -1453,11 +1545,6 @@ button {
   accent-color: #244c73;
 }
 
-.validation-toggle {
-  color: #425268;
-  background: #fbfcfe;
-}
-
 .original-title-group {
   display: flex;
   flex-wrap: wrap;
@@ -2226,6 +2313,21 @@ button {
   .press-draft-panel,
   .detail-section {
     padding: 12px;
+  }
+
+  .report-summary-panel {
+    grid-template-columns: 1fr;
+  }
+
+  .report-summary-panel > .dataset-selector,
+  .report-summary-panel > .mini-summary-grid,
+  .report-summary-panel > .validation-type-filter {
+    grid-column: 1;
+    grid-row: auto;
+  }
+
+  .report-summary-panel > .validation-type-filter {
+    justify-self: start;
   }
 
   .dataset-selector,

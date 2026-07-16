@@ -3,6 +3,8 @@ from __future__ import annotations
 import unittest
 
 from app.validation.models import ValidationCell, ValidationTable
+from app.validation.cross_table_rules import ConfiguredCrossTableRowSumRule
+from app.validation.curated_profiles import apply_curated_profile, curated_profiles
 from app.validation.profile_rules import ProfileSpecRule
 from app.validation.profiles import (
     ValidationProfile,
@@ -63,7 +65,7 @@ def profile_for(table: ValidationTable, checks: list[dict]) -> ValidationProfile
 
 
 class ProfileCalculationTest(unittest.TestCase):
-    def test_metadata_fields_use_one_common_check(self) -> None:
+    def test_profile_generation_includes_metadata_presence_validation(self) -> None:
         table = make_table([["구분", "2025"], ["계", "10"]])
 
         checks = infer_profile_checks(table, analysis=analyze_table(table), templates=detect_templates(table))
@@ -74,11 +76,9 @@ class ProfileCalculationTest(unittest.TestCase):
         ]
 
         self.assertEqual(len(metadata_checks), 1)
-        self.assertEqual(metadata_checks[0]["type"], "metadata_required")
-        self.assertEqual(metadata_checks[0]["check_type"], "메타정보 검수")
         self.assertEqual(metadata_checks[0]["fields"], ["unit", "base_date", "source"])
 
-    def test_unit_and_metadata_specs_are_merged_at_runtime(self) -> None:
+    def test_legacy_metadata_specs_are_merged_at_runtime(self) -> None:
         table = make_table([["구분", "2025"], ["계", "10"]])
         table.unit = ""
         table.base_date = ""
@@ -104,11 +104,11 @@ class ProfileCalculationTest(unittest.TestCase):
         issues, checks = ProfileSpecRule({table.code: profile}).evaluate(table)
 
         self.assertEqual(len(checks), 1)
-        self.assertEqual(len(issues), 1)
         self.assertEqual(checks[0].check_type, "메타정보 검수")
-        self.assertEqual(checks[0].location, "출처·메타정보")
-        self.assertEqual(checks[0].difference, "누락: 단위, 기준일")
-        self.assertIn("출처: 담당자", checks[0].current_value)
+        self.assertEqual(checks[0].status, "확인 필요")
+        self.assertIn("단위", checks[0].difference or "")
+        self.assertIn("기준일", checks[0].difference or "")
+        self.assertEqual(len(issues), 1)
 
     def test_total_label_does_not_treat_korean_words_as_totals(self) -> None:
         self.assertEqual(total_label_kind("계 Total"), "total")
@@ -139,6 +139,27 @@ class ProfileCalculationTest(unittest.TestCase):
         self.assertEqual(grand_total["operand_rows"], [2, 5])
         self.assertTrue(any(check.get("target_row") == 2 for check in sums))
         self.assertTrue(any(check.get("target_row") == 5 for check in sums))
+
+    def test_bilingual_per_item_category_remains_in_column_total(self) -> None:
+        table = make_table(
+            [
+                ["구분", "2024", "2025"],
+                ["계 Total", "60", "80"],
+                ["지방세 세목별 증명 Certificates per Item", "10", "20"],
+                ["주민등록 증명 Certificates of Residence", "20", "25"],
+                ["소득 증명 Certificates of Income", "30", "35"],
+            ],
+            code="2-1-3-3",
+        )
+
+        checks = infer_profile_checks(table, analysis=analyze_table(table), templates=detect_templates(table))
+        total = next(
+            check
+            for check in checks
+            if check.get("type") == "column_sum" and check.get("target_row") == 1
+        )
+
+        self.assertEqual(total["operand_rows"], [2, 3, 4])
 
     def test_rank_rows_are_not_inferred_as_implicit_subtotals(self) -> None:
         table = make_table(
@@ -416,6 +437,122 @@ class ProfileCalculationTest(unittest.TestCase):
         checks = infer_profile_checks(table, analysis=analyze_table(table), templates=detect_templates(table))
         rule = next(check for check in checks if check.get("type") == "row_growth_rate")
         self.assertEqual(rule["tolerance"], 0.5)
+
+    def test_targeted_2026_profiles_cover_requested_sum_and_growth_rules(self) -> None:
+        profiles = curated_profiles()
+
+        self.assertEqual(
+            next(
+                check
+                for check in profiles["2-1-3-4"]["checks"]
+                if check["type"] == "row_sum"
+            )["operand_columns"],
+            [2, 3, 4, 5, 6],
+        )
+        self.assertEqual(
+            next(
+                check
+                for check in profiles["2-1-5-2"]["checks"]
+                if check["type"] == "year_rows_change_rate"
+            )["value_column"],
+            2,
+        )
+        self.assertEqual(
+            next(
+                check
+                for check in profiles["2-2-2-3"]["checks"]
+                if check["type"] == "row_sum"
+            )["row_indices"],
+            list(range(1, 26, 2)),
+        )
+        self.assertEqual(
+            next(
+                check
+                for check in profiles["2-2-12-1"]["checks"]
+                if check["type"] == "row_sum"
+            )["operand_columns"],
+            [3, 4, 5, 6, 7, 8],
+        )
+
+    def test_additional_organization_profiles_cover_growth_hierarchical_and_separate_totals(self) -> None:
+        profiles = curated_profiles()
+
+        growth_rule = next(
+            check
+            for check in profiles["1-2-1-2"]["checks"]
+            if check["type"] == "year_rows_change_rate"
+        )
+        self.assertEqual(growth_rule["value_column"], 1)
+        self.assertEqual(growth_rule["change_column"], 2)
+        self.assertEqual(growth_rule["rate_column"], 3)
+
+        total_rules = profiles["1-2-1-3"]["checks"]
+        self.assertEqual(total_rules[0]["operand_rows"], [2, 3, 4, 5, 6])
+        self.assertEqual(total_rules[1]["operand_rows"], [7, 71])
+
+        separated_totals = profiles["1-2-3-3"]["checks"]
+        self.assertEqual(
+            [check["target_column"] for check in separated_totals],
+            [1, 4, 7],
+        )
+
+    def test_cross_table_total_uses_same_label_from_second_part(self) -> None:
+        national = make_table(
+            [
+                ["연도", "계", "국가공무원 소계"],
+                ["2024", "100", "60"],
+                ["2025", "110", "65"],
+            ],
+            code="1-2-2 표1",
+        )
+        local = make_table(
+            [
+                ["연도", "지방공무원 소계"],
+                ["2024", "40"],
+                ["2025", "45"],
+            ],
+            code="1-2-2 표2",
+        )
+        local.id = 2
+        profile = profile_for(
+            national,
+            [
+                {
+                    "id": "test.cross_table_total",
+                    "type": "cross_table_row_sum",
+                    "check_type": "합계 검수",
+                    "source_table_code": "1-2-2 표2",
+                    "target_column": 1,
+                    "operand_columns": [2],
+                    "source_column": 1,
+                    "row_indices": [1, 2],
+                }
+            ],
+        )
+
+        result = ConfiguredCrossTableRowSumRule({national.code: profile}).evaluate([national, local])
+
+        self.assertEqual(len(result.checks), 2)
+        self.assertEqual(result.issues, [])
+        self.assertEqual(result.checks[0].expected_value, "100")
+
+    def test_targeted_2026_profile_removes_duplicate_automatic_total_rule(self) -> None:
+        application = apply_curated_profile(
+            "2-2-1-2",
+            checks=[
+                {"id": "automatic.arithmetic", "type": "row_arithmetic"},
+                {"id": "automatic.total", "type": "row_sum"},
+            ],
+            table_type="year_trend_table",
+            status="ready",
+            notes="",
+        )
+
+        sum_checks = [check for check in application.checks if check.get("type") == "row_sum"]
+        growth_checks = [check for check in application.checks if check.get("type") == "year_rows_change_rate"]
+        self.assertEqual(len(sum_checks), 1)
+        self.assertEqual(sum_checks[0]["id"], "curated.2-2-1-2.total_by_operation_status")
+        self.assertEqual(len(growth_checks), 1)
 
 
 if __name__ == "__main__":

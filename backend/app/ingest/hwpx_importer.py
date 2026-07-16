@@ -17,6 +17,7 @@ from app.core.numeric_text import parse_numeric_value
 from app.ingest.anomaly import annotate_adjacent_duplicate_tables
 from app.ingest.cell_text import footnote_markers_from_texts, split_cell_text
 from app.ingest.table_repairs import repair_region_split_rows
+from app.validation.models import restore_hyphenated_line_breaks
 
 
 TABLE_CODE_RE = re.compile(r"(?<!\d)(?:[1-9]|1[0-9])-\d{1,2}-\d{1,2}(?:-\d{1,2})?(?![-\d])")
@@ -602,6 +603,7 @@ def import_hwpx(
 
             for row_index, row in enumerate(matrix):
                 for col_index, value in enumerate(row):
+                    stored_value = restore_hyphenated_line_breaks(value)
                     connection.execute(
                         """
                         INSERT INTO stat_table_cells (
@@ -614,8 +616,8 @@ def import_hwpx(
                             table_id,
                             row_index,
                             col_index,
-                            value,
-                            numeric_value(value),
+                            stored_value,
+                            numeric_value(stored_value),
                             1 if row_index < header_count else 0,
                             footnote_matrix[row_index][col_index],
                         ),

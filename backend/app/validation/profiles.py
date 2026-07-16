@@ -9,11 +9,6 @@ from typing import Any, Protocol
 
 from app.validation.catalog import rule_definition_payload, rule_spec
 from app.validation.curated_profiles import apply_curated_profile
-from app.validation.linguistic_policy import (
-    BASE_TRANSLATIONS,
-    SPELLING_REPLACEMENTS,
-    TERMINOLOGY_REPLACEMENTS,
-)
 from app.validation.models import ValidationTable, clean_display_text, normalize_text
 from app.validation.rules import (
     REGION_NAMES,
@@ -41,16 +36,6 @@ COMMON_RULE_IDS = [
     "translation",
     "metadata",
 ]
-
-DRAFT_TITLE_TRANSLATION_OVERRIDES: dict[str, tuple[str, str]] = {
-    "2-1-4-1": ("가입자 수", "Number of Subscribers"),
-    "2-1-4-2": ("맞춤 안내 수준 현황", "Status of Personalized Guidance Levels"),
-    "2-1-4-3": (
-        "수혜적 공공서비스(혜택) 등록 현황",
-        "Registration Status of Beneficial Public Services",
-    ),
-}
-
 
 @dataclass(frozen=True)
 class ValidationProfile:
@@ -480,6 +465,12 @@ def is_per_unit_measure_label(label: str) -> bool:
     normalized = normalize_text(cleaned)
     if re.search(r"(?:1인|인|건|개|명|회|가구|세대|대|기관)당", normalized):
         return True
+    # In bilingual labels the English translation can contain phrases such as
+    # "per Item" even when the row is an additive category (for example,
+    # "세목별 ... / ... per Item"). Prefer the Korean wording when it is
+    # available so those rows are not removed from total operands.
+    if re.search(r"[가-힣]", cleaned):
+        return False
     return bool(
         re.search(
             r"\b(?:per\s+(?:person|capita|case|task|item|household|organization|unit)|"
@@ -721,7 +712,6 @@ def infer_profile_checks(
 ) -> list[dict[str, Any]]:
     checks: list[dict[str, Any]] = []
     checks.extend(common_check_specs(table))
-
     if "regional_table" in templates:
         checks.extend(region_total_check_specs(table))
 
@@ -740,9 +730,6 @@ def infer_profile_checks(
     checks.extend(infer_total_column_rules(table))
     checks.extend(infer_total_row_rules(table))
     checks.extend(outlier_check_specs(table))
-    checks.extend(static_spelling_check_specs(table))
-    checks.extend(static_terminology_check_specs(table))
-    checks.extend(static_translation_check_specs(table))
 
     for check in checks:
         if check.get("check_group") == "ratio":
@@ -3010,82 +2997,6 @@ def outlier_check_specs(table: ValidationTable) -> list[dict[str, Any]]:
             },
         )
     ]
-
-
-def static_spelling_check_specs(table: ValidationTable) -> list[dict[str, Any]]:
-    return [
-        rule_spec(
-            "spelling",
-            {
-                "id": f"profile.{table.code}.spelling_static",
-                "type": "spelling_static",
-                "category": "common",
-                "label": "국문/영문 명백 오탈자 사전",
-                "terms": list(SPELLING_REPLACEMENTS),
-                "failure_status": "오류 의심",
-                "severity": "critical",
-                "confidence": 0.9,
-            },
-        )
-    ]
-
-
-def static_terminology_check_specs(table: ValidationTable) -> list[dict[str, Any]]:
-    return [
-        rule_spec(
-            "terminology",
-            {
-                "id": f"profile.{table.code}.terminology_static",
-                "type": "terminology_static",
-                "category": "common",
-                "check_type": "용어 제안",
-                "label": "국문 표준 용어 제안",
-                "terms": list(TERMINOLOGY_REPLACEMENTS),
-                "failure_status": "확인 필요",
-                "severity": "warning",
-                "confidence": 0.75,
-            },
-        )
-    ]
-
-
-def static_translation_check_specs(table: ValidationTable) -> list[dict[str, Any]]:
-    specs = [
-        rule_spec(
-            "translation",
-            {
-                "id": f"profile.{table.code}.translation_static",
-                "type": "translation_static",
-                "category": "common",
-                "label": "기본 국문/영문 병기 용어집",
-                "terms": list(BASE_TRANSLATIONS),
-                "scope": "header_and_label_cells",
-                "failure_status": "확인 필요",
-                "severity": "warning",
-                "confidence": 0.65,
-            },
-        )
-    ]
-    title_translation = DRAFT_TITLE_TRANSLATION_OVERRIDES.get(table.code)
-    if title_translation:
-        title_ko, title_en = title_translation
-        specs.append(
-            rule_spec(
-                "translation",
-                {
-                    "id": f"profile.{table.code}.title_translation_static",
-                    "type": "title_translation_static",
-                    "category": "common",
-                    "label": "초안 영문 제목 자동 보정",
-                    "source_title": title_ko,
-                    "expected_title_en": title_en,
-                    "failure_status": "확인 필요",
-                    "severity": "warning",
-                    "confidence": 0.8,
-                },
-            )
-        )
-    return specs
 
 
 def symbol_columns(table: ValidationTable) -> dict[str, int]:

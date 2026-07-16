@@ -1,6 +1,7 @@
 import { Database } from "lucide-react";
 
 import type { ReportOption, ReportSummary, TableStatus } from "../types";
+import { ValidationTypeFilter } from "./ValidationTypeFilter";
 
 type SummaryFilter = TableStatus | "all";
 
@@ -10,10 +11,13 @@ interface ReportSummaryPanelProps {
   availableReports: ReportOption[];
   selectedReportId: string;
   activeFilter: TableStatus | "all" | "has_issues";
-  showOutlierChecks: boolean;
+  validationTypes: string[];
+  hiddenValidationTypes: ReadonlySet<string>;
   onReportChange: (reportId: string) => void;
   onFilterChange: (filter: SummaryFilter) => void;
-  onShowOutlierChecksChange: (show: boolean) => void;
+  onValidationTypeVisibilityChange: (type: string, visible: boolean) => void;
+  onShowAllValidationTypes: () => void;
+  onHideAllValidationTypes: () => void;
 }
 
 const summaryCards: Array<{
@@ -37,10 +41,13 @@ export function ReportSummaryPanel({
   availableReports,
   selectedReportId,
   activeFilter,
-  showOutlierChecks,
+  validationTypes,
+  hiddenValidationTypes,
   onReportChange,
   onFilterChange,
-  onShowOutlierChecksChange,
+  onValidationTypeVisibilityChange,
+  onShowAllValidationTypes,
+  onHideAllValidationTypes,
 }: ReportSummaryPanelProps) {
   const reportOptions =
     availableReports.length > 0
@@ -91,14 +98,13 @@ export function ReportSummaryPanel({
         ))}
       </div>
 
-      <label className="summary-option-toggle">
-        <input
-          checked={showOutlierChecks}
-          onChange={(event) => onShowOutlierChecksChange(event.target.checked)}
-          type="checkbox"
-        />
-        <span>이상치 검수 표시</span>
-      </label>
+      <ValidationTypeFilter
+        types={validationTypes}
+        hiddenTypes={hiddenValidationTypes}
+        onVisibilityChange={onValidationTypeVisibilityChange}
+        onShowAll={onShowAllValidationTypes}
+        onHideAll={onHideAllValidationTypes}
+      />
 
     </section>
   );

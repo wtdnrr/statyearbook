@@ -1,3 +1,4 @@
+import { useLayoutEffect, useRef } from "react";
 import { Search, SlidersHorizontal } from "lucide-react";
 
 import type { StatTable, TableStatus } from "../types";
@@ -9,10 +10,12 @@ interface TableListProps {
   activeTableId: string;
   query: string;
   filter: TableStatus | "all" | "has_issues";
+  scrollTop: number;
   onQueryChange: (query: string) => void;
   onFilterChange: (filter: TableStatus | "all" | "has_issues") => void;
   onSelect: (tableId: string) => void;
   onOpen: (tableId: string) => void;
+  onScrollTopChange: (scrollTop: number) => void;
 }
 
 const filterOptions: Array<{ value: TableStatus | "all" | "has_issues"; label: string }> = [
@@ -28,11 +31,24 @@ export function TableList({
   activeTableId,
   query,
   filter,
+  scrollTop,
   onQueryChange,
   onFilterChange,
   onSelect,
   onOpen,
+  onScrollTopChange,
 }: TableListProps) {
+  const bodyRef = useRef<HTMLDivElement | null>(null);
+
+  useLayoutEffect(() => {
+    const body = bodyRef.current;
+    if (!body) {
+      return;
+    }
+
+    body.scrollTop = scrollTop;
+  }, [scrollTop, tables.length]);
+
   return (
     <aside className="table-list-panel" aria-label="표 목록">
       <div className="panel-toolbar">
@@ -68,7 +84,11 @@ export function TableList({
           <span>확인</span>
           <span>오류</span>
         </div>
-        <div className="list-table__body">
+        <div
+          className="list-table__body"
+          ref={bodyRef}
+          onScroll={(event) => onScrollTopChange(event.currentTarget.scrollTop)}
+        >
           {tables.map((table) => {
             const reviewCount = groupedValidationIssueCount(table.checks, "확인 필요");
             const criticalCount = groupedValidationIssueCount(table.checks, "오류 의심");

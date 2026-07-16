@@ -766,6 +766,8 @@ def fallback_highlight_cells(row: sqlite3.Row) -> list[ValidationHighlightCell]:
 
 
 def fallback_highlight_rows(row: sqlite3.Row) -> list[ValidationHighlightRow]:
+    if int_or_none(row["col_index"]) is not None:
+        return []
     row_highlight = highlight_row(int_or_none(row["row_index"]), "target")
     return [row_highlight] if row_highlight else []
 

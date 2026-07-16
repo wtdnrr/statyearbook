@@ -32,13 +32,18 @@ interface ReportWorkspaceProps {
   selectedReportId: string;
   query: string;
   filter: FilterValue;
-  showOutlierChecks: boolean;
+  validationTypes: string[];
+  hiddenValidationTypes: ReadonlySet<string>;
+  tableListScrollTop: number;
   onReportChange: (reportId: string) => void;
   onQueryChange: (query: string) => void;
   onFilterChange: (filter: FilterValue) => void;
-  onShowOutlierChecksChange: (show: boolean) => void;
+  onValidationTypeVisibilityChange: (type: string, visible: boolean) => void;
+  onShowAllValidationTypes: () => void;
+  onHideAllValidationTypes: () => void;
   onSelect: (tableId: string) => void;
   onOpen: (tableId: string) => void;
+  onTableListScrollTopChange: (scrollTop: number) => void;
 }
 
 export function ReportWorkspace({
@@ -50,20 +55,27 @@ export function ReportWorkspace({
   selectedReportId,
   query,
   filter,
-  showOutlierChecks,
+  validationTypes,
+  hiddenValidationTypes,
+  tableListScrollTop,
   onReportChange,
   onQueryChange,
   onFilterChange,
-  onShowOutlierChecksChange,
+  onValidationTypeVisibilityChange,
+  onShowAllValidationTypes,
+  onHideAllValidationTypes,
   onSelect,
   onOpen,
+  onTableListScrollTopChange,
 }: ReportWorkspaceProps) {
   const filteredTables = useMemo(() => {
     return tables.filter((table) => matchesWorkspaceFilter(table, query, filter));
   }, [filter, query, tables]);
 
-  const activeId = selectedTableId || tables[0]?.id || "";
-  const selectedTable = tables.find((table) => table.id === activeId) ?? tables[0];
+  const activeId = filteredTables.some((table) => table.id === selectedTableId)
+    ? selectedTableId
+    : filteredTables[0]?.id ?? "";
+  const selectedTable = tables.find((table) => table.id === activeId);
 
   function handleSummaryFilterChange(nextFilter: FilterValue) {
     onFilterChange(nextFilter);
@@ -83,20 +95,25 @@ export function ReportWorkspace({
           availableReports={availableReports}
           selectedReportId={selectedReportId || String(summary.report_id ?? "")}
           activeFilter={filter}
-          showOutlierChecks={showOutlierChecks}
+          validationTypes={validationTypes}
+          hiddenValidationTypes={hiddenValidationTypes}
           onReportChange={onReportChange}
           onFilterChange={handleSummaryFilterChange}
-          onShowOutlierChecksChange={onShowOutlierChecksChange}
+          onValidationTypeVisibilityChange={onValidationTypeVisibilityChange}
+          onShowAllValidationTypes={onShowAllValidationTypes}
+          onHideAllValidationTypes={onHideAllValidationTypes}
         />
         <TableList
           tables={filteredTables}
           activeTableId={activeId}
           query={query}
           filter={filter}
+          scrollTop={tableListScrollTop}
           onQueryChange={onQueryChange}
           onFilterChange={onFilterChange}
           onSelect={onSelect}
           onOpen={onOpen}
+          onScrollTopChange={onTableListScrollTopChange}
         />
       </div>
       {selectedTable ? <TablePreview table={selectedTable} onOpen={() => onOpen(selectedTable.id)} /> : null}

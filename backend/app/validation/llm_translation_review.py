@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from dataclasses import dataclass
 from difflib import SequenceMatcher
 from pathlib import Path
@@ -14,7 +15,14 @@ from typing import Any
 from urllib import error, request
 
 from app.db.schema import DB_PATH, connect, init_db
-from app.validation.blue_review import BLUE_REVIEW_RULE_ID, BLUE_REVIEW_TYPE, normalize_review_text
+from app.validation.blue_review import (
+    BLUE_LLM_RULE_ID,
+    BLUE_REVIEW_RULE_ID,
+    BLUE_REVIEW_TYPE,
+    normalize_review_text,
+    repair_blue_candidate_classifications,
+    synchronize_blue_review_checks,
+)
 from app.validation.linguistic_policy import (
     LINGUISTIC_CHECK_TYPES,
     SPELLING_CHECK_TYPE,
@@ -26,6 +34,7 @@ from app.validation.linguistic_review import (
     LINGUISTIC_PROMPT_VERSION,
 )
 from app.validation.source_review import SOURCE_FORMAT_RULE_ID, SOURCE_FORMAT_TYPE
+from app.validation.region_glossary import region_review_decision
 from app.validation.translation_glossary import (
     infer_category,
     infer_subcategory,
@@ -37,7 +46,9 @@ from app.validation.translation_glossary import (
 
 OPENAI_RESPONSES_PATH = "/responses"
 DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1"
+DEFAULT_BIZROUTER_BASE_URL = "https://api.bizrouter.ai/v1"
 DEFAULT_TRANSLATION_MODEL = "gpt-5.4-mini"
+DEFAULT_BIZROUTER_MODEL = "openai/gpt-5-mini"
 LLM_TRANSLATION_RULE_ID = "llm.translation_review"
 LLM_SPELLING_RULE_ID = "llm.spelling_review"
 LLM_TERMINOLOGY_RULE_ID = "llm.terminology_review"
@@ -50,6 +61,17 @@ class LLMReviewResult:
     inserted_checks: int
     final_issue_count: int
     skipped_reason: str = ""
+
+
+@dataclass(frozen=True)
+class LLMTablePreviewResult:
+    run_id: int
+    table_code: str
+    table_title: str
+    model: str
+    reviewed_contexts: int
+    reviewed_items: int
+    results: list[dict[str, Any]]
 
 
 @dataclass(frozen=True)
@@ -139,36 +161,57 @@ def append_llm_translation_reviews(
     run_id: int | None = None,
     report_id: int | None = None,
     limit: int | None = None,
+    blue_only: bool = False,
+    model_override: str | None = None,
 ) -> LLMReviewResult:
     settings = llm_review_settings()
+    if model_override:
+        settings["model"] = model_override
     with connect(db_path) as connection:
         init_db(connection)
         resolved_run_id = run_id or latest_run_id(connection, report_id=report_id)
         if resolved_run_id is None:
             return LLMReviewResult(0, 0, 0, 0, "no validation run")
 
-        dictionary_counts = resolve_linguistic_candidates_from_glossary(
-            connection,
-            resolved_run_id,
-        )
-        cache_counts = reuse_cached_linguistic_reviews(
-            connection,
-            resolved_run_id,
-            reviewed_model=settings["model"],
-        )
+        if blue_only:
+            repair_blue_candidate_classifications(connection, resolved_run_id)
+            dictionary_counts = resolve_blue_region_candidates(connection, resolved_run_id)
+            cache_counts = (0, 0, 0)
+        else:
+            dictionary_counts = resolve_linguistic_candidates_from_glossary(
+                connection,
+                resolved_run_id,
+            )
+            cache_counts = reuse_cached_linguistic_reviews(
+                connection,
+                resolved_run_id,
+                reviewed_model=settings["model"],
+            )
         linguistic_items = load_linguistic_review_items(connection, resolved_run_id)
-        source_items = load_source_review_items(connection, resolved_run_id)
+        if blue_only:
+            linguistic_items = [
+                item for item in linguistic_items if item.source_rule_id == BLUE_REVIEW_RULE_ID
+            ]
+            source_items: list[SourceReviewItem] = []
+        else:
+            source_items = load_source_review_items(connection, resolved_run_id)
         format_items = [item for item in source_items if item.source_rule_id == SOURCE_FORMAT_RULE_ID]
         other_source_items = [item for item in source_items if item.source_rule_id != SOURCE_FORMAT_RULE_ID]
-        items = [*format_items, *interleave_linguistic_items(linguistic_items), *other_source_items]
+        items = [
+            *format_items,
+            *group_linguistic_items_by_context(linguistic_items),
+            *other_source_items,
+        ]
         if limit is not None:
-            items = items[:limit]
+            items = take_contexts(items, limit)
 
     inserted_issues = dictionary_counts[0] + cache_counts[0]
     inserted_checks = dictionary_counts[1] + cache_counts[1]
     processed = dictionary_counts[2] + cache_counts[2]
 
     if not items:
+        if blue_only:
+            synchronize_blue_review_checks(db_path, run_id=resolved_run_id)
         return LLMReviewResult(
             processed,
             inserted_issues,
@@ -189,69 +232,81 @@ def append_llm_translation_reviews(
             inserted_issues,
             inserted_checks,
             current_issue_count(db_path, resolved_run_id),
-            "missing OPENAI_API_KEY",
+            f"missing {settings['api_key_env']}",
         )
 
-    client = OpenAIResponsesClient(
+    client = ResponsesAPIClient(
         api_key=settings["api_key"],
         model=settings["model"],
         base_url=settings["base_url"],
         timeout=settings["timeout"],
+        provider=settings["provider"],
     )
 
-    for batch in chunked_by_context(items, settings["batch_size"]):
-        decisions = client.review(batch)
-        decisions_by_id = {
-            int(decision["id"]): decision
-            for decision in decisions
-            if isinstance(decision, dict) and int_or_none(decision.get("id")) is not None
-        }
-        for _ in range(2):
-            retry_items = [
-                item
-                for item in batch
-                if item.issue_id not in decisions_by_id
-                or review_decision_needs_retry(decisions_by_id[item.issue_id], item)
-            ]
-            if not retry_items:
+    batches = chunked_by_context(items, settings["batch_size"])
+    concurrency = settings["concurrency"]
+    with ThreadPoolExecutor(max_workers=concurrency) as executor:
+        batch_iterator = iter(batches)
+        pending = {}
+        for _ in range(concurrency):
+            try:
+                batch = next(batch_iterator)
+            except StopIteration:
                 break
-            for retry_decision in client.review(retry_items, require_english_replacement=True):
-                if not isinstance(retry_decision, dict):
-                    continue
-                retry_id = int_or_none(retry_decision.get("id"))
-                if retry_id is not None:
-                    decisions_by_id[retry_id] = retry_decision
-        unresolved = [
-            item
-            for item in batch
-            if item.issue_id not in decisions_by_id
-            or review_decision_needs_retry(decisions_by_id[item.issue_id], item)
-        ]
-        if unresolved:
-            codes = ", ".join(f"{item.table_code}:{item.location}" for item in unresolved)
-            raise RuntimeError(f"LLM review returned incomplete replacement text: {codes}")
-        decisions = list(decisions_by_id.values())
-        with connect(db_path) as connection:
-            init_db(connection)
-            with connection:
-                batch_counts = save_llm_review_decisions(
-                    connection,
-                    resolved_run_id,
-                    batch,
-                    decisions,
-                    reviewed_model=settings["model"],
-                    resolution_source="llm",
-                )
-                inserted_issues += batch_counts[0]
-                inserted_checks += batch_counts[1]
-                processed += batch_counts[2]
-                refresh_issue_count(connection, resolved_run_id)
-        time.sleep(settings["sleep_seconds"])
+            pending[executor.submit(review_batch_with_retries, client, batch)] = batch
+
+        while pending:
+            done, _ = wait(pending, return_when=FIRST_COMPLETED)
+            completed: list[tuple[list[SourceReviewItem], list[dict[str, Any]]]] = []
+            errors: list[Exception] = []
+            for future in done:
+                batch = pending.pop(future)
+                try:
+                    completed.append((batch, future.result()))
+                except Exception as exc:
+                    errors.append(exc)
+
+            for batch, decisions in completed:
+                with connect(db_path) as connection:
+                    init_db(connection)
+                    with connection:
+                        batch_counts = save_llm_review_decisions(
+                            connection,
+                            resolved_run_id,
+                            batch,
+                            decisions,
+                            reviewed_model=settings["model"],
+                            resolution_source="llm",
+                        )
+                        inserted_issues += batch_counts[0]
+                        inserted_checks += batch_counts[1]
+                        processed += batch_counts[2]
+                        refresh_issue_count(connection, resolved_run_id)
+                if blue_only:
+                    synchronize_blue_review_checks(db_path, run_id=resolved_run_id)
+            if errors:
+                for future in pending:
+                    future.cancel()
+                raise RuntimeError(
+                    f"LLM batch group failed after saving {len(completed)} successful batches"
+                ) from errors[0]
+
+            for _ in completed:
+                try:
+                    batch = next(batch_iterator)
+                except StopIteration:
+                    break
+                pending[executor.submit(review_batch_with_retries, client, batch)] = batch
+            time.sleep(settings["sleep_seconds"])
 
     if limit is None:
         with connect(db_path) as connection:
             init_db(connection)
-            pending = pending_linguistic_candidate_count(connection, resolved_run_id)
+            pending = pending_linguistic_candidate_count(
+                connection,
+                resolved_run_id,
+                blue_only=blue_only,
+            )
         if pending:
             raise RuntimeError(f"LLM 전수 언어 검수가 완료되지 않았습니다: pending {pending}건")
 
@@ -263,33 +318,205 @@ def append_llm_translation_reviews(
     )
 
 
-def pending_linguistic_candidate_count(connection: sqlite3.Connection, run_id: int) -> int:
+def resolve_blue_region_candidates(
+    connection: sqlite3.Connection,
+    run_id: int,
+) -> tuple[int, int, int]:
+    """Resolve complete Korean administrative-area lists without an LLM call."""
+
+    inserted_issues = 0
+    inserted_checks = 0
+    processed = 0
+    items = [
+        item
+        for item in load_linguistic_review_items(connection, run_id)
+        if item.source_rule_id == BLUE_REVIEW_RULE_ID
+    ]
+    for item in items:
+        region_decision = region_review_decision(item.current_value)
+        if region_decision is None:
+            continue
+        counts = save_llm_review_decisions(
+            connection,
+            run_id,
+            [item],
+            [
+                {
+                    "id": item.issue_id,
+                    **region_decision.to_dict(issue_type=BLUE_REVIEW_TYPE),
+                }
+            ],
+            reviewed_model="region-dictionary-v1",
+            resolution_source="region_dictionary",
+        )
+        inserted_issues += counts[0]
+        inserted_checks += counts[1]
+        processed += counts[2]
+    return inserted_issues, inserted_checks, processed
+
+
+def pending_linguistic_candidate_count(
+    connection: sqlite3.Connection,
+    run_id: int,
+    *,
+    blue_only: bool = False,
+) -> int:
     row = connection.execute(
-        """
+        f"""
         SELECT COUNT(*) AS candidate_count
         FROM linguistic_review_candidates
         WHERE run_id = ? AND status <> 'reviewed'
+          {"AND candidate_kind LIKE 'blue_text%'" if blue_only else ""}
         """,
         (run_id,),
     ).fetchone()
     return int(row["candidate_count"]) if row else 0
 
 
+def preview_llm_table_reviews(
+    db_path: Path = DB_PATH,
+    *,
+    table_code: str,
+    run_id: int | None = None,
+    report_id: int | None = None,
+    limit: int | None = None,
+) -> LLMTablePreviewResult:
+    """Review one table's pending language candidates without modifying the database."""
+
+    settings = llm_review_settings()
+    if not settings["enabled"]:
+        raise RuntimeError("LLM review is disabled")
+    if not settings["api_key"]:
+        raise RuntimeError(f"missing {settings['api_key_env']}")
+
+    with connect(db_path) as connection:
+        resolved_run_id = run_id or latest_run_id(connection, report_id=report_id)
+        if resolved_run_id is None:
+            raise RuntimeError("no validation run")
+        table_row = connection.execute(
+            """
+            SELECT st.title
+            FROM stat_tables st
+            JOIN validation_runs vr ON vr.report_id = st.report_id
+            WHERE vr.id = ? AND st.code = ?
+            ORDER BY st.table_order, st.id
+            LIMIT 1
+            """,
+            (resolved_run_id, table_code),
+        ).fetchone()
+        if table_row is None:
+            raise RuntimeError(f"table not found in validation run {resolved_run_id}: {table_code}")
+        items = [
+            item
+            for item in load_linguistic_review_items(connection, resolved_run_id)
+            if item.table_code == table_code
+        ]
+
+    grouped_items = group_linguistic_items_by_context(items)
+    if limit is not None:
+        grouped_items = take_contexts(grouped_items, limit)
+    client = ResponsesAPIClient(
+        api_key=settings["api_key"],
+        model=settings["model"],
+        base_url=settings["base_url"],
+        timeout=settings["timeout"],
+        provider=settings["provider"],
+    )
+    results: list[dict[str, Any]] = []
+    reviewed_contexts = 0
+    for batch in chunked_by_context(grouped_items, settings["batch_size"]):
+        decisions = review_batch_with_retries(client, batch)
+        decisions_by_id = {
+            int(decision["id"]): decision
+            for decision in decisions
+            if isinstance(decision, dict) and int_or_none(decision.get("id")) is not None
+        }
+        reviewed_contexts += len(compact_prompt_items(batch))
+        for item in batch:
+            decision = normalize_decision(decisions_by_id[item.issue_id], item)
+            results.append(
+                {
+                    "table_code": item.table_code,
+                    "table_title": item.table_title,
+                    "location": item.location,
+                    "row_index": item.row_index,
+                    "col_index": item.col_index,
+                    "review_type": decision["issue_type"],
+                    "status": decision["status"],
+                    "current_value": item.current_value,
+                    "expected_value": decision["expected_value"],
+                    "difference": decision["difference"],
+                    "detail": decision["detail"],
+                }
+            )
+        time.sleep(settings["sleep_seconds"])
+
+    return LLMTablePreviewResult(
+        run_id=resolved_run_id,
+        table_code=table_code,
+        table_title=str(table_row["title"]),
+        model=str(settings["model"]),
+        reviewed_contexts=reviewed_contexts,
+        reviewed_items=len(results),
+        results=results,
+    )
+
+
 def llm_review_settings() -> dict[str, Any]:
     load_local_env_file()
-    enabled_value = os.getenv("OPENAI_LLM_REVIEW_ENABLED", "1").strip().lower()
-    limit_value = os.getenv("OPENAI_LLM_REVIEW_LIMIT", "").strip()
+    provider = os.getenv("LLM_PROVIDER", "auto").strip().lower()
+    if provider not in {"auto", "openai", "bizrouter"}:
+        raise ValueError("LLM_PROVIDER must be auto, openai, or bizrouter")
+    bizrouter_key = os.getenv("BIZROUTER_API_KEY", "").strip()
+    openai_key = os.getenv("OPENAI_API_KEY", "").strip()
+    if provider == "auto":
+        provider = "bizrouter" if bizrouter_key else "openai"
+
+    enabled_value = env_value("LLM_REVIEW_ENABLED", "OPENAI_LLM_REVIEW_ENABLED", default="1")
+    limit_value = env_value("LLM_REVIEW_LIMIT", "OPENAI_LLM_REVIEW_LIMIT").strip()
+    if provider == "bizrouter":
+        api_key = bizrouter_key
+        api_key_env = "BIZROUTER_API_KEY"
+        model = (
+            os.getenv("BIZROUTER_MODEL", DEFAULT_BIZROUTER_MODEL).strip()
+            or DEFAULT_BIZROUTER_MODEL
+        )
+        base_url = os.getenv("BIZROUTER_BASE_URL", DEFAULT_BIZROUTER_BASE_URL).rstrip("/")
+    else:
+        api_key = openai_key
+        api_key_env = "OPENAI_API_KEY"
+        model = (
+            os.getenv("OPENAI_TRANSLATION_MODEL", DEFAULT_TRANSLATION_MODEL).strip()
+            or DEFAULT_TRANSLATION_MODEL
+        )
+        base_url = os.getenv("OPENAI_BASE_URL", DEFAULT_OPENAI_BASE_URL).rstrip("/")
+
     return {
         "enabled": enabled_value not in {"0", "false", "no", "off"},
-        "api_key": os.getenv("OPENAI_API_KEY", "").strip(),
-        "model": os.getenv("OPENAI_TRANSLATION_MODEL", DEFAULT_TRANSLATION_MODEL).strip()
-        or DEFAULT_TRANSLATION_MODEL,
-        "base_url": os.getenv("OPENAI_BASE_URL", DEFAULT_OPENAI_BASE_URL).rstrip("/"),
-        "batch_size": max(int(os.getenv("OPENAI_LLM_REVIEW_BATCH_SIZE", "12")), 1),
-        "timeout": max(int(os.getenv("OPENAI_LLM_REVIEW_TIMEOUT", "90")), 10),
-        "sleep_seconds": max(float(os.getenv("OPENAI_LLM_REVIEW_SLEEP", "0.2")), 0.0),
+        "provider": provider,
+        "api_key": api_key,
+        "api_key_env": api_key_env,
+        "model": model,
+        "base_url": base_url,
+        "batch_size": max(
+            int(env_value("LLM_REVIEW_BATCH_SIZE", "OPENAI_LLM_REVIEW_BATCH_SIZE", default="1")),
+            1,
+        ),
+        "concurrency": max(int(os.getenv("LLM_REVIEW_CONCURRENCY", "1")), 1),
+        "timeout": max(
+            int(env_value("LLM_REVIEW_TIMEOUT", "OPENAI_LLM_REVIEW_TIMEOUT", default="90")),
+            10,
+        ),
+        "sleep_seconds": max(
+            float(env_value("LLM_REVIEW_SLEEP", "OPENAI_LLM_REVIEW_SLEEP", default="0.2")),
+            0.0,
+        ),
         "limit": int(limit_value) if limit_value.isdigit() else None,
     }
+
+
+def env_value(primary: str, legacy: str, *, default: str = "") -> str:
+    return os.getenv(primary, os.getenv(legacy, default)).strip()
 
 
 def load_local_env_file() -> None:
@@ -307,12 +534,21 @@ def load_local_env_file() -> None:
             os.environ[key] = value
 
 
-class OpenAIResponsesClient:
-    def __init__(self, *, api_key: str, model: str, base_url: str, timeout: int) -> None:
+class ResponsesAPIClient:
+    def __init__(
+        self,
+        *,
+        api_key: str,
+        model: str,
+        base_url: str,
+        timeout: int,
+        provider: str = "openai",
+    ) -> None:
         self.api_key = api_key
         self.model = model
         self.base_url = base_url
         self.timeout = timeout
+        self.provider = provider
 
     def review(
         self,
@@ -322,11 +558,16 @@ class OpenAIResponsesClient:
     ) -> list[dict[str, Any]]:
         prompt_payload = {
             "items": compact_prompt_items(items),
+            "required_result_ids": [item.issue_id for item in items],
+            "required_result_count": len(items),
             "allowed_statuses": ["정상", "확인 필요", "오류 의심"],
-            "allowed_issue_types": ["번역 검수", "오탈자 검수", "용어 제안"],
+            "allowed_issue_types": ["번역 검수", "오탈자 검수", "용어 제안", "파란색 표기 확인"],
         }
         body = {
             "model": self.model,
+            "reasoning": {
+                "effort": "minimal",
+            },
             "input": [
                 {
                     "role": "system",
@@ -359,7 +600,7 @@ class OpenAIResponsesClient:
                     "schema": REVIEW_RESPONSE_SCHEMA,
                 }
             },
-            "max_output_tokens": max(1800, len(items) * 260),
+            "max_output_tokens": max(3000, len(items) * 400),
         }
         response = self._post(body)
         parsed = parse_response_json(response)
@@ -377,29 +618,161 @@ class OpenAIResponsesClient:
             },
             method="POST",
         )
-        for attempt in range(3):
+        max_attempts = 6
+        for attempt in range(max_attempts):
             try:
                 with request.urlopen(req, timeout=self.timeout) as response:
                     return json.loads(response.read().decode("utf-8"))
             except error.HTTPError as exc:
                 body_text = exc.read().decode("utf-8", errors="replace")
-                if exc.code not in {408, 409, 429, 500, 502, 503, 504} or attempt == 2:
-                    raise RuntimeError(f"OpenAI API error {exc.code}: {body_text[:800]}") from exc
+                if exc.code not in {408, 409, 429, 500, 502, 503, 504} or attempt == max_attempts - 1:
+                    raise RuntimeError(
+                        f"{self.provider} Responses API error {exc.code}: {body_text[:800]}"
+                    ) from exc
+                retry_after = retry_after_seconds(body_text)
             except error.URLError as exc:
-                if attempt == 2:
-                    raise RuntimeError(f"OpenAI API request failed: {exc.reason}") from exc
+                if attempt == max_attempts - 1:
+                    raise RuntimeError(
+                        f"{self.provider} Responses API request failed: {exc.reason}"
+                    ) from exc
+                retry_after = 0.0
+            delay = retry_after or min(2**attempt, 16)
+            time.sleep(delay + (attempt + 1) * 0.25)
+        raise RuntimeError(f"{self.provider} Responses API request failed after retries")
+
+
+def retry_after_seconds(body_text: str) -> float:
+    try:
+        payload = json.loads(body_text)
+        value = payload.get("error", {}).get("details", {}).get("retry_after", 0)
+        return max(float(value), 0.0)
+    except (AttributeError, TypeError, ValueError, json.JSONDecodeError):
+        return 0.0
+
+
+# Backward-compatible import name for existing integrations.
+OpenAIResponsesClient = ResponsesAPIClient
+
+
+def review_batch_with_retries(
+    client: ResponsesAPIClient,
+    batch: list[SourceReviewItem],
+) -> list[dict[str, Any]]:
+    decisions_by_id = {
+        int(decision["id"]): decision
+        for decision in request_review_with_retries(client, batch)
+        if isinstance(decision, dict) and int_or_none(decision.get("id")) is not None
+    }
+    for _ in range(2):
+        retry_items = [
+            item
+            for item in batch
+            if item.issue_id not in decisions_by_id
+            or review_decision_needs_retry(decisions_by_id[item.issue_id], item)
+        ]
+        if not retry_items:
+            break
+        for retry_decision in request_review_with_retries(
+            client,
+            retry_items,
+            require_english_replacement=True,
+        ):
+            if not isinstance(retry_decision, dict):
+                continue
+            retry_id = int_or_none(retry_decision.get("id"))
+            if retry_id is not None:
+                decisions_by_id[retry_id] = retry_decision
+
+    remaining_items = [
+        item
+        for item in batch
+        if item.issue_id not in decisions_by_id
+        or review_decision_needs_retry(decisions_by_id[item.issue_id], item)
+    ]
+    for context_items in group_items_for_retry(remaining_items):
+        for _ in range(2):
+            retry_items = [
+                item
+                for item in context_items
+                if item.issue_id not in decisions_by_id
+                or review_decision_needs_retry(decisions_by_id[item.issue_id], item)
+            ]
+            if not retry_items:
+                break
+            for retry_decision in request_review_with_retries(
+                client,
+                retry_items,
+                require_english_replacement=True,
+            ):
+                if not isinstance(retry_decision, dict):
+                    continue
+                retry_id = int_or_none(retry_decision.get("id"))
+                if retry_id is not None:
+                    decisions_by_id[retry_id] = retry_decision
+    unresolved = [
+        item
+        for item in batch
+        if item.issue_id not in decisions_by_id
+        or review_decision_needs_retry(decisions_by_id[item.issue_id], item)
+    ]
+    if unresolved:
+        codes = ", ".join(f"{item.table_code}:{item.location}" for item in unresolved)
+        samples = []
+        for item in unresolved[:5]:
+            decision = decisions_by_id.get(item.issue_id, {})
+            samples.append(
+                f"id={item.issue_id}, requested={item.requested_review_type}, "
+                f"returned={decision.get('issue_type', 'missing')}, "
+                f"status={decision.get('status', 'missing')}, "
+                f"expected={str(decision.get('expected_value', ''))[:60]!r}"
+            )
+        raise RuntimeError(
+            f"LLM review returned incomplete replacement text: {codes}; "
+            f"samples: {' | '.join(samples)}"
+        )
+    return list(decisions_by_id.values())
+
+
+def request_review_with_retries(
+    client: ResponsesAPIClient,
+    items: list[SourceReviewItem],
+    *,
+    require_english_replacement: bool = False,
+) -> list[dict[str, Any]]:
+    last_error: Exception | None = None
+    for attempt in range(3):
+        try:
+            return client.review(
+                items,
+                require_english_replacement=require_english_replacement,
+            )
+        except json.JSONDecodeError as exc:
+            last_error = exc
+        except RuntimeError as exc:
+            if "did not contain structured output" not in str(exc):
+                raise
+            last_error = exc
+        if attempt < 2:
             time.sleep(2**attempt)
-        raise RuntimeError("OpenAI API request failed after retries")
+    raise RuntimeError("LLM review repeatedly returned malformed structured output") from last_error
+
+
+def group_items_for_retry(items: list[SourceReviewItem]) -> list[list[SourceReviewItem]]:
+    grouped: dict[tuple[object, ...], list[SourceReviewItem]] = {}
+    for item in items:
+        grouped.setdefault(prompt_context_key(item), []).append(item)
+    return list(grouped.values())
 
 
 SYSTEM_PROMPT = """You are a meticulous Korean government statistical yearbook language reviewer.
 
-The input groups requests that share one title, metadata, header, or cell context. For every entry in review_requests, return one result using that request id. Review the complete shared value for only its requested_review_type and return exactly the same issue_type. Values may contain numbers and text together. Never turn a terminology suggestion into a spelling error or a translation mismatch into a spelling error.
+The input groups requests that share one title, metadata, header, or cell context. For every entry in review_requests, return one result using that request id. required_result_ids lists every id that must appear exactly once in the output, and the output items array must contain exactly required_result_count objects. Do not return one result per shared context; return one result per review request. Review the complete shared value for only its requested_review_type and return exactly the same issue_type. Values may contain numbers and text together. Never turn a terminology suggestion into a spelling error or a translation mismatch into a spelling error.
 
-The three categories are strictly separated:
+The standard three categories are strictly separated:
 1. 오탈자 검수: Find clear Korean or English misspellings, broken characters, accidental casing errors, malformed numeric separators such as 3.445 instead of 3,445 in an integer context, and text that is clearly inconsistent with related cells. Do not use this category for a merely preferable expression. A clear error is "오류 의심"; an uncertain contextual notation is "확인 필요".
 2. 용어 제안: The source is understandable, but a dictionary meaning, official name, public-sector wording, grammar, capitalization convention, or statistical term can be improved. Return "확인 필요", never "오류 의심".
 3. 번역 검수: Check whether Korean and English have the same meaning. If English is missing, provide the English replacement. Return "확인 필요" for a missing, mismatched, awkward, or unverifiable translation, never "오류 의심".
+4. 파란색 표기 확인: This is a single combined review for an exact blue-marked HWPX value. Check clear Korean/English typos, Korean-English semantic alignment, official proper names, and public-sector wording together, then return exactly one result with issue_type "파란색 표기 확인". Do not split it into the standard three categories. For Korean-only text, provide a concrete English translation. For bilingual text, preserve the complete Korean and English value in a corrected replacement.
 
 Translation dictionary policy:
 - translation_glossary is evidence, not permission to skip review.
@@ -412,6 +785,11 @@ Translation dictionary policy:
 
 General rules:
 - Use the table title, row label, column label, unit, surrounding rows and glossary evidence.
+- Copy the shared current_value exactly into every result's current_value. Never use text from another review request or reduce it to only one Korean/English fragment.
+- For 오탈자 검수, correct spelling only. Preserve the source language composition: Korean-only stays Korean, English-only stays English, and bilingual text stays bilingual. Never translate a Korean name as a spelling correction.
+- For 용어 제안, return the complete replacement in the same language composition as the source. Do not use this category unless the supplied candidate_reason identifies a concrete suspect expression.
+- Korean and English appearing together in one title, header, or cell is the yearbook's normal bilingual layout. Never flag it merely as duplicated, mixed, or inconsistently ordered. Judge only spelling, terminology quality, and whether the two languages have the same meaning.
+- When a bilingual value genuinely needs translation correction, expected_value must preserve the exact complete Korean text and contain the corrected English text. An English-only fragment that drops the Korean half is not an actionable replacement.
 - candidate_kind beginning with "blue_text" is an exact HWPX blue-marked segment. Review the requested category for that segment and return a concrete corrected value, not a review request.
 - For a Korean-only blue_text translation request, expected_value must be a standalone English translation. Never return the Korean source, a placeholder, or an instruction to translate later.
 - For an English-only value under 번역 검수, use nearby Korean labels when available to check semantic correspondence. If there is no Korean counterpart and the English is not problematic, return 정상 instead of inventing a Korean source.
@@ -431,7 +809,7 @@ Return JSON only, no markdown:
     {
       "id": 123,
       "status": "정상|확인 필요|오류 의심",
-      "issue_type": "번역 검수|오탈자 검수|용어 제안",
+      "issue_type": "번역 검수|오탈자 검수|용어 제안|파란색 표기 확인",
       "current_value": "original text reviewed",
       "expected_value": "recommended English/correction or empty string",
       "difference": "short reason",
@@ -457,7 +835,7 @@ REVIEW_RESPONSE_SCHEMA: dict[str, Any] = {
                 "properties": {
                     "id": {"type": "integer"},
                     "status": {"type": "string", "enum": ["정상", "확인 필요", "오류 의심"]},
-                    "issue_type": {"type": "string", "enum": ["번역 검수", "오탈자 검수", "용어 제안"]},
+                    "issue_type": {"type": "string", "enum": ["번역 검수", "오탈자 검수", "용어 제안", "파란색 표기 확인"]},
                     "current_value": {"type": "string"},
                     "expected_value": {"type": "string", "minLength": 1},
                     "difference": {"type": "string"},
@@ -495,6 +873,14 @@ def parse_response_json(response: dict[str, Any]) -> dict[str, Any]:
                 continue
             if content.get("type") == "output_text" and isinstance(content.get("text"), str):
                 parts.append(content["text"])
+    if not parts:
+        status = str(response.get("status", "unknown"))
+        incomplete_details = response.get("incomplete_details")
+        usage = response.get("usage")
+        raise RuntimeError(
+            "LLM response did not contain structured output "
+            f"(status={status}, incomplete_details={incomplete_details!r}, usage={usage!r})"
+        )
     return parse_json_text("\n".join(parts))
 
 
@@ -772,21 +1158,32 @@ def source_candidate_kind(row: sqlite3.Row) -> str:
 
 
 def review_decision_needs_retry(raw: dict[str, Any], item: SourceReviewItem) -> bool:
+    raw_current = normalize_review_text(str(raw.get("current_value") or ""))
+    if raw_current and not decision_current_matches_item(raw_current, item.current_value):
+        return True
+
     expected = normalize_review_text(str(raw.get("expected_value") or ""))
     if not expected:
         return True
 
-    status = str(raw.get("status") or "").strip()
     issue_type = str(raw.get("issue_type") or "").strip()
-    difference = normalize_review_text(str(raw.get("difference") or ""))
-    detail = normalize_review_text(str(raw.get("detail") or ""))
-    if not re.search(r"[가-힣]", detail):
-        return True
-    if status != "정상" and not re.search(r"[가-힣]", difference):
-        return True
+    status = str(raw.get("status") or "").strip()
     current = normalize_review_text(item.current_value)
+    translation_requested = (
+        item.requested_review_type == TRANSLATION_CHECK_TYPE
+        or (item.candidate_kind == "blue_text" and not item.requested_review_type)
+        or (
+            item.requested_review_type == BLUE_REVIEW_TYPE
+            and re.search(r"[가-힣]", current) is not None
+            and re.search(r"[A-Za-z]", current) is None
+        )
+    )
+    if translation_requested and is_temporal_notation(current):
+        return False
+    if not decision_expected_matches_requested_scope(raw, item):
+        return True
     if (
-        (item.candidate_kind == "blue_text" or item.requested_review_type == TRANSLATION_CHECK_TYPE)
+        translation_requested
         and re.search(r"[가-힣]", current)
         and expected == current
         and not re.search(r"[A-Za-z]{3,}", current)
@@ -805,6 +1202,57 @@ def review_decision_needs_retry(raw: dict[str, Any], item: SourceReviewItem) -> 
         "표현입니다",
     )
     return not re.search(r"[A-Za-z]", expected) or any(token in expected for token in explanatory_korean)
+
+
+def decision_expected_matches_requested_scope(
+    raw: dict[str, Any],
+    item: SourceReviewItem,
+) -> bool:
+    """Reject cross-cell replacements and category changes before persistence."""
+
+    if str(raw.get("status") or "").strip() == "정상":
+        return True
+    current = normalize_review_text(item.current_value)
+    expected = normalize_review_text(str(raw.get("expected_value") or ""))
+    if not expected or re.search(r"(?:→|->|=>)", expected):
+        return False
+
+    review_type = item.requested_review_type or str(raw.get("issue_type") or "")
+    current_has_korean = re.search(r"[가-힣]", current) is not None
+    current_has_english = re.search(r"[A-Za-z]", current) is not None
+    expected_has_korean = re.search(r"[가-힣]", expected) is not None
+    expected_has_english = re.search(r"[A-Za-z]", expected) is not None
+
+    if review_type in {SPELLING_CHECK_TYPE, TERMINOLOGY_CHECK_TYPE}:
+        return (
+            current_has_korean == expected_has_korean
+            and current_has_english == expected_has_english
+        )
+    if review_type == BLUE_REVIEW_TYPE:
+        if current_has_korean and current_has_english:
+            return expected_has_korean and expected_has_english
+        if current_has_korean:
+            return expected_has_english
+        if current_has_english:
+            return expected_has_english
+        return True
+    if review_type != TRANSLATION_CHECK_TYPE:
+        return True
+    if current_has_korean and current_has_english:
+        return bool(
+            expected_has_korean
+            and expected_has_english
+            and canonical_korean_text(expected) == canonical_korean_text(current)
+        )
+    if current_has_korean:
+        return expected_has_english and not expected_has_korean
+    if current_has_english:
+        return expected_has_english
+    return True
+
+
+def canonical_korean_text(value: str) -> str:
+    return "".join(re.findall(r"[가-힣]+", normalize_review_text(value)))
 
 
 def table_field_context(row: sqlite3.Row) -> str:
@@ -903,6 +1351,28 @@ def resolve_linguistic_candidates_from_glossary(
 
 def glossary_decision_for(item: SourceReviewItem) -> dict[str, str] | None:
     entries = item.glossary_matches or []
+    korean = normalize_review_text(item.korean_text)
+    english = normalize_review_text(item.english_text)
+    current = normalize_review_text(item.current_value)
+    source_normalized = normalize_source(korean) if korean else ""
+    target_normalized = normalize_target(english) if english else ""
+
+    # Repeated yearbook forms are valid alternatives when the exact Korean-English
+    # pair already exists. They can confirm a value, but cannot propose a new one.
+    for entry in entries:
+        if str(entry.get("status") or "") == "llm_reviewed":
+            continue
+        entry_source = normalize_source(str(entry.get("source") or ""))
+        aliases = [normalize_source(str(alias)) for alias in entry.get("aliases", []) if alias]
+        source_matches = bool(source_normalized) and source_normalized in {entry_source, *aliases}
+        entry_target = normalize_review_text(str(entry.get("target") or ""))
+        target_matches = bool(target_normalized and entry_target) and target_normalized == normalize_target(entry_target)
+        if source_matches and target_matches:
+            source_title = normalize_review_text(
+                str(entry.get("source_title") or "연보 승인·반복 번역 사전")
+            )
+            return normal_glossary_decision(item, source_title)
+
     authoritative = [
         entry
         for entry in entries
@@ -911,12 +1381,7 @@ def glossary_decision_for(item: SourceReviewItem) -> dict[str, str] | None:
     if not authoritative:
         return None
 
-    korean = normalize_review_text(item.korean_text)
-    english = normalize_review_text(item.english_text)
-    current = normalize_review_text(item.current_value)
-    source_normalized = normalize_source(korean) if korean else ""
-    target_normalized = normalize_target(english) if english else ""
-
+    translation_recommendation: dict[str, str] | None = None
     for entry in authoritative:
         entry_source = normalize_source(str(entry.get("source") or ""))
         aliases = [normalize_source(str(alias)) for alias in entry.get("aliases", []) if alias]
@@ -943,17 +1408,23 @@ def glossary_decision_for(item: SourceReviewItem) -> dict[str, str] | None:
         if source_matches:
             if target_matches:
                 return normal_glossary_decision(item, source_title)
-            return {
-                "status": "확인 필요",
-                "issue_type": TRANSLATION_CHECK_TYPE,
-                "current_value": current,
-                "expected_value": entry_target,
-                "difference": "공식 사전 영문명 적용",
-                "detail": f"{source_title}에 수록된 국문·영문 대응을 적용해 영문안을 제시했습니다.",
-            }
+            if translation_recommendation is None:
+                expected_value = (
+                    normalize_review_text(f"{korean} {entry_target}")
+                    if korean and english
+                    else entry_target
+                )
+                translation_recommendation = {
+                    "status": "확인 필요",
+                    "issue_type": TRANSLATION_CHECK_TYPE,
+                    "current_value": current,
+                    "expected_value": expected_value,
+                    "difference": "승인 사전 영문명 적용",
+                    "detail": f"{source_title}에 수록된 국문·영문 대응을 적용해 영문안을 제시했습니다.",
+                }
         if not korean and target_matches:
             return normal_glossary_decision(item, source_title)
-    return None
+    return translation_recommendation
 
 
 def normal_glossary_decision(item: SourceReviewItem, source_title: str) -> dict[str, str]:
@@ -1094,6 +1565,11 @@ def save_llm_review_decisions(
         if issue_id is None or issue_id not in by_id:
             continue
         item = by_id[issue_id]
+        raw_current = normalize_review_text(str(raw_decision.get("current_value") or ""))
+        if raw_current and not decision_current_matches_item(raw_current, item.current_value):
+            continue
+        if review_decision_needs_retry(raw_decision, item):
+            continue
         decision = normalize_decision(raw_decision, item)
         if item.source_record_type == "candidate":
             mark_linguistic_candidate_reviewed(
@@ -1140,10 +1616,10 @@ def normalize_decision(raw: dict[str, Any], item: SourceReviewItem) -> dict[str,
 
     raw_issue_type = str(raw.get("issue_type") or "번역 검수").strip()
     issue_type = raw_issue_type
-    if issue_type not in LINGUISTIC_CHECK_TYPES:
+    if issue_type not in {*LINGUISTIC_CHECK_TYPES, BLUE_REVIEW_TYPE}:
         issue_type = "번역 검수"
 
-    if item.requested_review_type in LINGUISTIC_CHECK_TYPES:
+    if item.requested_review_type in {*LINGUISTIC_CHECK_TYPES, BLUE_REVIEW_TYPE}:
         issue_type = item.requested_review_type
 
     expected = normalize_review_text(str(raw.get("expected_value") or ""))
@@ -1156,6 +1632,26 @@ def normalize_decision(raw: dict[str, Any], item: SourceReviewItem) -> dict[str,
             "difference": "출처 URL 괄호 표기 정상",
             "detail": "출처 전체 문맥에서 URL은 기관명 뒤 괄호 안에 정상적으로 표기되어 있습니다.",
         }
+    elif (
+        expected_is_existing_bilingual_text(item.current_value, expected)
+        or expected_drops_bilingual_context(item.current_value, expected, issue_type)
+    ):
+        status = "정상"
+        expected = item.current_value
+        raw = {
+            **raw,
+            "difference": "국문·영문 병기 정상",
+            "detail": "동일 셀에 국문과 대응 영문을 함께 표기한 연보의 정상적인 병기 형식입니다.",
+        }
+    elif issue_type == TRANSLATION_CHECK_TYPE and is_temporal_notation(item.current_value):
+        expected = translate_temporal_notation(item.current_value)
+        if expected != normalize_review_text(item.current_value):
+            status = "확인 필요"
+            raw = {
+                **raw,
+                "difference": "연도·기간 영문 표기 제안",
+                "detail": "연도·기간에 포함된 국문 접미사를 영문 표에서 사용할 수 있는 숫자 중심 표기로 정리했습니다.",
+            }
     elif item.candidate_kind == "number_format" and item.candidate_expected not in {"", "LLM 문맥 확인"}:
         expected = item.candidate_expected
         if normalize_review_text(item.current_value) != expected:
@@ -1163,14 +1659,33 @@ def normalize_decision(raw: dict[str, Any], item: SourceReviewItem) -> dict[str,
             issue_type = "오탈자 검수"
     elif status == "오류 의심" and issue_type in {TRANSLATION_CHECK_TYPE, TERMINOLOGY_CHECK_TYPE}:
         status = "확인 필요"
-    elif status == "오류 의심":
+    elif status == "오류 의심" and issue_type != BLUE_REVIEW_TYPE:
         if item.candidate_kind == "blue_text" and looks_like_translation_mismatch(item.current_value, expected):
             status = "확인 필요"
             issue_type = TRANSLATION_CHECK_TYPE
         else:
             issue_type = SPELLING_CHECK_TYPE
 
-    if status == "정상" and not expected:
+    generated_translation = (
+        issue_type in {TRANSLATION_CHECK_TYPE, BLUE_REVIEW_TYPE}
+        and re.search(r"[가-힣]", item.current_value) is not None
+        and re.search(r"[A-Za-z]", item.current_value) is None
+        and (
+            re.search(r"[A-Za-z]", expected) is not None
+            or (
+                is_temporal_notation(item.current_value)
+                and expected != normalize_review_text(item.current_value)
+            )
+        )
+    )
+    if status == "정상" and generated_translation:
+        status = "확인 필요"
+        raw = {
+            **raw,
+            "difference": "누락된 영문 번역 제안",
+            "detail": "국문만 있는 항목에 대해 표 문맥과 사전 근거를 바탕으로 영문 번역안을 생성했습니다.",
+        }
+    if status == "정상" and not generated_translation:
         expected = item.current_value
 
     difference = remove_human_confirmation_language(
@@ -1181,6 +1696,13 @@ def normalize_decision(raw: dict[str, Any], item: SourceReviewItem) -> dict[str,
             str(raw.get("detail") or "LLM이 원문의 번역, 철자와 용어를 검토했습니다.")
         )
     )
+    if status != "정상" and not re.search(r"[가-힣]", difference):
+        difference = korean_difference_for(issue_type)
+    if not re.search(r"[가-힣]", detail):
+        detail = korean_detail_for(issue_type, status)
+    if status == "정상":
+        difference = f"{issue_type} 통과"
+        detail = korean_detail_for(issue_type, status)
     if item.source_rule_id == BLUE_REVIEW_RULE_ID:
         reviewed_category = issue_type
         issue_type = BLUE_REVIEW_TYPE
@@ -1195,11 +1717,215 @@ def normalize_decision(raw: dict[str, Any], item: SourceReviewItem) -> dict[str,
         "status": status,
         "issue_type": issue_type,
         "rule_id": rule_id_for(issue_type),
-        "current_value": normalize_review_text(str(raw.get("current_value") or item.current_value)),
+        "current_value": normalize_review_text(item.current_value),
         "expected_value": expected,
         "difference": difference,
         "detail": detail,
     }
+
+
+def decision_current_matches_item(returned_value: str, item_value: str) -> bool:
+    """Ensure a batched response did not copy another candidate's source text."""
+
+    return canonical_decision_text(returned_value) == canonical_decision_text(item_value)
+
+
+def canonical_decision_text(value: str) -> str:
+    return re.sub(r"[^0-9A-Za-z가-힣]", "", normalize_review_text(value)).casefold()
+
+
+def korean_difference_for(issue_type: str) -> str:
+    return {
+        SPELLING_CHECK_TYPE: "국문·영문 표기 교정 제안",
+        TERMINOLOGY_CHECK_TYPE: "통계 문맥에 맞는 용어 표현 제안",
+        TRANSLATION_CHECK_TYPE: "국문과 영문 번역 표현 검토",
+    }.get(issue_type, "언어 표현 검토")
+
+
+def korean_detail_for(issue_type: str, status: str) -> str:
+    category = {
+        SPELLING_CHECK_TYPE: "오탈자와 문자·숫자 표기",
+        TERMINOLOGY_CHECK_TYPE: "용어의 의미와 공공 통계 표현",
+        TRANSLATION_CHECK_TYPE: "국문과 영문의 의미 일치 여부",
+    }.get(issue_type, "언어 표현")
+    conclusion = "교정이 필요한 내용을 제시했습니다" if status != "정상" else "특이사항이 없습니다"
+    return f"표의 제목, 행·열 문맥과 사전 근거를 바탕으로 {category}를 검토했으며 {conclusion}."
+
+
+def expected_is_existing_bilingual_text(current_value: str, expected_value: str) -> bool:
+    current = normalize_review_text(current_value)
+    expected = normalize_review_text(expected_value)
+    return bool(
+        expected
+        and expected != current
+        and re.search(r"[가-힣]", current)
+        and re.search(r"[A-Za-z]", current)
+        and not re.search(r"[가-힣]", expected)
+        and expected.casefold() in current.casefold()
+    )
+
+
+def expected_drops_bilingual_context(
+    current_value: str,
+    expected_value: str,
+    issue_type: str = "",
+) -> bool:
+    """Reject near-duplicate English fragments that discard a bilingual value's Korean half."""
+
+    current = normalize_review_text(current_value)
+    expected = normalize_review_text(expected_value)
+    if not (
+        expected
+        and expected != current
+        and re.search(r"[가-힣]", current)
+        and re.search(r"[A-Za-z]", current)
+        and not re.search(r"[가-힣]", expected)
+        and re.search(r"[A-Za-z]", expected)
+    ):
+        return False
+    current_english = " ".join(re.findall(r"[A-Za-z]+", current)).casefold()
+    expected_english = " ".join(re.findall(r"[A-Za-z]+", expected)).casefold()
+    if not current_english or not expected_english:
+        return False
+    if issue_type in {SPELLING_CHECK_TYPE, TERMINOLOGY_CHECK_TYPE}:
+        return True
+    return bool(
+        expected_english in current_english
+        or SequenceMatcher(None, current_english, expected_english).ratio() >= 0.86
+    )
+
+
+def reconcile_non_actionable_bilingual_reviews(
+    connection: sqlite3.Connection,
+    run_id: int,
+) -> tuple[int, int, int]:
+    """Normalize stored bilingual findings without calling the language model again."""
+
+    candidate_count = 0
+    candidate_rows = connection.execute(
+        """
+        SELECT id, review_type, current_value, review_result_json, review_fingerprint
+        FROM linguistic_review_candidates
+        WHERE run_id = ? AND status = 'reviewed' AND review_result_json <> ''
+        """,
+        (run_id,),
+    ).fetchall()
+    for row in candidate_rows:
+        try:
+            decision = json.loads(str(row["review_result_json"]))
+        except (json.JSONDecodeError, TypeError):
+            continue
+        if not isinstance(decision, dict) or str(decision.get("status") or "") == "정상":
+            continue
+        current = normalize_review_text(str(row["current_value"] or ""))
+        expected = normalize_review_text(str(decision.get("expected_value") or ""))
+        review_type = str(row["review_type"] or decision.get("issue_type") or TRANSLATION_CHECK_TYPE)
+        if not expected_drops_bilingual_context(current, expected, review_type):
+            continue
+
+        corrected = {
+            **decision,
+            "status": "정상",
+            "current_value": current,
+            "expected_value": current,
+            "difference": f"{review_type} 통과",
+            "detail": korean_detail_for(review_type, "정상"),
+        }
+        serialized = json.dumps(corrected, ensure_ascii=False)
+        connection.execute(
+            "UPDATE linguistic_review_candidates SET review_result_json = ? WHERE id = ?",
+            (serialized, int(row["id"])),
+        )
+        fingerprint = str(row["review_fingerprint"] or "")
+        if fingerprint:
+            connection.execute(
+                "UPDATE linguistic_review_cache SET decision_json = ? WHERE fingerprint = ?",
+                (serialized, fingerprint),
+            )
+        candidate_count += 1
+
+    language_rule_ids = (
+        LLM_SPELLING_RULE_ID,
+        LLM_TERMINOLOGY_RULE_ID,
+        LLM_TRANSLATION_RULE_ID,
+        BLUE_REVIEW_RULE_ID,
+    )
+    placeholders = ", ".join("?" for _ in language_rule_ids)
+    check_rows = connection.execute(
+        f"""
+        SELECT id, check_type, current_value, expected_value
+        FROM validation_checks
+        WHERE run_id = ?
+          AND status <> '정상'
+          AND rule_id IN ({placeholders})
+        """,
+        (run_id, *language_rule_ids),
+    ).fetchall()
+    check_count = 0
+    for row in check_rows:
+        current = normalize_review_text(str(row["current_value"] or ""))
+        expected = normalize_review_text(str(row["expected_value"] or ""))
+        check_type = str(row["check_type"] or TRANSLATION_CHECK_TYPE)
+        if not expected_drops_bilingual_context(current, expected, check_type):
+            continue
+        connection.execute(
+            """
+            UPDATE validation_checks
+            SET expected_value = ?, difference = ?, status = '정상', severity = 'info', detail = ?
+            WHERE id = ?
+            """,
+            (
+                current,
+                f"{check_type} 통과",
+                korean_detail_for(check_type, "정상"),
+                int(row["id"]),
+            ),
+        )
+        check_count += 1
+
+    issue_rows = connection.execute(
+        f"""
+        SELECT id, issue_type, current_value, expected_value
+        FROM validation_issues
+        WHERE run_id = ?
+          AND rule_id IN ({placeholders})
+        """,
+        (run_id, *language_rule_ids),
+    ).fetchall()
+    issue_ids = [
+        (int(row["id"]),)
+        for row in issue_rows
+        if expected_drops_bilingual_context(
+            str(row["current_value"] or ""),
+            str(row["expected_value"] or ""),
+            str(row["issue_type"] or ""),
+        )
+    ]
+    if issue_ids:
+        connection.executemany("DELETE FROM validation_issues WHERE id = ?", issue_ids)
+    refresh_issue_count(connection, run_id)
+    return candidate_count, check_count, len(issue_ids)
+
+
+def is_temporal_notation(value: str) -> bool:
+    normalized = normalize_review_text(value)
+    return bool(
+        re.search(r"\d", normalized)
+        and re.search(r"[년월일]", normalized)
+        and re.fullmatch(r"[\d\s'’.,:/~～\-–—()년월일이후전부터까지]+", normalized)
+    )
+
+
+def translate_temporal_notation(value: str) -> str:
+    normalized = normalize_review_text(value)
+    date_match = re.fullmatch(r"(\d{4})년\s*(\d{1,2})월\s*(\d{1,2})일", normalized)
+    if date_match:
+        year, month, day = date_match.groups()
+        return f"{year}-{int(month):02d}-{int(day):02d}"
+    translated = normalized.replace("년", "").replace("월", "-").replace("일", "")
+    translated = translated.replace("이후", " and after").replace("이전", " and before")
+    translated = translated.replace("부터", " from").replace("까지", " through")
+    return normalize_review_text(translated)
 
 
 def remove_human_confirmation_language(value: str) -> str:
@@ -1243,7 +1969,7 @@ def looks_like_translation_mismatch(current_value: str, expected_value: str) -> 
 
 def rule_id_for(issue_type: str) -> str:
     if issue_type == BLUE_REVIEW_TYPE:
-        return BLUE_REVIEW_RULE_ID
+        return BLUE_LLM_RULE_ID
     if issue_type == "오탈자 검수":
         return LLM_SPELLING_RULE_ID
     if issue_type == "용어 제안":
@@ -1634,28 +2360,44 @@ def chunked_by_context(items: list[SourceReviewItem], context_size: int) -> list
     return batches
 
 
-def interleave_linguistic_items(items: list[SourceReviewItem]) -> list[SourceReviewItem]:
-    groups = {
-        check_type: [item for item in items if item.requested_review_type == check_type]
-        for check_type in (SPELLING_CHECK_TYPE, TERMINOLOGY_CHECK_TYPE, TRANSLATION_CHECK_TYPE)
+def group_linguistic_items_by_context(items: list[SourceReviewItem]) -> list[SourceReviewItem]:
+    """Keep every review type for one cell contiguous so one prompt carries its context once."""
+
+    grouped: dict[tuple[object, ...], list[SourceReviewItem]] = {}
+    for item in items:
+        grouped.setdefault(prompt_context_key(item), []).append(item)
+
+    type_order = {
+        SPELLING_CHECK_TYPE: 0,
+        TERMINOLOGY_CHECK_TYPE: 1,
+        TRANSLATION_CHECK_TYPE: 2,
     }
-    interleaved: list[SourceReviewItem] = []
-    max_length = max((len(group) for group in groups.values()), default=0)
-    for index in range(max_length):
-        for check_type in (SPELLING_CHECK_TYPE, TERMINOLOGY_CHECK_TYPE, TRANSLATION_CHECK_TYPE):
-            group = groups[check_type]
-            if index < len(group):
-                interleaved.append(group[index])
-    interleaved.extend(
+    return [
         item
-        for item in items
-        if item.requested_review_type not in {
-            SPELLING_CHECK_TYPE,
-            TERMINOLOGY_CHECK_TYPE,
-            TRANSLATION_CHECK_TYPE,
-        }
-    )
-    return interleaved
+        for context_items in grouped.values()
+        for item in sorted(
+            context_items,
+            key=lambda candidate: (
+                type_order.get(candidate.requested_review_type, 99),
+                candidate.issue_id,
+            ),
+        )
+    ]
+
+
+def take_contexts(items: list[SourceReviewItem], context_limit: int) -> list[SourceReviewItem]:
+    if context_limit <= 0:
+        return []
+    selected: list[SourceReviewItem] = []
+    seen: set[tuple[object, ...]] = set()
+    for item in items:
+        key = prompt_context_key(item)
+        if key not in seen:
+            if len(seen) >= context_limit:
+                break
+            seen.add(key)
+        selected.append(item)
+    return selected
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -1664,6 +2406,17 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--run-id", type=int, default=None, help="Validation run id")
     parser.add_argument("--report-id", type=int, default=None, help="Use latest run for this report id")
     parser.add_argument("--limit", type=int, default=None, help="Review only the first N blue candidates")
+    parser.add_argument(
+        "--blue-only",
+        action="store_true",
+        help="Review only HWPX blue-marked candidates and keep one blue result per value",
+    )
+    parser.add_argument("--model", default="", help="Override the configured review model")
+    parser.add_argument(
+        "--preview-table-code",
+        default="",
+        help="Review one table and print the result without writing to the database",
+    )
     return parser
 
 
@@ -1671,11 +2424,23 @@ def main() -> None:
     args = build_parser().parse_args()
     settings = llm_review_settings()
     limit = args.limit if args.limit is not None else settings["limit"]
+    if args.preview_table_code:
+        preview = preview_llm_table_reviews(
+            args.db,
+            table_code=args.preview_table_code,
+            run_id=args.run_id,
+            report_id=args.report_id,
+            limit=limit,
+        )
+        print(json.dumps(preview.__dict__, ensure_ascii=False, indent=2))
+        return
     result = append_llm_translation_reviews(
         args.db,
         run_id=args.run_id,
         report_id=args.report_id,
         limit=limit,
+        blue_only=args.blue_only,
+        model_override=args.model or None,
     )
     if result.skipped_reason:
         print(f"LLM review skipped: {result.skipped_reason}")

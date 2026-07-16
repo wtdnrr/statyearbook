@@ -6,18 +6,35 @@ import type {
   ValidationIssue,
 } from "../types";
 
-const OUTLIER_CHECK_TYPE = "이상치 검수";
+export const VALIDATION_CHECK_TYPES = [
+  "합계 검수",
+  "비율 검수",
+  "오탈자 검수",
+  "번역 검수",
+  "용어 제안",
+  "파란색 표기 확인",
+  "메타정보 검수",
+  "이상치 검수",
+] as const;
 
-export function isOutlierCheck(check: ValidationIssue) {
-  return check.type === OUTLIER_CHECK_TYPE;
+export const DEFAULT_HIDDEN_VALIDATION_TYPES = new Set<string>(["이상치 검수"]);
+
+export function validationTypesForTables(tables: StatTable[]) {
+  const discovered = new Set(VALIDATION_CHECK_TYPES);
+  for (const table of tables) {
+    for (const check of table.checks) {
+      discovered.add(check.type as (typeof VALIDATION_CHECK_TYPES)[number]);
+    }
+  }
+  return Array.from(discovered);
 }
 
-function visibleChecks(checks: ValidationIssue[], showOutlierChecks: boolean) {
-  if (showOutlierChecks) {
+function visibleChecks(checks: ValidationIssue[], hiddenTypes: ReadonlySet<string>) {
+  if (hiddenTypes.size === 0) {
     return checks;
   }
 
-  return checks.filter((check) => !isOutlierCheck(check));
+  return checks.filter((check) => !hiddenTypes.has(check.type));
 }
 
 function statusFromChecks(checks: ValidationIssue[]): { status: TableStatus; status_label: string } {
@@ -34,8 +51,8 @@ function statusFromChecks(checks: ValidationIssue[]): { status: TableStatus; sta
   return { status: "normal", status_label: "정상" };
 }
 
-function partWithVisibleChecks(part: StatTablePart, showOutlierChecks: boolean): StatTablePart {
-  const checks = visibleChecks(part.checks, showOutlierChecks);
+function partWithVisibleChecks(part: StatTablePart, hiddenTypes: ReadonlySet<string>): StatTablePart {
+  const checks = visibleChecks(part.checks, hiddenTypes);
   const status = statusFromChecks(checks);
 
   return {
@@ -47,15 +64,15 @@ function partWithVisibleChecks(part: StatTablePart, showOutlierChecks: boolean):
 
 export function tablesWithValidationVisibility(
   tables: StatTable[],
-  showOutlierChecks: boolean,
+  hiddenTypes: ReadonlySet<string>,
 ): StatTable[] {
-  if (showOutlierChecks) {
+  if (hiddenTypes.size === 0) {
     return tables;
   }
 
   return tables.map((table) => {
-    const checks = visibleChecks(table.checks, showOutlierChecks);
-    const parts = table.parts.map((part) => partWithVisibleChecks(part, showOutlierChecks));
+    const checks = visibleChecks(table.checks, hiddenTypes);
+    const parts = table.parts.map((part) => partWithVisibleChecks(part, hiddenTypes));
     const status = statusFromChecks(checks);
 
     return {

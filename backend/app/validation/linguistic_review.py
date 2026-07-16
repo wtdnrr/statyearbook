@@ -9,6 +9,7 @@ from app.validation.linguistic_policy import (
     SPELLING_CHECK_TYPE,
     TERMINOLOGY_CHECK_TYPE,
     TRANSLATION_CHECK_TYPE,
+    needs_terminology_review,
 )
 from app.validation.translation_glossary import (
     GlossaryEntry,
@@ -17,13 +18,15 @@ from app.validation.translation_glossary import (
     glossary_entries_for_text,
     refresh_translation_glossary,
 )
+from app.validation.models import restore_hyphenated_line_breaks
 
 
 LINGUISTIC_CANDIDATE_RULE_ID = "source.linguistic_review"
-LINGUISTIC_PROMPT_VERSION = "language-review-v3-dictionary-cache"
+LINGUISTIC_PROMPT_VERSION = "language-review-v5-minimal-cell-scope"
 HANGUL_RE = re.compile(r"[가-힣]")
 LATIN_RE = re.compile(r"[A-Za-z]")
 MAX_REVIEW_CHARS = 1400
+EXCLUDED_METADATA_REVIEW_LOCATIONS = frozenset({"분야", "단위", "기준일", "주석", "출처"})
 
 
 @dataclass(frozen=True)
@@ -33,21 +36,110 @@ class LinguisticReviewSummary:
     glossary_issues: int
 
 
+def clear_linguistic_review_run(
+    connection: sqlite3.Connection,
+    *,
+    report_id: int,
+    run_id: int,
+) -> None:
+    """Remove generated language artifacts while preserving calculation validation."""
+
+    language_rule_ids = (
+        "llm.spelling_review",
+        "llm.terminology_review",
+        "llm.translation_review",
+        "source.blue_text_review",
+        "source.blue_text_review.preview",
+    )
+    placeholders = ", ".join("?" for _ in language_rule_ids)
+    connection.execute(
+        f"DELETE FROM validation_issues WHERE run_id = ? AND rule_id IN ({placeholders})",
+        (run_id, *language_rule_ids),
+    )
+    connection.execute(
+        f"DELETE FROM validation_checks WHERE run_id = ? AND rule_id IN ({placeholders})",
+        (run_id, *language_rule_ids),
+    )
+    connection.execute("DELETE FROM linguistic_review_candidates WHERE run_id = ?", (run_id,))
+    connection.execute(
+        """
+        DELETE FROM translation_glossary
+        WHERE source_kind = 'llm' AND status = 'llm_reviewed'
+          AND source_table_id IN (SELECT id FROM stat_tables WHERE report_id = ?)
+        """,
+        (report_id,),
+    )
+    connection.execute(
+        "DELETE FROM linguistic_review_cache WHERE prompt_version <> ?",
+        (LINGUISTIC_PROMPT_VERSION,),
+    )
+    restore_report_hyphenated_line_breaks(connection, report_id)
+    connection.execute(
+        """
+        UPDATE validation_runs
+        SET issue_count = (
+            SELECT COUNT(*) FROM validation_issues WHERE validation_issues.run_id = validation_runs.id
+        )
+        WHERE id = ?
+        """,
+        (run_id,),
+    )
+
+
+def restore_report_hyphenated_line_breaks(
+    connection: sqlite3.Connection,
+    report_id: int,
+) -> None:
+    for row in connection.execute(
+        """
+        SELECT c.id, c.text_value
+        FROM stat_table_cells c
+        JOIN stat_tables st ON st.id = c.table_id
+        WHERE st.report_id = ? AND c.text_value LIKE '%-%'
+        """,
+        (report_id,),
+    ).fetchall():
+        current = str(row["text_value"] or "")
+        restored = restore_hyphenated_line_breaks(current)
+        if restored != current:
+            connection.execute(
+                "UPDATE stat_table_cells SET text_value = ? WHERE id = ?",
+                (restored, int(row["id"])),
+            )
+
+    title_fields = ("title", "title_en", "section_title", "section_title_en")
+    for row in connection.execute(
+        f"SELECT id, {', '.join(title_fields)} FROM stat_tables WHERE report_id = ?",
+        (report_id,),
+    ).fetchall():
+        updates = {
+            field: restore_hyphenated_line_breaks(str(row[field] or ""))
+            for field in title_fields
+            if restore_hyphenated_line_breaks(str(row[field] or "")) != str(row[field] or "")
+        }
+        if not updates:
+            continue
+        assignments = ", ".join(f"{field} = ?" for field in updates)
+        connection.execute(
+            f"UPDATE stat_tables SET {assignments} WHERE id = ?",
+            (*updates.values(), int(row["id"])),
+        )
+
+
 def prepare_linguistic_reviews(
     connection: sqlite3.Connection,
     *,
     report_id: int,
     run_id: int,
 ) -> LinguisticReviewSummary:
-    """Queue every Korean/English content location for all three LLM checks."""
+    """Queue only the language checks required by each source value."""
 
     refresh_translation_glossary(connection)
     candidate_count = 0
 
     tables = connection.execute(
         """
-        SELECT id, code, title, title_en, section_title, section_title_en,
-               domain, unit, base_date, note, source, raw_context
+        SELECT id, code, title, title_en, section_title, section_title_en, raw_context
         FROM stat_tables
         WHERE report_id = ?
         ORDER BY table_order, id
@@ -56,24 +148,28 @@ def prepare_linguistic_reviews(
     ).fetchall()
 
     with connection:
+        blue_keys = blue_review_candidate_keys(connection, run_id)
         for table in tables:
             table_id = int(table["id"])
-            metadata_values = (
+            document_values = (
                 ("표 제목", joined_bilingual_value(str(table["title"]), str(table["title_en"]))),
                 (
                     "대제목",
                     joined_bilingual_value(str(table["section_title"]), str(table["section_title_en"])),
                 ),
-                ("분야", table["domain"]),
-                ("단위", table["unit"]),
-                ("기준일", table["base_date"]),
-                ("주석", table["note"]),
-                ("출처", table["source"]),
                 ("하위표 제목", extract_subtable_caption(str(table["raw_context"] or ""))),
             )
-            for field_name, field_value in metadata_values:
+            for field_name, field_value in document_values:
                 value = normalize_review_text(str(field_value or ""))
                 if not has_language_text(value):
+                    continue
+                if review_location_key(
+                    table_id,
+                    field_name,
+                    None,
+                    None,
+                    value,
+                ) in blue_keys:
                     continue
                 candidate_count += review_text_value(
                     connection,
@@ -101,12 +197,21 @@ def prepare_linguistic_reviews(
                     continue
                 row_index = int(cell["row_index"])
                 col_index = int(cell["col_index"])
+                location = f"{row_index + 1}행 {col_index + 1}열"
+                if review_location_key(
+                    table_id,
+                    location,
+                    row_index,
+                    col_index,
+                    value,
+                ) in blue_keys:
+                    continue
                 candidate_count += review_text_value(
                     connection,
                     run_id=run_id,
                     report_id=report_id,
                     table_id=table_id,
-                    location=f"{row_index + 1}행 {col_index + 1}열",
+                    location=location,
                     row_index=row_index,
                     col_index=col_index,
                     current_value=value,
@@ -206,23 +311,25 @@ def review_text_value(
     )
     glossary_entries = entries
     candidates = 0
-    review_specs = (
+    review_specs: list[tuple[str, str, str]] = [
         (
             SPELLING_CHECK_TYPE,
             "language_spelling",
             "위치별 원문 전체를 LLM으로 검토하여 국문·영문 철자, 문자 깨짐, 숫자 혼입 및 문맥상 표기 오류를 확인",
         ),
-        (
-            TERMINOLOGY_CHECK_TYPE,
-            "language_terminology",
-            "위치별 원문 전체를 LLM으로 검토하여 공식 명칭, 공공 통계 문체 및 더 적절한 국문·영문 용어를 확인",
-        ),
-        (
+    ]
+    if korean_text or HANGUL_RE.search(current_value):
+        review_specs.append((
             TRANSLATION_CHECK_TYPE,
             translation_candidate_kind(current_value, pair),
             "위치별 원문 전체를 LLM으로 검토하여 한국어와 영어의 의미 대응, 번역 누락 및 공식 고유명사를 확인",
-        ),
-    )
+        ))
+    if needs_terminology_review(current_value):
+        review_specs.append((
+            TERMINOLOGY_CHECK_TYPE,
+            "language_terminology",
+            "명시된 의심 표현의 공식 명칭, 공공 통계 문체 및 더 적절한 국문·영문 용어를 확인",
+        ))
     for review_type, candidate_kind, reason in review_specs:
         candidates += insert_candidate_once(
             connection,
@@ -240,6 +347,46 @@ def review_text_value(
             reason=reason,
         )
     return candidates
+
+
+def blue_review_candidate_keys(
+    connection: sqlite3.Connection,
+    run_id: int,
+) -> set[tuple[int, str, int | None, int | None, str]]:
+    rows = connection.execute(
+        """
+        SELECT table_id, location, row_index, col_index, current_value
+        FROM linguistic_review_candidates
+        WHERE run_id = ? AND candidate_kind LIKE 'blue_text%'
+        """,
+        (run_id,),
+    ).fetchall()
+    return {
+        review_location_key(
+            int(row["table_id"]),
+            str(row["location"]),
+            int(row["row_index"]) if row["row_index"] is not None else None,
+            int(row["col_index"]) if row["col_index"] is not None else None,
+            str(row["current_value"]),
+        )
+        for row in rows
+    }
+
+
+def review_location_key(
+    table_id: int,
+    location: str,
+    row_index: int | None,
+    col_index: int | None,
+    current_value: str,
+) -> tuple[int, str, int | None, int | None, str]:
+    return (
+        table_id,
+        location,
+        row_index,
+        col_index,
+        normalize_review_text(current_value).casefold(),
+    )
 
 
 def insert_candidate_once(

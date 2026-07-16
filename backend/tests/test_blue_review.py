@@ -1,16 +1,24 @@
 from pathlib import Path
+import json
 import tempfile
 import unittest
 import zipfile
 
+from app.db.schema import connect, init_db
 from app.services.sqlite_report_service import (
     leading_label_column_indexes,
     remove_unmatched_closing_parentheses,
 )
 from app.validation.blue_review import (
+    BLUE_REVIEW_TYPE,
+    classify_blue_review_value,
     extract_blue_review_candidates,
+    insert_blue_review,
     row_context_matches,
+    should_skip_blue_review,
+    synchronize_blue_review_checks,
 )
+from app.validation.region_glossary import region_review_decision
 
 
 class BlueReviewExtractionTests(unittest.TestCase):
@@ -63,6 +71,191 @@ class BlueReviewExtractionTests(unittest.TestCase):
                 "자문 Consultation",
             )
         )
+
+    def test_blue_candidates_are_exposed_once_even_when_language_review_is_pending(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            db_path = Path(directory) / "test.sqlite"
+            with connect(db_path) as connection:
+                init_db(connection)
+                report_id = connection.execute(
+                    """
+                    INSERT INTO annual_reports (
+                        year, title, source_file_name, source_file_path, file_hash, imported_at
+                    ) VALUES (2026, '연보', 'draft.hwpx', 'draft.hwpx', 'blue-test', '2026-07-15')
+                    """
+                ).lastrowid
+                table_id = connection.execute(
+                    """
+                    INSERT INTO stat_tables (report_id, code, title, table_order)
+                    VALUES (?, '부록 3', '위원회 현황', 1)
+                    """,
+                    (report_id,),
+                ).lastrowid
+                run_id = connection.execute(
+                    """
+                    INSERT INTO validation_runs (
+                        report_id, rules_version, started_at, completed_at, issue_count
+                    ) VALUES (?, 'test', '2026-07-15', '2026-07-15', 0)
+                    """,
+                    (report_id,),
+                ).lastrowid
+                normal = json.dumps(
+                    {
+                        "status": "정상",
+                        "expected_value": "자문 Consultation",
+                        "difference": "공식 사전 일치",
+                        "detail": "공식 표기와 일치합니다.",
+                    },
+                    ensure_ascii=False,
+                )
+                connection.execute(
+                    """
+                    INSERT INTO linguistic_review_candidates (
+                        run_id, table_id, review_type, candidate_kind, location,
+                        row_index, col_index, current_value, status, review_result_json
+                    ) VALUES (?, ?, ?, 'blue_text_bilingual', '5행 5열', 4, 4, ?, 'reviewed', ?)
+                    """,
+                    (run_id, table_id, BLUE_REVIEW_TYPE, "자문 Consultation", normal),
+                )
+                connection.execute(
+                    """
+                    INSERT INTO linguistic_review_candidates (
+                        run_id, table_id, review_type, candidate_kind, location,
+                        row_index, col_index, current_value, status
+                    ) VALUES (?, ?, ?, 'blue_text_korean_translation',
+                              '6행 1열', 5, 0, '지방공기업정책위원회', 'pending')
+                    """,
+                    (run_id, table_id, BLUE_REVIEW_TYPE),
+                )
+                connection.commit()
+
+            inserted = synchronize_blue_review_checks(db_path, run_id=int(run_id))
+
+            with connect(db_path) as connection:
+                checks = connection.execute(
+                    """
+                    SELECT location, status, row_index, col_index
+                    FROM validation_checks
+                    WHERE run_id = ? AND check_type = '파란색 표기 확인'
+                    ORDER BY location
+                    """,
+                    (run_id,),
+                ).fetchall()
+                issue_count = connection.execute(
+                    "SELECT COUNT(*) AS count FROM validation_issues WHERE run_id = ?",
+                    (run_id,),
+                ).fetchone()["count"]
+
+        self.assertEqual(inserted, 2)
+        self.assertEqual(
+            [(row["location"], row["status"], row["row_index"], row["col_index"]) for row in checks],
+            [
+                ("5행 5열", "정상", 4, 4),
+                ("6행 1열", "확인 필요", 5, 0),
+            ],
+        )
+        self.assertEqual(issue_count, 1)
+
+    def test_numeric_and_metadata_blue_marks_are_not_candidates(self) -> None:
+        self.assertTrue(should_skip_blue_review("4행 2열", "3,456"))
+        self.assertTrue(should_skip_blue_review("4행 2열", "12.5%"))
+        self.assertTrue(should_skip_blue_review("출처", "안전정책과 주무관 홍길동"))
+        self.assertTrue(should_skip_blue_review("주석", "잠정치임"))
+        self.assertFalse(should_skip_blue_review("4행 2열", "전자메가폰 Electronic Megaphone"))
+
+    def test_embedded_latin_unit_is_not_mistaken_for_bilingual_translation(self) -> None:
+        kind, korean, english = classify_blue_review_value(
+            "산림작물 3,419ha 등 복구지원액 1조8,809억원"
+        )
+
+        self.assertEqual(kind, "blue_text_korean_translation")
+        self.assertEqual(korean, "산림작물 3,419ha 등 복구지원액 1조8,809억원")
+        self.assertEqual(english, "")
+
+    def test_insert_blue_review_persists_one_combined_candidate(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            db_path = Path(directory) / "test.sqlite"
+            with connect(db_path) as connection:
+                init_db(connection)
+                report_id = connection.execute(
+                    """
+                    INSERT INTO annual_reports (
+                        year, title, source_file_name, source_file_path, file_hash, imported_at
+                    ) VALUES (2026, '연보', 'draft.hwpx', 'draft.hwpx', 'insert-blue', '2026-07-16')
+                    """
+                ).lastrowid
+                table_id = connection.execute(
+                    "INSERT INTO stat_tables (report_id, code, title) VALUES (?, '1-1', '표')",
+                    (report_id,),
+                ).lastrowid
+                run_id = connection.execute(
+                    """
+                    INSERT INTO validation_runs (report_id, rules_version, started_at, completed_at)
+                    VALUES (?, 'test', '2026-07-16', '2026-07-16')
+                    """,
+                    (report_id,),
+                ).lastrowid
+
+                self.assertTrue(
+                    insert_blue_review(
+                        connection,
+                        run_id=int(run_id),
+                        table_id=int(table_id),
+                        location="2행 1열",
+                        row_index=1,
+                        col_index=0,
+                        current_value="서울 Seoul",
+                    )
+                )
+                rows = connection.execute(
+                    """
+                    SELECT review_type, candidate_kind
+                    FROM linguistic_review_candidates
+                    WHERE run_id = ?
+                    """,
+                    (run_id,),
+                ).fetchall()
+
+        self.assertEqual(
+            [(row["review_type"], row["candidate_kind"]) for row in rows],
+            [(BLUE_REVIEW_TYPE, "blue_text_bilingual")],
+        )
+
+    def test_region_dictionary_corrects_romanization_without_llm(self) -> None:
+        current = "인천 남동구, 충남 천안시, 제주 서귀포시 Inchoen Namdong-gu, Chungnam Choenan-si, Jeju Seoguipo-si"
+        decision = region_review_decision(current)
+
+        self.assertIsNotNone(decision)
+        self.assertEqual(decision.status, "확인 필요")  # type: ignore[union-attr]
+        self.assertEqual(
+            decision.expected_value,  # type: ignore[union-attr]
+            "인천 남동구, 충남 천안시, 제주 서귀포시 Incheon Namdong-gu, Chungnam Cheonan-si, Jeju Seogwipo-si",
+        )
+
+    def test_region_dictionary_uses_current_official_province_names(self) -> None:
+        current = "강원특별자치도, 전북특별자치도"
+        decision = region_review_decision(current)
+
+        self.assertIsNotNone(decision)
+        self.assertEqual(
+            decision.expected_value,  # type: ignore[union-attr]
+            "Gangwon State, Jeonbuk State",
+        )
+
+    def test_region_dictionary_handles_eup_myeon_dong_and_invalid_suffix(self) -> None:
+        idong = region_review_decision("경기 포천시 이동면")
+        grouped = region_review_decision(
+            "경기 가평군, 충남 서산시·예산시, 전남 담양군, 경남 산청군·합천군"
+        )
+
+        self.assertIsNotNone(idong)
+        self.assertEqual(
+            idong.expected_value,  # type: ignore[union-attr]
+            "경기 포천시 이동면 / Gyeonggi Pocheon-si Idong-myeon",
+        )
+        self.assertIsNotNone(grouped)
+        self.assertIn("예산군", grouped.expected_value)  # type: ignore[union-attr]
+        self.assertNotIn("Yesan-si", grouped.expected_value)  # type: ignore[union-attr]
 
 
 class TableDisplayParsingTests(unittest.TestCase):

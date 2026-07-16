@@ -45,6 +45,11 @@
       "url": "https://kosis.kr/civilComplaint/kosisGuideIndex.do?q_no=5",
       "verified_at": "2026-07-15"
     },
+    "yearbook_approved_terms": {
+      "title": "행정안전통계연보 반복 표기 승인 사전",
+      "url": "",
+      "verified_at": "2026-07-15"
+    },
     "children_safety_expo": {
       "title": "2026 어린이안전박람회 개최 보도자료",
       "url": "https://www.mois.go.kr/frt/bbs/type010/commonSelectBoardArticle.do?bbsId=BBSMSTR_000000000008&nttId=125507",
@@ -59,6 +64,11 @@
       "title": "'기억하라 12·29' 여객기 참사 1주기 추모행사",
       "url": "https://www.korea.kr/news/policyNewsView.do?newsId=148956690",
       "verified_at": "2026-07-15"
+    },
+    "subsidy24_official": {
+      "title": "Easy and Convenient Subsidy24 - Ministry of the Interior and Safety",
+      "url": "https://www.mois.go.kr/eng/bbs/type002/commonSelectBoardArticle.do?bbsId=BBSMSTR_000000000022&nttId=98890",
+      "verified_at": "2026-07-16"
     }
   },
   "entries": [
@@ -147,24 +157,51 @@
     {"source":"경상남도","target":"Gyeongsangnam-do","category":"행정구역명","subcategory":"시도","source_id":"ngii_admin_regions","status":"official_verified","aliases":["경남"]},
     {"source":"제주특별자치도","target":"Jeju Special Self-Governing Province","category":"행정구역명","subcategory":"시도","source_id":"jeju_official","status":"official_verified","aliases":["제주","제주도"]},
 
-    {"source":"합계","target":"Total","category":"통계 표준어","subcategory":"합계","source_id":"kosis_terms","status":"reference"},
-    {"source":"계","target":"Total","category":"통계 표준어","subcategory":"합계","source_id":"kosis_terms","status":"reference"},
-    {"source":"소계","target":"Subtotal","category":"통계 표준어","subcategory":"합계","source_id":"kosis_terms","status":"reference"},
-    {"source":"누계","target":"Cumulative Total","category":"통계 표준어","subcategory":"누계","source_id":"kosis_terms","status":"reference"},
-    {"source":"비율","target":"Ratio","category":"통계 표준어","subcategory":"비율","source_id":"kosis_terms","status":"reference"},
-    {"source":"구성비","target":"Composition Ratio","category":"통계 표준어","subcategory":"비율","source_id":"kosis_terms","status":"reference"},
-    {"source":"증감","target":"Change","category":"통계 표준어","subcategory":"증감","source_id":"kosis_terms","status":"reference"},
-    {"source":"증감액","target":"Amount of Change","category":"통계 표준어","subcategory":"증감","source_id":"kosis_terms","status":"reference"},
-    {"source":"증감률","target":"Rate of Change","category":"통계 표준어","subcategory":"증감률","source_id":"kosis_terms","status":"reference"},
-    {"source":"평균","target":"Average","category":"통계 표준어","subcategory":"평균","source_id":"kosis_terms","status":"reference"},
-    {"source":"전년 대비","target":"Year-on-Year","category":"통계 표준어","subcategory":"증감률","source_id":"kosis_terms","status":"reference"},
-    {"source":"전월 대비","target":"Month-on-Month","category":"통계 표준어","subcategory":"증감률","source_id":"kosis_terms","status":"reference"},
-    {"source":"구분","target":"Classification","category":"일반 용어","subcategory":"표 항목","source_id":"public_term_database","status":"reference"},
-    {"source":"연도","target":"Year","category":"일반 용어","subcategory":"표 항목","source_id":"public_term_database","status":"reference"},
-    {"source":"단위","target":"Unit","category":"일반 용어","subcategory":"표 항목","source_id":"public_term_database","status":"reference"},
+    {"source":"서울","target":"Seoul","category":"행정구역명","subcategory":"시도 축약","source_id":"yearbook_approved_terms","status":"approved"},
+    {"source":"부산","target":"Busan","category":"행정구역명","subcategory":"시도 축약","source_id":"yearbook_approved_terms","status":"approved"},
+    {"source":"대구","target":"Daegu","category":"행정구역명","subcategory":"시도 축약","source_id":"yearbook_approved_terms","status":"approved"},
+    {"source":"인천","target":"Incheon","category":"행정구역명","subcategory":"시도 축약","source_id":"yearbook_approved_terms","status":"approved"},
+    {"source":"광주","target":"Gwangju","category":"행정구역명","subcategory":"시도 축약","source_id":"yearbook_approved_terms","status":"approved"},
+    {"source":"대전","target":"Daejeon","category":"행정구역명","subcategory":"시도 축약","source_id":"yearbook_approved_terms","status":"approved"},
+    {"source":"울산","target":"Ulsan","category":"행정구역명","subcategory":"시도 축약","source_id":"yearbook_approved_terms","status":"approved"},
+    {"source":"세종","target":"Sejong","category":"행정구역명","subcategory":"시도 축약","source_id":"yearbook_approved_terms","status":"approved"},
+    {"source":"경기","target":"Gyeonggi","category":"행정구역명","subcategory":"시도 축약","source_id":"yearbook_approved_terms","status":"approved"},
+    {"source":"강원","target":"Gangwon","category":"행정구역명","subcategory":"시도 축약","source_id":"yearbook_approved_terms","status":"approved"},
+    {"source":"충북","target":"Chungbuk","category":"행정구역명","subcategory":"시도 축약","source_id":"yearbook_approved_terms","status":"approved"},
+    {"source":"충남","target":"Chungnam","category":"행정구역명","subcategory":"시도 축약","source_id":"yearbook_approved_terms","status":"approved"},
+    {"source":"전북","target":"Jeonbuk","category":"행정구역명","subcategory":"시도 축약","source_id":"yearbook_approved_terms","status":"approved"},
+    {"source":"전남","target":"Jeonnam","category":"행정구역명","subcategory":"시도 축약","source_id":"yearbook_approved_terms","status":"approved"},
+    {"source":"경북","target":"Gyeongbuk","category":"행정구역명","subcategory":"시도 축약","source_id":"yearbook_approved_terms","status":"approved"},
+    {"source":"경남","target":"Gyeongnam","category":"행정구역명","subcategory":"시도 축약","source_id":"yearbook_approved_terms","status":"approved"},
+    {"source":"제주","target":"Jeju","category":"행정구역명","subcategory":"시도 축약","source_id":"yearbook_approved_terms","status":"approved"},
+
+    {"source":"국립과학수사연구원","target":"National Forensic Service","category":"기관명","subcategory":"산하기관","source_id":"yearbook_approved_terms","status":"approved","aliases":["국과수"]},
+    {"source":"국립재난안전연구원","target":"National Disaster Management Research Institute","category":"기관명","subcategory":"산하기관","source_id":"yearbook_approved_terms","status":"approved","aliases":["재난안전연구원"]},
+
+    {"source":"합계","target":"Total","category":"통계 표준어","subcategory":"합계","source_id":"kosis_terms","status":"approved"},
+    {"source":"계","target":"Total","category":"통계 표준어","subcategory":"합계","source_id":"kosis_terms","status":"approved"},
+    {"source":"총계","target":"Total","category":"통계 표준어","subcategory":"합계","source_id":"yearbook_approved_terms","status":"approved"},
+    {"source":"전체","target":"Total","category":"통계 표준어","subcategory":"합계","source_id":"yearbook_approved_terms","status":"approved"},
+    {"source":"소계","target":"Subtotal","category":"통계 표준어","subcategory":"합계","source_id":"kosis_terms","status":"approved"},
+    {"source":"누계","target":"Cumulative Total","category":"통계 표준어","subcategory":"누계","source_id":"kosis_terms","status":"approved"},
+    {"source":"비율","target":"Ratio","category":"통계 표준어","subcategory":"비율","source_id":"kosis_terms","status":"approved"},
+    {"source":"구성비","target":"Composition Ratio","category":"통계 표준어","subcategory":"비율","source_id":"kosis_terms","status":"approved"},
+    {"source":"증감","target":"Change","category":"통계 표준어","subcategory":"증감","source_id":"kosis_terms","status":"approved"},
+    {"source":"증감액","target":"Amount of Change","category":"통계 표준어","subcategory":"증감","source_id":"kosis_terms","status":"approved"},
+    {"source":"증감률","target":"Rate of Change","category":"통계 표준어","subcategory":"증감률","source_id":"kosis_terms","status":"approved"},
+    {"source":"증가율","target":"Rate of Growth","category":"통계 표준어","subcategory":"증감률","source_id":"yearbook_approved_terms","status":"approved"},
+    {"source":"평균","target":"Average","category":"통계 표준어","subcategory":"평균","source_id":"kosis_terms","status":"approved"},
+    {"source":"전년 대비","target":"Year-on-Year","category":"통계 표준어","subcategory":"증감률","source_id":"kosis_terms","status":"approved"},
+    {"source":"전월 대비","target":"Month-on-Month","category":"통계 표준어","subcategory":"증감률","source_id":"kosis_terms","status":"approved"},
+    {"source":"구분","target":"Classification","category":"일반 용어","subcategory":"표 항목","source_id":"public_term_database","status":"approved"},
+    {"source":"연도","target":"Year","category":"일반 용어","subcategory":"표 항목","source_id":"public_term_database","status":"approved"},
+    {"source":"구분 연도","target":"Classification Year","category":"일반 용어","subcategory":"표 항목","source_id":"yearbook_approved_terms","status":"approved"},
+    {"source":"지역","target":"Region","category":"일반 용어","subcategory":"표 항목","source_id":"yearbook_approved_terms","status":"approved"},
+    {"source":"단위","target":"Unit","category":"일반 용어","subcategory":"표 항목","source_id":"public_term_database","status":"approved"},
 
     {"source":"어린이안전박람회","target":"Children's Safety Expo","category":"행사·사업명","subcategory":"박람회","source_id":"children_safety_expo","status":"reference","aliases":["어린이 안전박람회"]},
     {"source":"대한민국 안전산업박람회","target":"Korea Safety Expo","category":"행사·사업명","subcategory":"박람회","source_id":"korea_safety_expo","status":"reference","aliases":["안전산업박람회"]},
-    {"source":"12·29 여객기 참사 추모행사","target":"Memorial Event for the Victims of the December 29 Passenger Plane Disaster","category":"행사·사업명","subcategory":"기념행사","source_id":"december_29_memorial","status":"reference","aliases":["12･29 여객기 참사 추모행사"]}
+    {"source":"12·29 여객기 참사 추모행사","target":"Memorial Event for the Victims of the December 29 Passenger Plane Disaster","category":"행사·사업명","subcategory":"기념행사","source_id":"december_29_memorial","status":"reference","aliases":["12･29 여객기 참사 추모행사"]},
+    {"source":"보조금24","target":"Subsidy24","category":"행사·사업명","subcategory":"정부 서비스","source_id":"subsidy24_official","status":"official_verified","aliases":["Subsidies 24"]}
   ]
 }

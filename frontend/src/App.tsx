@@ -7,8 +7,10 @@ import { ReportWorkspace } from "./components/ReportWorkspace";
 import { useReport } from "./hooks/useReport";
 import type { TableStatus } from "./types";
 import {
+  DEFAULT_HIDDEN_VALIDATION_TYPES,
   summaryWithValidationVisibility,
   tablesWithValidationVisibility,
+  validationTypesForTables,
 } from "./utils/validationVisibility";
 import "./styles/global.css";
 
@@ -21,13 +23,17 @@ export default function App() {
   const [selectedReportId, setSelectedReportId] = useState("");
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState<FilterValue>("all");
-  const [showOutlierChecks, setShowOutlierChecks] = useState(false);
+  const [tableListScrollTop, setTableListScrollTop] = useState(0);
+  const [hiddenValidationTypes, setHiddenValidationTypes] = useState<Set<string>>(
+    () => new Set(DEFAULT_HIDDEN_VALIDATION_TYPES),
+  );
   const report = useReport(selectedReportId || undefined);
 
   const rawTables = report.data?.tables ?? [];
+  const validationTypes = useMemo(() => validationTypesForTables(rawTables), [rawTables]);
   const tables = useMemo(
-    () => tablesWithValidationVisibility(rawTables, showOutlierChecks),
-    [rawTables, showOutlierChecks],
+    () => tablesWithValidationVisibility(rawTables, hiddenValidationTypes),
+    [hiddenValidationTypes, rawTables],
   );
   const visibleSummary = useMemo(
     () =>
@@ -59,6 +65,19 @@ export default function App() {
     setDetailTableId(null);
     setFilter("all");
     setQuery("");
+    setTableListScrollTop(0);
+  }
+
+  function handleValidationTypeVisibility(type: string, visible: boolean) {
+    setHiddenValidationTypes((current) => {
+      const next = new Set(current);
+      if (visible) {
+        next.delete(type);
+      } else {
+        next.add(type);
+      }
+      return next;
+    });
   }
 
   if (report.status === "loading") {
@@ -73,8 +92,11 @@ export default function App() {
     return (
       <DetailView
         table={detailTable}
-        showOutlierChecks={showOutlierChecks}
-        onShowOutlierChecksChange={setShowOutlierChecks}
+        validationTypes={validationTypes}
+        hiddenValidationTypes={hiddenValidationTypes}
+        onValidationTypeVisibilityChange={handleValidationTypeVisibility}
+        onShowAllValidationTypes={() => setHiddenValidationTypes(new Set())}
+        onHideAllValidationTypes={() => setHiddenValidationTypes(new Set(validationTypes))}
         onBack={() => setDetailTableId(null)}
       />
     );
@@ -90,13 +112,18 @@ export default function App() {
       selectedReportId={selectedReportId}
       query={query}
       filter={filter}
-      showOutlierChecks={showOutlierChecks}
+      validationTypes={validationTypes}
+      hiddenValidationTypes={hiddenValidationTypes}
+      tableListScrollTop={tableListScrollTop}
       onReportChange={handleReportChange}
       onQueryChange={setQuery}
       onFilterChange={setFilter}
-      onShowOutlierChecksChange={setShowOutlierChecks}
+      onValidationTypeVisibilityChange={handleValidationTypeVisibility}
+      onShowAllValidationTypes={() => setHiddenValidationTypes(new Set())}
+      onHideAllValidationTypes={() => setHiddenValidationTypes(new Set(validationTypes))}
       onSelect={handleSelect}
       onOpen={handleOpen}
+      onTableListScrollTopChange={setTableListScrollTop}
     />
   );
 

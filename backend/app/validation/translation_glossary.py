@@ -489,7 +489,11 @@ def seed_official_glossary(connection: sqlite3.Connection) -> int:
                 str(item.get("category", "일반 용어")),
                 str(item.get("subcategory", "")),
                 str(item.get("status", "reference")),
-                20000 if item.get("status") == "official_verified" else 5000,
+                {
+                    "approved": 30000,
+                    "official_verified": 20000,
+                    "official_name_only": 10000,
+                }.get(str(item.get("status", "reference")), 5000),
                 f"공식 웹 자료 검색 수집: {source_meta.get('title', '')}",
                 str(source_meta.get("url", "")),
                 str(source_meta.get("title", "")),

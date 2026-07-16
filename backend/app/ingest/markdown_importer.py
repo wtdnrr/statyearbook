@@ -13,6 +13,7 @@ from app.db.schema import DB_PATH, connect, init_db
 from app.ingest.anomaly import annotate_adjacent_duplicate_tables
 from app.ingest.cell_text import footnote_markers_from_texts, split_cell_text
 from app.ingest.table_repairs import repair_region_split_rows
+from app.validation.models import restore_hyphenated_line_breaks
 from app.ingest.hwpx_importer import (
     ENGLISH_ONLY_RE,
     ENGLISH_TITLE_RE,
@@ -173,7 +174,8 @@ def parse_span(value: str | None) -> int:
 
 
 def clean_cell_text(value: str) -> str:
-    lines = [" ".join(line.split()) for line in value.replace("\xa0", " ").splitlines()]
+    restored = restore_hyphenated_line_breaks(value.replace("\xa0", " "))
+    lines = [" ".join(line.split()) for line in restored.splitlines()]
     return "\n".join(line for line in lines if line).strip()
 
 

@@ -165,6 +165,464 @@
         }
       ]
     },
+    "2-1-1-7": {
+      "status": "ready",
+      "decision": "curated_growth_profile",
+      "label": "무인민원발급기 증가수량 증감 산식 승인",
+      "table_type": "year_trend_table",
+      "notes": "큐레이션: 증가수량은 무인민원발급기 운영대수의 당해연도 값에서 직전 연도 값을 뺀 값으로 검수합니다. 표에 없는 2016년 기준값이 필요한 2017년 증가수량은 산식 대상에서 제외합니다.",
+      "checks": [
+        {
+          "id": "curated.2-1-1-7.operating_machine_increase",
+          "type": "row_year_over_year_change_amount",
+          "category": "table",
+          "check_group": "growth_rate",
+          "check_type": "증감액 검수",
+          "failure_status": "오류 의심",
+          "severity": "critical",
+          "label": "증가수량 = 무인민원발급기 운영대수 당해연도 - 직전 연도",
+          "target_row": 2,
+          "source_row": 1,
+          "columns": [1, 2, 3, 4, 5, 6, 7, 8, 9],
+          "tolerance": 0.0,
+          "confidence": 1.0
+        }
+      ]
+    },
+    "2-1-3-4": {
+      "status": "ready",
+      "decision": "curated_sum_profile",
+      "label": "바로 받는 서비스·정책정보 연도 합계 산식 승인",
+      "table_type": "year_trend_table",
+      "notes": "큐레이션: 계는 2021년부터 2025년까지의 연도별 이용 건수를 모두 더한 값입니다. 기존 자동 추론은 마지막 2025년 열을 제외해 잘못된 통과 결과를 만들 수 있어 교체합니다.",
+      "suppress_checks": [
+        {
+          "type": "row_sum"
+        }
+      ],
+      "checks": [
+        {
+          "id": "curated.2-1-3-4.total_including_2025",
+          "type": "row_sum",
+          "category": "table",
+          "check_group": "sum",
+          "check_type": "합계 검수",
+          "failure_status": "오류 의심",
+          "severity": "critical",
+          "label": "계 = 2021 + 2022 + 2023 + 2024 + 2025",
+          "target_column": 1,
+          "operand_columns": [2, 3, 4, 5, 6],
+          "row_indices": [1, 2],
+          "tolerance": 0.0,
+          "confidence": 1.0
+        }
+      ]
+    },
+    "2-1-5-2": {
+      "status": "ready",
+      "decision": "curated_growth_profile",
+      "label": "인감증명 방문 발급 전년 대비 증감률 산식 승인",
+      "table_type": "year_trend_table",
+      "notes": "큐레이션: 전년대비 증감은 온라인 발급이 없던 기간을 포함해 방문 발급 건수의 전년 대비 증감률로 표시됩니다. 총계는 방문·온라인 발급의 합계로 별도 검수합니다.",
+      "checks": [
+        {
+          "id": "curated.2-1-5-2.in_person_yoy_rate",
+          "type": "year_rows_change_rate",
+          "category": "table",
+          "check_group": "growth_rate",
+          "check_type": "증감률 검수",
+          "failure_status": "오류 의심",
+          "severity": "critical",
+          "label": "전년대비 증감 = (방문 발급 당해연도 - 직전 연도) / 직전 연도 * 100",
+          "value_column": 2,
+          "rate_column": 3,
+          "row_indices": [1, 2, 3, 4, 5, 6],
+          "multiplier": 100,
+          "rate_tolerance": 0.15,
+          "confidence": 1.0
+        }
+      ]
+    },
+    "2-2-1-2": {
+      "status": "ready",
+      "decision": "curated_sum_and_growth_profile",
+      "label": "행정사업 신고 계·전년대비 증감 산식 승인",
+      "table_type": "year_trend_table",
+      "notes": "큐레이션: 계(A+B)는 영업중(A)과 휴업(B)의 합계이며, 전년대비 증감은 계의 전년 대비 증감률입니다. 헤더의 A+B 수식과 자동 합계 후보가 중복 생성되지 않도록 하나의 합계 산식만 유지합니다.",
+      "suppress_checks": [
+        {
+          "type": "row_arithmetic"
+        },
+        {
+          "type": "row_sum"
+        }
+      ],
+      "checks": [
+        {
+          "id": "curated.2-2-1-2.total_by_operation_status",
+          "type": "row_sum",
+          "category": "table",
+          "check_group": "sum",
+          "check_type": "합계 검수",
+          "failure_status": "오류 의심",
+          "severity": "critical",
+          "label": "계(A+B) = 영업중(A) + 휴업(B)",
+          "target_column": 1,
+          "operand_columns": [3, 4],
+          "row_indices": [1, 2, 3, 4, 5, 6, 7, 8],
+          "tolerance": 0.0,
+          "confidence": 1.0
+        },
+        {
+          "id": "curated.2-2-1-2.total_yoy_rate",
+          "type": "year_rows_change_rate",
+          "category": "table",
+          "check_group": "growth_rate",
+          "check_type": "증감률 검수",
+          "failure_status": "오류 의심",
+          "severity": "critical",
+          "label": "전년대비 증감 = (계 당해연도 - 계 직전 연도) / 계 직전 연도 * 100",
+          "value_column": 1,
+          "rate_column": 2,
+          "row_indices": [1, 2, 3, 4, 5, 6, 7, 8],
+          "multiplier": 100,
+          "rate_tolerance": 0.15,
+          "confidence": 1.0
+        }
+      ]
+    },
+    "2-2-2-1": {
+      "status": "ready",
+      "decision": "curated_sum_profile",
+      "label": "정보공개 처리 현황 합계 산식 승인",
+      "table_type": "year_trend_table",
+      "notes": "큐레이션: 청구건수는 전부공개·부분공개·비공개의 합계입니다. 값이 아직 입력되지 않은 2025년 행은 계산 대상에서 제외합니다.",
+      "checks": [
+        {
+          "id": "curated.2-2-2-1.request_total_by_disclosure_status",
+          "type": "row_sum",
+          "category": "table",
+          "check_group": "sum",
+          "check_type": "합계 검수",
+          "failure_status": "오류 의심",
+          "severity": "critical",
+          "label": "청구건수 = 전부공개 + 부분공개 + 비공개",
+          "target_column": 1,
+          "operand_columns": [2, 3, 4],
+          "row_indices": [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13],
+          "tolerance": 0.0,
+          "confidence": 1.0
+        }
+      ]
+    },
+    "2-2-2-3": {
+      "status": "ready",
+      "decision": "curated_sum_profile",
+      "label": "비공개 사유별 건수 합계 산식 승인",
+      "table_type": "year_trend_table",
+      "notes": "큐레이션: 같은 연도에 건수 행과 구성비 행이 연속으로 배치됩니다. 비공개 건수는 제1호부터 제8호까지의 건수 합계로만 검수하며, 구성비 행을 건수 합계에 포함하지 않습니다.",
+      "checks": [
+        {
+          "id": "curated.2-2-2-3.non_disclosure_total_by_reason_counts",
+          "type": "row_sum",
+          "category": "table",
+          "check_group": "sum",
+          "check_type": "합계 검수",
+          "failure_status": "오류 의심",
+          "severity": "critical",
+          "label": "비공개 건수 = 제1호 + 제2호 + 제3호 + 제4호 + 제5호 + 제6호 + 제7호 + 제8호",
+          "target_column": 1,
+          "operand_columns": [2, 3, 4, 5, 6, 7, 8, 9],
+          "row_indices": [1, 3, 5, 7, 9, 11, 13, 15, 17, 19, 21, 23, 25],
+          "tolerance": 0.0,
+          "confidence": 1.0
+        }
+      ]
+    },
+    "2-2-5-1": {
+      "status": "ready",
+      "decision": "curated_sum_and_ratio_profile",
+      "label": "국민 제안 채택률·중앙우수제안 시상 합계 산식 승인",
+      "table_type": "year_trend_table",
+      "notes": "큐레이션: 채택률은 채택건수와 접수건수로 계산하고, 중앙우수제안 채택 건수는 금상·은상·동상·장려상 수의 합계로 검수합니다.",
+      "checks": [
+        {
+          "id": "curated.2-2-5-1.excellent_proposal_award_total",
+          "type": "row_sum",
+          "category": "table",
+          "check_group": "sum",
+          "check_type": "합계 검수",
+          "failure_status": "오류 의심",
+          "severity": "critical",
+          "label": "중앙우수제안 채택 = 금상 + 은상 + 동상 + 장려상",
+          "target_column": 4,
+          "operand_columns": [5, 6, 7, 8],
+          "row_indices": [2, 3, 4, 5, 6, 7, 8, 9, 10, 11],
+          "tolerance": 0.0,
+          "confidence": 1.0
+        }
+      ]
+    },
+    "2-2-5-2": {
+      "status": "ready",
+      "decision": "curated_sum_and_ratio_profile",
+      "label": "공무원 제안 채택률·중앙우수제안 시상 합계 산식 승인",
+      "table_type": "year_trend_table",
+      "notes": "큐레이션: 채택률은 채택건수와 접수건수로 계산하고, 중앙우수제안 채택 건수는 금상·은상·동상·장려상 수의 합계로 검수합니다.",
+      "checks": [
+        {
+          "id": "curated.2-2-5-2.excellent_proposal_award_total",
+          "type": "row_sum",
+          "category": "table",
+          "check_group": "sum",
+          "check_type": "합계 검수",
+          "failure_status": "오류 의심",
+          "severity": "critical",
+          "label": "중앙우수제안 채택 = 금상 + 은상 + 동상 + 장려상",
+          "target_column": 4,
+          "operand_columns": [5, 6, 7, 8],
+          "row_indices": [2, 3, 4, 5, 6, 7, 8, 9, 10, 11],
+          "tolerance": 0.0,
+          "confidence": 1.0
+        }
+      ]
+    },
+    "2-2-6": {
+      "status": "ready",
+      "decision": "curated_subtotal_profile",
+      "label": "생활공감정책 참여단 구성 소계 산식 승인",
+      "table_type": "regional_table",
+      "notes": "큐레이션: 제10기 구성인원은 남·여 인원의 합, 연령대별 인원의 합, 이전 기수 모니터와 신규 인원의 합으로 각각 검수합니다. 지역별 행과 계 행 모두 같은 산식을 적용합니다.",
+      "checks": [
+        {
+          "id": "curated.2-2-6.sex_subtotal",
+          "type": "row_sum",
+          "category": "table",
+          "check_group": "sum",
+          "check_type": "합계 검수",
+          "failure_status": "오류 의심",
+          "severity": "critical",
+          "label": "제10기 구성인원 = 남 + 여",
+          "target_column": 1,
+          "operand_columns": [2, 3],
+          "row_indices": [3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20],
+          "tolerance": 0.0,
+          "confidence": 1.0
+        },
+        {
+          "id": "curated.2-2-6.age_subtotal",
+          "type": "row_sum",
+          "category": "table",
+          "check_group": "sum",
+          "check_type": "합계 검수",
+          "failure_status": "오류 의심",
+          "severity": "critical",
+          "label": "제10기 구성인원 = 20대 이하 + 30대 + 40대 + 50대 + 60대 이상",
+          "target_column": 1,
+          "operand_columns": [4, 5, 6, 7, 8],
+          "row_indices": [3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20],
+          "tolerance": 0.0,
+          "confidence": 1.0
+        },
+        {
+          "id": "curated.2-2-6.monitor_status_subtotal",
+          "type": "row_sum",
+          "category": "table",
+          "check_group": "sum",
+          "check_type": "합계 검수",
+          "failure_status": "오류 의심",
+          "severity": "critical",
+          "label": "제10기 구성인원 = 이전 기수 모니터 인원 + 신규",
+          "target_column": 1,
+          "operand_columns": [9, 11],
+          "row_indices": [3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20],
+          "tolerance": 0.0,
+          "confidence": 1.0
+        }
+      ]
+    },
+    "2-2-11-3": {
+      "status": "ready",
+      "decision": "no_additive_formula",
+      "label": "비영리민간단체 공익사업 지원 산식 없음 확인",
+      "table_type": "year_trend_table",
+      "notes": "큐레이션: 신청과 선정의 단체 수·사업 수·금액은 각각 독립 지표이며, 표 안에 이들을 합산한 결과 셀이 없습니다. 신청·선정 지표를 임의로 더하거나 나누는 합계·비율 검수는 수행하지 않습니다."
+    },
+    "2-2-12-1": {
+      "status": "ready",
+      "decision": "curated_sum_profile",
+      "label": "국무회의 의안처리 수 합계 산식 승인",
+      "table_type": "year_trend_table",
+      "notes": "큐레이션: 의안처리 수는 헌법·공포안·법률안·대통령안·일반안·보고안의 합계입니다. 표기된 '-'는 해당 연도의 0건으로 계산합니다.",
+      "checks": [
+        {
+          "id": "curated.2-2-12-1.agenda_total_by_type",
+          "type": "row_sum",
+          "category": "table",
+          "check_group": "sum",
+          "check_type": "합계 검수",
+          "failure_status": "오류 의심",
+          "severity": "critical",
+          "label": "의안처리 수 = 헌법 + 공포안 + 법률안 + 대통령안 + 일반안 + 보고안",
+          "target_column": 2,
+          "operand_columns": [3, 4, 5, 6, 7, 8],
+          "row_indices": [2, 3, 4, 5, 6, 7, 8, 9, 10, 11],
+          "tolerance": 0.0,
+          "confidence": 1.0
+        }
+      ]
+    },
+    "1-2-1-2": {
+      "status": "ready",
+      "decision": "curated_growth_profile",
+      "label": "연도별 공무원 정원 증감·증감률 산식 승인",
+      "table_type": "year_trend_table",
+      "notes": "큐레이션: 증감은 당해연도 공무원 정원에서 직전 연도 정원을 뺀 값이며, 증감률은 그 증감을 직전 연도 정원으로 나누어 계산합니다.",
+      "checks": [
+        {
+          "id": "curated.1-2-1-2.yearly_change_rate",
+          "type": "year_rows_change_rate",
+          "category": "table",
+          "check_group": "growth_rate",
+          "check_type": "증감률 검수",
+          "failure_status": "오류 의심",
+          "severity": "critical",
+          "label": "증감률 = 증감 / 직전 연도 공무원정원 * 100",
+          "value_column": 1,
+          "change_column": 2,
+          "rate_column": 3,
+          "row_indices": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11],
+          "multiplier": 100,
+          "change_tolerance": 1.0,
+          "rate_tolerance": 0.15,
+          "confidence": 1.0
+        }
+      ]
+    },
+    "1-2-1-3": {
+      "status": "ready",
+      "decision": "curated_hierarchical_total_profile",
+      "label": "기관별 공무원 정원 계층별 열 합계 산식 승인",
+      "table_type": "organization_summary_table",
+      "notes": "큐레이션: 전체 계는 입법부·사법부·헌법재판소·선거관리위원회·행정부 계의 합계이며, 행정부 계는 국가공무원 계와 지방공무원 계의 합계입니다. 지방공무원 계는 지방자치단체와 지방교육청의 합계로 기존 규칙을 유지합니다.",
+      "checks": [
+        {
+          "id": "curated.1-2-1-3.total_by_branch",
+          "type": "column_sum",
+          "category": "table",
+          "check_group": "sum",
+          "check_type": "합계 검수",
+          "failure_status": "오류 의심",
+          "severity": "critical",
+          "label": "계 = 입법부 + 사법부 + 헌법재판소 + 선거관리위원회 + 행정부 계",
+          "target_row": 1,
+          "operand_rows": [2, 3, 4, 5, 6],
+          "columns": [1, 2, 3, 4, 5, 6],
+          "tolerance": 0.0,
+          "confidence": 1.0
+        },
+        {
+          "id": "curated.1-2-1-3.executive_total",
+          "type": "column_sum",
+          "category": "table",
+          "check_group": "sum",
+          "check_type": "합계 검수",
+          "failure_status": "오류 의심",
+          "severity": "critical",
+          "label": "행정부 계 = 행정부 국가공무원 계 + 행정부 지방공무원 계",
+          "target_row": 6,
+          "operand_rows": [7, 71],
+          "columns": [1, 2, 3, 4, 5, 6],
+          "tolerance": 0.0,
+          "confidence": 1.0
+        }
+      ]
+    },
+    "1-2-2 표1": {
+      "status": "ready",
+      "decision": "curated_cross_table_total_profile",
+      "label": "행정부 공무원 정원 국가·지방 총계 산식 승인",
+      "table_type": "split_year_trend_table",
+      "notes": "큐레이션: 표1의 계는 국가공무원 소계와 표2의 지방공무원 소계를 같은 연도별로 더해 검수합니다. 각 하위표의 직종별 소계 검수는 기존 규칙을 유지합니다.",
+      "checks": [
+        {
+          "id": "curated.1-2-2.total_state_and_local",
+          "type": "cross_table_row_sum",
+          "category": "table",
+          "check_group": "sum",
+          "check_type": "합계 검수",
+          "failure_status": "오류 의심",
+          "severity": "critical",
+          "label": "계 = 국가공무원 소계(표1) + 지방공무원 소계(표2)",
+          "source_table_code": "1-2-2 표2",
+          "target_column": 1,
+          "operand_columns": [2],
+          "source_column": 1,
+          "row_indices": [2, 3, 4, 5, 6, 7, 8, 9, 10, 11],
+          "tolerance": 0.0,
+          "confidence": 1.0
+        }
+      ]
+    },
+    "1-2-3-3": {
+      "status": "ready",
+      "decision": "curated_separate_total_columns",
+      "label": "경찰·소방·검사별 계 분리 산식 승인",
+      "table_type": "year_trend_table",
+      "notes": "큐레이션: 같은 표 안의 계는 모두 다른 집단의 합계입니다. 경찰 계는 국가직+지방직, 소방 계는 국가직+지방직, 검사 계는 법무부+검찰청+고위공직자범죄수사처로 분리해 검수하며, 계 열끼리는 합산하지 않습니다.",
+      "suppress_checks": [
+        {
+          "type": "row_sum"
+        }
+      ],
+      "checks": [
+        {
+          "id": "curated.1-2-3-3.police_total",
+          "type": "row_sum",
+          "category": "table",
+          "check_group": "sum",
+          "check_type": "합계 검수",
+          "failure_status": "오류 의심",
+          "severity": "critical",
+          "label": "경찰공무원 계 = 국가직 + 지방직",
+          "target_column": 1,
+          "operand_columns": [2, 3],
+          "row_indices": [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12],
+          "tolerance": 0.0,
+          "confidence": 1.0
+        },
+        {
+          "id": "curated.1-2-3-3.fire_total",
+          "type": "row_sum",
+          "category": "table",
+          "check_group": "sum",
+          "check_type": "합계 검수",
+          "failure_status": "오류 의심",
+          "severity": "critical",
+          "label": "소방공무원 계 = 국가직 + 지방직",
+          "target_column": 4,
+          "operand_columns": [5, 6],
+          "row_indices": [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12],
+          "tolerance": 0.0,
+          "confidence": 1.0
+        },
+        {
+          "id": "curated.1-2-3-3.prosecutor_total",
+          "type": "row_sum",
+          "category": "table",
+          "check_group": "sum",
+          "check_type": "합계 검수",
+          "failure_status": "오류 의심",
+          "severity": "critical",
+          "label": "검사 계 = 법무부 + 검찰청 + 고위공직자범죄수사처",
+          "target_column": 7,
+          "operand_columns": [8, 9, 10],
+          "row_indices": [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12],
+          "tolerance": 0.0,
+          "confidence": 1.0
+        }
+      ]
+    },
     "5-1-10": {
       "status": "ready",
       "decision": "curated_sum_profile",

@@ -2,10 +2,22 @@ from __future__ import annotations
 
 import unittest
 
-from app.services.sqlite_report_service import highlight_cells_for
+from app.services.sqlite_report_service import fallback_highlight_rows, highlight_cells_for
 
 
 class ValidationHighlightTest(unittest.TestCase):
+    def test_exact_cell_fallback_does_not_highlight_the_entire_row(self) -> None:
+        row = {"row_index": 14, "col_index": 0}
+
+        self.assertEqual(fallback_highlight_rows(row), [])  # type: ignore[arg-type]
+
+    def test_row_fallback_is_kept_when_no_cell_coordinate_exists(self) -> None:
+        row = {"row_index": 14, "col_index": None}
+
+        highlights = fallback_highlight_rows(row)  # type: ignore[arg-type]
+
+        self.assertEqual([(item.row_index, item.role) for item in highlights], [(14, "target")])
+
     def assert_highlight_cells(
         self,
         row: dict[str, int | None],

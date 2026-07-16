@@ -81,6 +81,17 @@ PYTHONPATH=backend .venv/bin/python -m app.validation.run_validations
 
 LLM 검수는 `.env`에 키를 설정하고 명시적으로 옵션을 켠 경우에만 실행됩니다. 설정 예시는 `.env.example`을 참고합니다.
 
+BizRouter를 사용할 때는 다음 세 값을 설정합니다. `LLM_PROVIDER=auto`에서는
+`BIZROUTER_API_KEY`가 있으면 BizRouter를 우선 사용하고, 없으면 기존 OpenAI 설정으로
+동작합니다.
+
+```dotenv
+LLM_PROVIDER=bizrouter
+LLM_REVIEW_ENABLED=1
+BIZROUTER_API_KEY=발급받은_키
+BIZROUTER_MODEL=openai/gpt-5-mini
+```
+
 ```bash
 PYTHONPATH=backend .venv/bin/python -m app.validation.run_validations --with-llm
 ```
@@ -89,4 +100,12 @@ PYTHONPATH=backend .venv/bin/python -m app.validation.run_validations --with-llm
 
 ```bash
 PYTHONPATH=backend .venv/bin/python -m app.validation.llm_translation_review --run-id RUN_ID --limit 30
+```
+
+한 통계만 API로 검수하되 결과를 DB·캐시·사전에 저장하지 않는 미리보기 명령은
+다음과 같습니다.
+
+```bash
+PYTHONPATH=backend .venv/bin/python -m app.validation.llm_translation_review \
+  --run-id RUN_ID --preview-table-code 6-3-1-7
 ```

@@ -4,7 +4,11 @@ from dataclasses import dataclass, field
 import hashlib
 import json
 
-from app.validation.cross_table_rules import DEFAULT_CROSS_TABLE_RULES, AdjacentDuplicateTableRule
+from app.validation.cross_table_rules import (
+    DEFAULT_CROSS_TABLE_RULES,
+    AdjacentDuplicateTableRule,
+    ConfiguredCrossTableRowSumRule,
+)
 from app.validation.models import ValidationCheckRecord, ValidationIssueRecord, ValidationTable
 from app.validation.profile_rules import ProfileSpecRule, ProfileStateRule
 from app.validation.profiles import ValidationProfile
@@ -32,7 +36,9 @@ class ValidationEngine:
                 ProfileStateRule(self._profiles),
                 ProfileSpecRule(self._profiles),
             ]
-        self._cross_table_rules: list[AdjacentDuplicateTableRule] = DEFAULT_CROSS_TABLE_RULES
+        self._cross_table_rules = [*DEFAULT_CROSS_TABLE_RULES]
+        if profiles is not None:
+            self._cross_table_rules.append(ConfiguredCrossTableRowSumRule(self._profiles))
 
     @property
     def rules_version(self) -> str:

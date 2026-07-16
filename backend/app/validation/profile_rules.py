@@ -72,10 +72,6 @@ SUPPORTED_PROFILE_SPEC_TYPES = {
     "year_rows_change_rate",
     "year_rows_change_amount",
     "outlier_columns",
-    "spelling_static",
-    "terminology_static",
-    "translation_static",
-    "title_translation_static",
 }
 
 
@@ -262,14 +258,6 @@ class ProfileSpecRule(ValidationRule):
                 spec_issues, spec_checks = self._validate_year_rows_change_amount(table, profile, spec)
             elif rule_type == "outlier_columns":
                 spec_issues, spec_checks = self._validate_outliers(table, profile, spec)
-            elif rule_type == "spelling_static":
-                spec_issues, spec_checks = self._validate_static_spelling(table, profile, spec)
-            elif rule_type == "terminology_static":
-                spec_issues, spec_checks = self._validate_static_terminology(table, profile, spec)
-            elif rule_type == "translation_static":
-                spec_issues, spec_checks = self._validate_static_translation(table, profile, spec)
-            elif rule_type == "title_translation_static":
-                spec_issues, spec_checks = self._validate_title_translation(table, profile, spec)
             else:
                 spec_issues, spec_checks = [], []
 
@@ -283,7 +271,7 @@ class ProfileSpecRule(ValidationRule):
         table: ValidationTable,
         check_specs: list[dict[str, Any]],
     ) -> list[dict[str, Any]]:
-        """Expose one metadata check even for profiles stored before profile v3."""
+        """Merge legacy unit checks into one metadata-presence check."""
 
         active_specs = [
             spec
@@ -297,6 +285,7 @@ class ProfileSpecRule(ValidationRule):
         ]
         if not metadata_specs:
             return active_specs
+
         remaining_specs = [
             spec
             for spec in active_specs

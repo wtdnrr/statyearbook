@@ -4,13 +4,13 @@ import argparse
 from pathlib import Path
 
 from app.db.schema import DB_PATH, connect, init_db
-from app.validation.blue_review import append_blue_text_review_checks
+from app.validation.blue_review import append_blue_text_review_checks, synchronize_blue_review_checks
 from app.validation.engine import ValidationEngine
 from app.validation.llm_translation_review import (
     append_llm_translation_reviews,
     apply_reusable_linguistic_reviews,
 )
-from app.validation.linguistic_review import prepare_linguistic_reviews
+from app.validation.linguistic_review import clear_linguistic_review_run, prepare_linguistic_reviews
 from app.validation.profile_repository import SQLiteValidationProfileRepository
 from app.validation.source_review import append_source_format_review_checks
 from app.validation.sqlite_repository import SQLiteValidationRepository
@@ -70,6 +70,8 @@ def run_validations(
         if llm_result.skipped_reason:
             raise RuntimeError(f"LLM 전수 언어 검수가 실행되지 않았습니다: {llm_result.skipped_reason}")
 
+    synchronize_blue_review_checks(db_path, run_id=run_id)
+
     language_counts = linguistic_review_counts(db_path, run_id)
     if include_llm and language_counts["pending"]:
         raise RuntimeError(
@@ -87,6 +89,62 @@ def run_validations(
         "language_pending": language_counts["pending"],
         "language_reused": reusable_counts[2],
         "language_status": "완료" if language_counts["pending"] == 0 else "대기",
+    }
+
+
+def rebuild_linguistic_review_scope(
+    db_path: Path = DB_PATH,
+    *,
+    report_id: int,
+    run_id: int,
+) -> dict[str, int]:
+    """Rebuild language candidates without making any paid LLM request."""
+
+    with connect(db_path) as connection:
+        init_db(connection)
+        report = connection.execute(
+            "SELECT source_file_path FROM annual_reports WHERE id = ?",
+            (report_id,),
+        ).fetchone()
+        if report is None:
+            raise RuntimeError(f"연보를 찾을 수 없습니다: {report_id}")
+        with connection:
+            clear_linguistic_review_run(
+                connection,
+                report_id=report_id,
+                run_id=run_id,
+            )
+
+    blue_candidates = append_blue_text_review_checks(
+        db_path,
+        report_id=report_id,
+        run_id=run_id,
+        source_path=str(report["source_file_path"]),
+    )
+    with connect(db_path) as connection:
+        init_db(connection)
+        with connection:
+            summary = prepare_linguistic_reviews(
+                connection,
+                report_id=report_id,
+                run_id=run_id,
+            )
+    reusable_counts = apply_reusable_linguistic_reviews(db_path, run_id=run_id)
+    synchronize_blue_review_checks(db_path, run_id=run_id)
+    refresh_count = validation_issue_count(db_path, run_id)
+    with connect(db_path) as connection:
+        connection.execute(
+            "UPDATE validation_runs SET issue_count = ? WHERE id = ?",
+            (refresh_count, run_id),
+        )
+        connection.commit()
+    counts = linguistic_review_counts(db_path, run_id)
+    return {
+        "blue_candidates": blue_candidates,
+        "language_candidates": counts["total"] or summary.candidates,
+        "language_pending": counts["pending"],
+        "language_reused": reusable_counts[2],
+        "issues": refresh_count,
     }
 
 

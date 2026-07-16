@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import re
 
 
 SPELLING_CHECK_TYPE = "오탈자 검수"
@@ -124,6 +125,16 @@ TERMINOLOGY_REPLACEMENTS: tuple[dict[str, str], ...] = (
     },
     {"current": "Small business", "expected": "Small Business", "language": "en", "reason": "영문 제목식 표기"},
 )
+
+
+def needs_terminology_review(value: str) -> bool:
+    """Only queue terminology review when a concrete suspect expression is present."""
+
+    normalized = re.sub(r"\s+", " ", value).strip().casefold()
+    return any(
+        str(replacement["current"]).casefold() in normalized
+        for replacement in TERMINOLOGY_REPLACEMENTS
+    )
 
 
 BASE_TRANSLATIONS: tuple[dict[str, str], ...] = (

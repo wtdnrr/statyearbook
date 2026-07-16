@@ -15,6 +15,7 @@ import type {
   ValidationIssue,
 } from "../types";
 import {
+  LINGUISTIC_CHECK_TYPES,
   repeatedCalculationGroupKey,
   validationDisplayGroupKey,
 } from "../utils/validationGrouping";
@@ -22,6 +23,7 @@ import { firstFocusableCheck, resolveIssueLocation } from "../utils/validationLo
 import { DataGrid } from "./DataGrid";
 import { StatusBadge } from "./StatusBadge";
 import { VisualPanel } from "./VisualPanel";
+import { ValidationTypeFilter } from "./ValidationTypeFilter";
 
 type DetailTab = "checks" | "changes" | "visuals" | "metadata";
 type CheckFilter = "all" | "passed" | "review" | "error";
@@ -50,8 +52,11 @@ interface GridHighlightLocation {
 
 interface DetailViewProps {
   table: StatTable;
-  showOutlierChecks: boolean;
-  onShowOutlierChecksChange: (show: boolean) => void;
+  validationTypes: string[];
+  hiddenValidationTypes: ReadonlySet<string>;
+  onValidationTypeVisibilityChange: (type: string, visible: boolean) => void;
+  onShowAllValidationTypes: () => void;
+  onHideAllValidationTypes: () => void;
   onBack: () => void;
 }
 
@@ -78,7 +83,6 @@ const checkTypeOrder = new Map(
     "용어 제안",
     "파란색 표기 확인",
     "이상치 검수",
-    "메타정보 검수",
   ].map((type, index) => [type, index]),
 );
 
@@ -459,12 +463,14 @@ function sortChecksByCalculationHierarchy(checks: DisplayCheck[]) {
     .map((_, index) => index)
     .filter((index) => indegree[index] === 0);
   const ordered: DisplayCheck[] = [];
+  const compareCheckIndexes = (left: number, right: number) => {
+    const typeOrder =
+      (checkTypeOrder.get(checks[left].type) ?? 999) -
+      (checkTypeOrder.get(checks[right].type) ?? 999);
+    return typeOrder || left - right;
+  };
   while (ready.length > 0) {
-    ready.sort((left, right) => {
-      const typeOrder =
-        (checkTypeOrder.get(checks[left].type) ?? 999) - (checkTypeOrder.get(checks[right].type) ?? 999);
-      return typeOrder || left - right;
-    });
+    ready.sort(compareCheckIndexes);
     const index = ready.shift();
     if (index === undefined) {
       break;
@@ -478,7 +484,24 @@ function sortChecksByCalculationHierarchy(checks: DisplayCheck[]) {
     }
   }
 
-  return ordered.length === checks.length ? ordered : checks;
+  if (ordered.length < checks.length) {
+    const orderedIds = new Set(ordered.map((check) => check.id));
+    const unresolved = checks
+      .map((_, index) => index)
+      .filter((index) => !orderedIds.has(checks[index].id))
+      .sort(compareCheckIndexes)
+      .map((index) => checks[index]);
+    ordered.push(...unresolved);
+  }
+
+  // A calculation hierarchy can contain a cycle when several checks reuse the
+  // same aggregate cell. Keep the hierarchy order within each check type, but
+  // always enforce the product-level type order as the final presentation key.
+  return ordered.sort(
+    (left, right) =>
+      (checkTypeOrder.get(left.type) ?? 999) -
+      (checkTypeOrder.get(right.type) ?? 999),
+  );
 }
 
 function groupChecksForDisplay(part: StatTablePart, sourceChecks: ValidationIssue[]): DisplayCheck[] {
@@ -500,6 +523,36 @@ function groupChecksForDisplay(part: StatTablePart, sourceChecks: ValidationIssu
     const rows = uniqueValues(targetLocations.map((location) => location.row));
     const columns = uniqueValues(targetLocations.map((location) => location.column));
     const targetCount = checks.length;
+    const isGroupedLinguisticPass =
+      checks.every((check) => check.status === "정상" && LINGUISTIC_CHECK_TYPES.has(check.type));
+
+    if (isGroupedLinguisticPass) {
+      const reviewedTypes = uniqueValues(checks.map((check) => check.type));
+      const reviewType = reviewedTypes[0] ?? representative.type;
+      const reviewedCellCount = new Set(
+        highlightCells.map((cell) => highlightCellKey(cell)),
+      ).size;
+      const displayTargetCount = reviewedCellCount || targetCount;
+      return {
+        ...representative,
+        id: `group-${validationDisplayGroupKey(first)}`,
+        type: reviewType,
+        current_value: `${displayTargetCount}개 셀 검수`,
+        expected_value: "교정 사항 없음",
+        difference: `${reviewType} 통과`,
+        detail: `${displayTargetCount}개 헤더·셀을 확인했으며 교정이 필요한 내용이 발견되지 않았습니다.`,
+        status: aggregated.status,
+        severity: aggregated.severity,
+        checks,
+        targetLocations,
+        targetCount: displayTargetCount,
+        rowSummary: summarizeValues(rows, "행"),
+        columnSummary: summarizeValues(columns, "열"),
+        highlight_cells: highlightCells,
+        highlight_rows: highlightRows,
+        focus_cell: focusCell,
+      };
+    }
 
     if (targetCount === 1) {
       return {
@@ -542,6 +595,14 @@ function groupChecksForDisplay(part: StatTablePart, sourceChecks: ValidationIssu
   });
 
   return sortChecksByCalculationHierarchy(displayChecks);
+}
+
+function shouldShowCalculationUsage(check: DisplayCheck) {
+  return check.checks.some(
+    (item) =>
+      Boolean(item.formula?.trim()) ||
+      (item.highlight_cells ?? []).some((cell) => cell.role === "related"),
+  );
 }
 
 function expandCalculationFamilyForHighlight(
@@ -733,8 +794,11 @@ function MetadataGrid({
 
 export function DetailView({
   table,
-  showOutlierChecks,
-  onShowOutlierChecksChange,
+  validationTypes,
+  hiddenValidationTypes,
+  onValidationTypeVisibilityChange,
+  onShowAllValidationTypes,
+  onHideAllValidationTypes,
   onBack,
 }: DetailViewProps) {
   const [activeTab, setActiveTab] = useState<DetailTab>("checks");
@@ -834,14 +898,14 @@ export function DetailView({
           </div>
         </div>
         <div className="detail-header__actions">
-          <label className="table-option-toggle validation-toggle">
-            <input
-              checked={showOutlierChecks}
-              onChange={(event) => onShowOutlierChecksChange(event.target.checked)}
-              type="checkbox"
-            />
-            <span>이상치 표시</span>
-          </label>
+          <ValidationTypeFilter
+            types={validationTypes}
+            hiddenTypes={hiddenValidationTypes}
+            align="right"
+            onVisibilityChange={onValidationTypeVisibilityChange}
+            onShowAll={onShowAllValidationTypes}
+            onHideAll={onHideAllValidationTypes}
+          />
           <StatusBadge status={table.status} label={table.status_label} />
           <button className="secondary-button detail-download" type="button">
             <Download aria-hidden="true" size={16} />
@@ -1006,7 +1070,9 @@ export function DetailView({
                       <span>{selectedIssue.formula}</span>
                     </div>
                   ) : null}
-                  {!isMetadataIssue ? <CalculationUsageList part={activePart} check={selectedIssue} /> : null}
+                  {!isMetadataIssue && shouldShowCalculationUsage(selectedIssue) ? (
+                    <CalculationUsageList part={activePart} check={selectedIssue} />
+                  ) : null}
                 </article>
               ) : (
                 <p className="empty-copy">이 분류에 해당하는 검수 결과가 없습니다.</p>

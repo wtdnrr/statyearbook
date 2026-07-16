@@ -5,6 +5,7 @@ import tempfile
 import unittest
 
 from app.db.schema import connect, init_db
+from app.validation.linguistic_policy import needs_terminology_review
 from app.validation.linguistic_review import extract_subtable_caption, prepare_linguistic_reviews
 from app.validation.translation_glossary import (
     GlossaryEntry,
@@ -16,6 +17,10 @@ from app.validation.translation_glossary import (
 
 
 class LinguisticReviewTest(unittest.TestCase):
+    def test_terminology_review_requires_a_concrete_suspect_expression(self) -> None:
+        self.assertTrue(needs_terminology_review("잔액율 Balance Ratio"))
+        self.assertFalse(needs_terminology_review("서울 Seoul"))
+
     def test_bilingual_pair_requires_one_unambiguous_korean_english_pair(self) -> None:
         self.assertEqual(extract_bilingual_pair("서울\nSeoul"), ("서울", "Seoul"))
         self.assertEqual(extract_bilingual_pair("지식재산처 Ministry of Intellectual Property"), ("지식재산처", "Ministry of Intellectual Property"))
@@ -29,7 +34,7 @@ class LinguisticReviewTest(unittest.TestCase):
             "공용차량 정수 Government Vehicles",
         )
 
-    def test_official_glossary_is_context_but_all_three_reviews_still_run(self) -> None:
+    def test_language_reviews_use_minimal_required_scope(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             db_path = Path(temp_dir) / "review.sqlite"
             with connect(db_path) as connection:
@@ -58,6 +63,15 @@ class LinguisticReviewTest(unittest.TestCase):
                     "1-1",
                     "지식재산처",
                     "Intellectual Property Office",
+                )
+                connection.execute(
+                    """
+                    UPDATE stat_tables
+                    SET domain = '행정', unit = '건', base_date = '2025. 12. 31.',
+                        note = '주석 문장', source = '담당 부서 주무관 (044-000-0000)'
+                    WHERE id = ?
+                    """,
+                    (current_table_id,),
                 )
                 connection.execute(
                     """
@@ -124,8 +138,8 @@ class LinguisticReviewTest(unittest.TestCase):
                     ).fetchall()
                 }
                 self.assertIn("오탈자 검수", candidate_types)
-                self.assertIn("용어 제안", candidate_types)
                 self.assertIn("번역 검수", candidate_types)
+                self.assertNotIn("용어 제안", candidate_types)
 
                 mixed_numeric_candidates = connection.execute(
                     """
@@ -135,7 +149,7 @@ class LinguisticReviewTest(unittest.TestCase):
                     """,
                     (run_id,),
                 ).fetchone()
-                self.assertEqual(mixed_numeric_candidates["candidate_count"], 3)
+                self.assertEqual(mixed_numeric_candidates["candidate_count"], 2)
 
                 repeated_location_candidates = connection.execute(
                     """
@@ -145,7 +159,7 @@ class LinguisticReviewTest(unittest.TestCase):
                     """,
                     (run_id,),
                 ).fetchone()
-                self.assertEqual(repeated_location_candidates["candidate_count"], 3)
+                self.assertEqual(repeated_location_candidates["candidate_count"], 2)
 
                 long_value_candidates = connection.execute(
                     """
@@ -155,7 +169,7 @@ class LinguisticReviewTest(unittest.TestCase):
                     """,
                     (run_id,),
                 ).fetchone()
-                self.assertGreaterEqual(long_value_candidates["candidate_count"], 6)
+                self.assertGreaterEqual(long_value_candidates["candidate_count"], 4)
 
                 title_candidates = connection.execute(
                     """
@@ -165,7 +179,18 @@ class LinguisticReviewTest(unittest.TestCase):
                     """,
                     (run_id,),
                 ).fetchone()
-                self.assertEqual(title_candidates["candidate_count"], 3)
+                self.assertEqual(title_candidates["candidate_count"], 2)
+
+                metadata_candidates = connection.execute(
+                    """
+                    SELECT COUNT(*) AS candidate_count
+                    FROM linguistic_review_candidates
+                    WHERE run_id = ?
+                      AND location IN ('분야', '단위', '기준일', '주석', '출처')
+                    """,
+                    (run_id,),
+                ).fetchone()
+                self.assertEqual(metadata_candidates["candidate_count"], 0)
 
                 entries = glossary_entries_for_source(
                     connection,
