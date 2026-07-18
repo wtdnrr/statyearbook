@@ -203,7 +203,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--with-llm",
         action="store_true",
-        help="규칙·사전 검수 후 LLM 오탈자·용어·번역 검수를 명시적으로 추가합니다.",
+        help="규칙·사전 검수 후 LLM 오탈자·번역 검수를 명시적으로 추가합니다.",
     )
     parser.add_argument(
         "--refresh-profiles",

@@ -961,6 +961,7 @@ class StaticKoreanSpellingRule(ValidationRule):
 
     TERMS = {
         "잔액율": "잔액률",
+        "진행율": "진행률",
     }
 
     def validate(self, table: ValidationTable) -> list[ValidationIssueRecord]:
@@ -978,9 +979,9 @@ class StaticKoreanSpellingRule(ValidationRule):
                             location=f"{row_index + 1}행 {col_index + 1}열",
                             current_value=current,
                             expected_value=expected,
-                            difference="발간 표준 용어 확인",
-                            severity="warning",
-                            detail=f"국문 용어집 기준으로 '{current}'보다 '{expected}' 표기를 제안합니다. 실제 발간 기준 용어와 일치하는지 확인하세요.",
+                            difference="국문 맞춤법 오류",
+                            severity="critical",
+                            detail=f"국문 맞춤법에 따라 '{current}'를 '{expected}'로 교정해야 합니다.",
                             row_index=row_index,
                             col_index=col_index,
                         )

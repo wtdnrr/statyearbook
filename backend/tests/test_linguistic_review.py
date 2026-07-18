@@ -5,7 +5,7 @@ import tempfile
 import unittest
 
 from app.db.schema import connect, init_db
-from app.validation.linguistic_policy import needs_terminology_review
+from app.validation.linguistic_policy import SPELLING_REPLACEMENTS
 from app.validation.linguistic_review import extract_subtable_caption, prepare_linguistic_reviews
 from app.validation.translation_glossary import (
     GlossaryEntry,
@@ -17,9 +17,13 @@ from app.validation.translation_glossary import (
 
 
 class LinguisticReviewTest(unittest.TestCase):
-    def test_terminology_review_requires_a_concrete_suspect_expression(self) -> None:
-        self.assertTrue(needs_terminology_review("잔액율 Balance Ratio"))
-        self.assertFalse(needs_terminology_review("서울 Seoul"))
+    def test_clear_korean_orthography_errors_remain_spelling_checks(self) -> None:
+        replacements = {
+            item["current"]: item["expected"]
+            for item in SPELLING_REPLACEMENTS
+        }
+        self.assertEqual(replacements["잔액율"], "잔액률")
+        self.assertEqual(replacements["진행율"], "진행률")
 
     def test_bilingual_pair_requires_one_unambiguous_korean_english_pair(self) -> None:
         self.assertEqual(extract_bilingual_pair("서울\nSeoul"), ("서울", "Seoul"))

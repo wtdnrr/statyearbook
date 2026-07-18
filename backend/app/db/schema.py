@@ -302,6 +302,11 @@ def init_db(connection: sqlite3.Connection) -> None:
         "restore_semantic_type_qualifiers_v1",
         restore_semantic_type_qualifiers,
     )
+    apply_data_migration(
+        connection,
+        "retire_terminology_validation_v1",
+        retire_terminology_validation,
+    )
     seed_validation_rule_definitions(connection)
     connection.commit()
 
@@ -354,6 +359,67 @@ def restore_semantic_type_qualifiers(connection: sqlite3.Connection) -> None:
             """,
             (qualifier, col_index, header_text),
         )
+
+
+def retire_terminology_validation(connection: sqlite3.Connection) -> None:
+    """Remove the retired terminology-suggestion category and its stored output."""
+
+    connection.execute("DELETE FROM linguistic_review_cache WHERE review_type = '용어 제안'")
+    connection.execute("DELETE FROM linguistic_review_candidates WHERE review_type = '용어 제안'")
+    connection.execute(
+        "DELETE FROM validation_issues WHERE issue_type = '용어 제안' OR rule_id = 'llm.terminology_review'"
+    )
+    connection.execute(
+        "DELETE FROM validation_checks WHERE check_type = '용어 제안' OR rule_id = 'llm.terminology_review'"
+    )
+    connection.execute("DELETE FROM validation_rule_definitions WHERE key = 'terminology'")
+
+    for row in connection.execute("SELECT id, rules_json FROM validation_profiles").fetchall():
+        try:
+            rules = json.loads(str(row["rules_json"] or "{}"))
+        except json.JSONDecodeError:
+            continue
+        changed = False
+        for key in ("common_rules",):
+            values = rules.get(key)
+            if isinstance(values, list) and "terminology" in values:
+                rules[key] = [value for value in values if value != "terminology"]
+                changed = True
+        for key in ("rule_definitions", "checks", "table_rules"):
+            values = rules.get(key)
+            if not isinstance(values, list):
+                continue
+            filtered = [
+                value
+                for value in values
+                if not (
+                    isinstance(value, dict)
+                    and (
+                        value.get("key") == "terminology"
+                        or value.get("check_group") == "terminology"
+                        or value.get("check_type") == "용어 제안"
+                    )
+                )
+            ]
+            if len(filtered) != len(values):
+                rules[key] = filtered
+                changed = True
+        if changed:
+            connection.execute(
+                "UPDATE validation_profiles SET rules_json = ? WHERE id = ?",
+                (json.dumps(rules, ensure_ascii=False), int(row["id"])),
+            )
+
+    connection.execute(
+        """
+        UPDATE validation_runs
+        SET issue_count = (
+            SELECT COUNT(*)
+            FROM validation_issues
+            WHERE validation_issues.run_id = validation_runs.id
+        )
+        """
+    )
 
 
 def retire_metadata_validation(connection: sqlite3.Connection) -> None:
@@ -974,7 +1040,7 @@ def matches_long_metadata_payload(value: str, note: str, source: str) -> bool:
 def seed_validation_rule_definitions(connection: sqlite3.Connection) -> None:
     connection.executemany(
         "DELETE FROM validation_rule_definitions WHERE key = ?",
-        [("unit",), ("empty",)],
+        [("unit",), ("empty",), ("terminology",)],
     )
     connection.executemany(
         """

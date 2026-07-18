@@ -62,14 +62,6 @@ REQUIRED_RULE_DEFINITIONS: tuple[ValidationRuleDefinition, ...] = (
         description="국문·영문 철자 오류, 문자 깨짐, 숫자 구분기호 오류와 연관 셀 대비 명확한 표기 불일치를 확인합니다.",
     ),
     ValidationRuleDefinition(
-        key="terminology",
-        name="용어 제안",
-        default_status=REVIEW_STATUS,
-        default_severity="warning",
-        owner_role="LLM/담당자",
-        description="뜻은 통하지만 사전적 의미, 공식 명칭 또는 공공 통계 문체에 더 알맞은 국문·영문 표현을 제안합니다.",
-    ),
-    ValidationRuleDefinition(
         key="translation",
         name="번역 검수",
         default_status=REVIEW_STATUS,

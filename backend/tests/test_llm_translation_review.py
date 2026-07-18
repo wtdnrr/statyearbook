@@ -279,17 +279,17 @@ class LLMTranslationReviewTest(unittest.TestCase):
                 self.assertEqual(linguistic_issue_count, 0)
                 self.assertEqual(metadata_issue_count, 1)
 
-    def test_english_only_terminology_replacement_cannot_drop_korean_source(self) -> None:
+    def test_english_only_spelling_replacement_cannot_drop_korean_source(self) -> None:
         item = self.source_item(
-            requested_review_type="용어 제안",
-            current_value="정부조직 Government Organization",
+            requested_review_type="오탈자 검수",
+            current_value="정부조직 Government Organiztion",
         )
         raw = {
-            "status": "확인 필요",
-            "issue_type": "용어 제안",
-            "expected_value": "Government Organizations",
-            "difference": "Prefer plural terminology",
-            "detail": "The plural form better matches the table context.",
+            "status": "오류 의심",
+            "issue_type": "오탈자 검수",
+            "expected_value": "Government Organization",
+            "difference": "영문 철자 오류",
+            "detail": "영문 철자를 교정했습니다.",
         }
 
         self.assertTrue(review_decision_needs_retry(raw, item))
@@ -576,20 +576,20 @@ class LLMTranslationReviewTest(unittest.TestCase):
     def test_requested_review_type_cannot_be_reclassified(self) -> None:
         item = self.source_item(
             source_rule_id="source.linguistic_review",
-            requested_review_type="용어 제안",
-            current_value="Use Of Archives",
+            requested_review_type="번역 검수",
+            current_value="기록물 이용 Use Of Archives",
         )
         decision = normalize_decision(
             {
                 "status": "오류 의심",
                 "issue_type": "오탈자 검수",
-                "expected_value": "Use of Archives",
-                "difference": "표현 개선",
-                "detail": "영문 제목식 표기를 권장합니다.",
+                "expected_value": "기록물 이용 Use of Archives",
+                "difference": "번역 표현 확인",
+                "detail": "국문과 영문의 의미 대응을 확인했습니다.",
             },
             item,
         )
-        self.assertEqual(decision["issue_type"], "용어 제안")
+        self.assertEqual(decision["issue_type"], "번역 검수")
         self.assertEqual(decision["status"], "확인 필요")
 
     def test_required_review_types_share_one_prompt_context(self) -> None:
@@ -630,8 +630,6 @@ class LLMTranslationReviewTest(unittest.TestCase):
                 (
                     ("오탈자 검수", "서울 Seoul", "2행 1열", 1),
                     ("오탈자 검수", "부산 Busan", "3행 1열", 2),
-                    ("용어 제안", "서울 Seoul", "2행 1열", 1),
-                    ("용어 제안", "부산 Busan", "3행 1열", 2),
                     ("번역 검수", "서울 Seoul", "2행 1열", 1),
                     ("번역 검수", "부산 Busan", "3행 1열", 2),
                 ),
@@ -643,7 +641,7 @@ class LLMTranslationReviewTest(unittest.TestCase):
         batches = chunked_by_context(grouped, 1)
 
         self.assertEqual(len(batches), 2)
-        self.assertEqual([len(batch) for batch in batches], [3, 3])
+        self.assertEqual([len(batch) for batch in batches], [2, 2])
         self.assertTrue(all(len(compact_prompt_items(batch)) == 1 for batch in batches))
 
     def test_exact_official_translation_is_resolved_without_llm(self) -> None:

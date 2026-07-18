@@ -8,7 +8,6 @@ const REPEATABLE_CALCULATION_TYPES = new Set([
 export const LINGUISTIC_CHECK_TYPES = new Set([
   "오탈자 검수",
   "번역 검수",
-  "용어 제안",
 ]);
 
 function exactCellGroupKey(check: ValidationIssue) {

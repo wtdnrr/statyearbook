@@ -7,9 +7,7 @@ import sqlite3
 from app.validation.blue_review import normalize_review_text
 from app.validation.linguistic_policy import (
     SPELLING_CHECK_TYPE,
-    TERMINOLOGY_CHECK_TYPE,
     TRANSLATION_CHECK_TYPE,
-    needs_terminology_review,
 )
 from app.validation.translation_glossary import (
     GlossaryEntry,
@@ -22,7 +20,7 @@ from app.validation.models import restore_hyphenated_line_breaks
 
 
 LINGUISTIC_CANDIDATE_RULE_ID = "source.linguistic_review"
-LINGUISTIC_PROMPT_VERSION = "language-review-v5-minimal-cell-scope"
+LINGUISTIC_PROMPT_VERSION = "language-review-v6-without-terminology"
 HANGUL_RE = re.compile(r"[가-힣]")
 LATIN_RE = re.compile(r"[A-Za-z]")
 MAX_REVIEW_CHARS = 1400
@@ -323,12 +321,6 @@ def review_text_value(
             TRANSLATION_CHECK_TYPE,
             translation_candidate_kind(current_value, pair),
             "위치별 원문 전체를 LLM으로 검토하여 한국어와 영어의 의미 대응, 번역 누락 및 공식 고유명사를 확인",
-        ))
-    if needs_terminology_review(current_value):
-        review_specs.append((
-            TERMINOLOGY_CHECK_TYPE,
-            "language_terminology",
-            "명시된 의심 표현의 공식 명칭, 공공 통계 문체 및 더 적절한 국문·영문 용어를 확인",
         ))
     for review_type, candidate_kind, reason in review_specs:
         candidates += insert_candidate_once(

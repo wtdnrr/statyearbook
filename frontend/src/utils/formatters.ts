@@ -25,10 +25,9 @@ const issueTypeOrder = new Map(
     "비율 검수",
     "오탈자 검수",
     "번역 검수",
-    "용어 제안",
-    "파란색 표기 확인",
     "메타정보 검수",
     "이상치 검수",
+    "파란색 표기 확인",
   ].map((type, index) => [type, index]),
 );
 

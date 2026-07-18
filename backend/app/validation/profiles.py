@@ -32,7 +32,6 @@ COMMON_RULE_IDS = [
     "growth_rate",
     "outlier",
     "spelling",
-    "terminology",
     "translation",
     "metadata",
 ]

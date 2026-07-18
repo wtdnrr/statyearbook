@@ -1324,61 +1324,6 @@ class ProfileSpecRule(ValidationRule):
             )
         return issues, checks
 
-    def _validate_static_terminology(
-        self,
-        table: ValidationTable,
-        profile: ValidationProfile,
-        spec: dict[str, Any],
-    ) -> tuple[list[ValidationIssueRecord], list[ValidationCheckRecord]]:
-        issues: list[ValidationIssueRecord] = []
-        checks: list[ValidationCheckRecord] = []
-        for row_index, row in enumerate(table.matrix):
-            for col_index, cell in enumerate(row):
-                if cell is None or not cell.text_value:
-                    continue
-                text = clean_display_text(cell.text_value)
-                for term in spec.get("terms", []):
-                    current = str(term.get("current", ""))
-                    expected = str(term.get("expected", ""))
-                    reason = str(term.get("reason") or "표준 용어 확인")
-                    if not current or current not in text:
-                        continue
-                    check = self._check_from_pass_fail(
-                        table,
-                        profile,
-                        spec,
-                        fallback_check_type="용어 제안",
-                        location=f"{row_index + 1}행 {col_index + 1}열",
-                        current_value=current,
-                        expected_value=expected,
-                        difference=reason,
-                        passed=False,
-                        detail="발간 표준 용어 또는 기관 용어집 기준으로 더 적절한 표현 후보를 표시했습니다. 최종 반영 여부는 담당자가 확인해야 합니다.",
-                        row_index=row_index,
-                        col_index=col_index,
-                    )
-                    checks.append(check)
-                    issues.append(self._issue_from_check(check))
-                    if len(checks) >= 10:
-                        return issues, checks
-
-        if not checks:
-            checks.append(
-                self._check_from_pass_fail(
-                    table,
-                    profile,
-                    spec,
-                    fallback_check_type="용어 제안",
-                    location="전체 텍스트 셀",
-                    current_value="용어 제안 후보 0건",
-                    expected_value="정적 용어집 기준 통과",
-                    difference=None,
-                    passed=True,
-                    detail="정적 용어집 기준의 용어 제안 후보가 발견되지 않았습니다.",
-                )
-            )
-        return issues, checks
-
     def _validate_title_translation(
         self,
         table: ValidationTable,

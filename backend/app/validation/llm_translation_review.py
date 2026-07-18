@@ -26,7 +26,6 @@ from app.validation.blue_review import (
 from app.validation.linguistic_policy import (
     LINGUISTIC_CHECK_TYPES,
     SPELLING_CHECK_TYPE,
-    TERMINOLOGY_CHECK_TYPE,
     TRANSLATION_CHECK_TYPE,
 )
 from app.validation.linguistic_review import (
@@ -51,7 +50,7 @@ DEFAULT_TRANSLATION_MODEL = "gpt-5.4-mini"
 DEFAULT_BIZROUTER_MODEL = "openai/gpt-5-mini"
 LLM_TRANSLATION_RULE_ID = "llm.translation_review"
 LLM_SPELLING_RULE_ID = "llm.spelling_review"
-LLM_TERMINOLOGY_RULE_ID = "llm.terminology_review"
+RETIRED_LLM_TERMINOLOGY_RULE_ID = "llm.terminology_review"
 
 
 @dataclass(frozen=True)
@@ -561,7 +560,7 @@ class ResponsesAPIClient:
             "required_result_ids": [item.issue_id for item in items],
             "required_result_count": len(items),
             "allowed_statuses": ["정상", "확인 필요", "오류 의심"],
-            "allowed_issue_types": ["번역 검수", "오탈자 검수", "용어 제안", "파란색 표기 확인"],
+            "allowed_issue_types": ["번역 검수", "오탈자 검수", "파란색 표기 확인"],
         }
         body = {
             "model": self.model,
@@ -766,13 +765,12 @@ def group_items_for_retry(items: list[SourceReviewItem]) -> list[list[SourceRevi
 
 SYSTEM_PROMPT = """You are a meticulous Korean government statistical yearbook language reviewer.
 
-The input groups requests that share one title, metadata, header, or cell context. For every entry in review_requests, return one result using that request id. required_result_ids lists every id that must appear exactly once in the output, and the output items array must contain exactly required_result_count objects. Do not return one result per shared context; return one result per review request. Review the complete shared value for only its requested_review_type and return exactly the same issue_type. Values may contain numbers and text together. Never turn a terminology suggestion into a spelling error or a translation mismatch into a spelling error.
+The input groups requests that share one title, metadata, header, or cell context. For every entry in review_requests, return one result using that request id. required_result_ids lists every id that must appear exactly once in the output, and the output items array must contain exactly required_result_count objects. Do not return one result per shared context; return one result per review request. Review the complete shared value for only its requested_review_type and return exactly the same issue_type. Values may contain numbers and text together. Never turn a translation mismatch into a spelling error.
 
-The standard three categories are strictly separated:
-1. 오탈자 검수: Find clear Korean or English misspellings, broken characters, accidental casing errors, malformed numeric separators such as 3.445 instead of 3,445 in an integer context, and text that is clearly inconsistent with related cells. Do not use this category for a merely preferable expression. A clear error is "오류 의심"; an uncertain contextual notation is "확인 필요".
-2. 용어 제안: The source is understandable, but a dictionary meaning, official name, public-sector wording, grammar, capitalization convention, or statistical term can be improved. Return "확인 필요", never "오류 의심".
-3. 번역 검수: Check whether Korean and English have the same meaning. If English is missing, provide the English replacement. Return "확인 필요" for a missing, mismatched, awkward, or unverifiable translation, never "오류 의심".
-4. 파란색 표기 확인: This is a single combined review for an exact blue-marked HWPX value. Check clear Korean/English typos, Korean-English semantic alignment, official proper names, and public-sector wording together, then return exactly one result with issue_type "파란색 표기 확인". Do not split it into the standard three categories. For Korean-only text, provide a concrete English translation. For bilingual text, preserve the complete Korean and English value in a corrected replacement.
+The standard two categories are strictly separated:
+1. 오탈자 검수: Find clear Korean or English misspellings, broken characters, accidental casing errors, malformed numeric separators such as 3.445 instead of 3,445 in an integer context, and text that is clearly inconsistent with related cells. Korean orthographic errors such as "진행율" instead of "진행률" are spelling errors. Do not recommend a merely preferable, more formal, or stylistically different term. A clear error is "오류 의심"; an uncertain contextual notation is "확인 필요".
+2. 번역 검수: Check whether Korean and English have the same meaning. If English is missing, provide the English replacement. Return "확인 필요" for a missing, mismatched, awkward, or unverifiable translation, never "오류 의심". Do not propose a different Korean term when the Korean source is already valid.
+3. 파란색 표기 확인: This is a single combined review for an exact blue-marked HWPX value. Check clear Korean/English typos, Korean-English semantic alignment, official proper names, and public-sector wording together, then return exactly one result with issue_type "파란색 표기 확인". Do not split it into the standard two categories. For Korean-only text, provide a concrete English translation. For bilingual text, preserve the complete Korean and English value in a corrected replacement.
 
 Translation dictionary policy:
 - translation_glossary is evidence, not permission to skip review.
@@ -787,8 +785,7 @@ General rules:
 - Use the table title, row label, column label, unit, surrounding rows and glossary evidence.
 - Copy the shared current_value exactly into every result's current_value. Never use text from another review request or reduce it to only one Korean/English fragment.
 - For 오탈자 검수, correct spelling only. Preserve the source language composition: Korean-only stays Korean, English-only stays English, and bilingual text stays bilingual. Never translate a Korean name as a spelling correction.
-- For 용어 제안, return the complete replacement in the same language composition as the source. Do not use this category unless the supplied candidate_reason identifies a concrete suspect expression.
-- Korean and English appearing together in one title, header, or cell is the yearbook's normal bilingual layout. Never flag it merely as duplicated, mixed, or inconsistently ordered. Judge only spelling, terminology quality, and whether the two languages have the same meaning.
+- Korean and English appearing together in one title, header, or cell is the yearbook's normal bilingual layout. Never flag it merely as duplicated, mixed, or inconsistently ordered. Judge only clear spelling errors and whether the two languages have the same meaning.
 - When a bilingual value genuinely needs translation correction, expected_value must preserve the exact complete Korean text and contain the corrected English text. An English-only fragment that drops the Korean half is not an actionable replacement.
 - candidate_kind beginning with "blue_text" is an exact HWPX blue-marked segment. Review the requested category for that segment and return a concrete corrected value, not a review request.
 - For a Korean-only blue_text translation request, expected_value must be a standalone English translation. Never return the Korean source, a placeholder, or an instruction to translate later.
@@ -809,7 +806,7 @@ Return JSON only, no markdown:
     {
       "id": 123,
       "status": "정상|확인 필요|오류 의심",
-      "issue_type": "번역 검수|오탈자 검수|용어 제안|파란색 표기 확인",
+      "issue_type": "번역 검수|오탈자 검수|파란색 표기 확인",
       "current_value": "original text reviewed",
       "expected_value": "recommended English/correction or empty string",
       "difference": "short reason",
@@ -835,7 +832,7 @@ REVIEW_RESPONSE_SCHEMA: dict[str, Any] = {
                 "properties": {
                     "id": {"type": "integer"},
                     "status": {"type": "string", "enum": ["정상", "확인 필요", "오류 의심"]},
-                    "issue_type": {"type": "string", "enum": ["번역 검수", "오탈자 검수", "용어 제안", "파란색 표기 확인"]},
+                    "issue_type": {"type": "string", "enum": ["번역 검수", "오탈자 검수", "파란색 표기 확인"]},
                     "current_value": {"type": "string"},
                     "expected_value": {"type": "string", "minLength": 1},
                     "difference": {"type": "string"},
@@ -1026,8 +1023,8 @@ def load_linguistic_review_items(
         ORDER BY
             CASE lrc.review_type
                 WHEN '오탈자 검수' THEN 0
-                WHEN '용어 제안' THEN 1
-                WHEN '번역 검수' THEN 2
+                WHEN '번역 검수' THEN 1
+                WHEN '파란색 표기 확인' THEN 2
                 ELSE 3
             END,
             st.table_order,
@@ -1223,7 +1220,7 @@ def decision_expected_matches_requested_scope(
     expected_has_korean = re.search(r"[가-힣]", expected) is not None
     expected_has_english = re.search(r"[A-Za-z]", expected) is not None
 
-    if review_type in {SPELLING_CHECK_TYPE, TERMINOLOGY_CHECK_TYPE}:
+    if review_type == SPELLING_CHECK_TYPE:
         return (
             current_has_korean == expected_has_korean
             and current_has_english == expected_has_english
@@ -1391,7 +1388,7 @@ def glossary_decision_for(item: SourceReviewItem) -> dict[str, str] | None:
         status = str(entry.get("status") or "")
         source_title = normalize_review_text(str(entry.get("source_title") or "공식 번역 사전"))
 
-        if item.requested_review_type in {SPELLING_CHECK_TYPE, TERMINOLOGY_CHECK_TYPE}:
+        if item.requested_review_type == SPELLING_CHECK_TYPE:
             exact_complete_value = (
                 (bool(korean) and not english and source_matches)
                 or (bool(english) and not korean and target_matches)
@@ -1657,7 +1654,7 @@ def normalize_decision(raw: dict[str, Any], item: SourceReviewItem) -> dict[str,
         if normalize_review_text(item.current_value) != expected:
             status = "오류 의심"
             issue_type = "오탈자 검수"
-    elif status == "오류 의심" and issue_type in {TRANSLATION_CHECK_TYPE, TERMINOLOGY_CHECK_TYPE}:
+    elif status == "오류 의심" and issue_type == TRANSLATION_CHECK_TYPE:
         status = "확인 필요"
     elif status == "오류 의심" and issue_type != BLUE_REVIEW_TYPE:
         if item.candidate_kind == "blue_text" and looks_like_translation_mismatch(item.current_value, expected):
@@ -1693,7 +1690,7 @@ def normalize_decision(raw: dict[str, Any], item: SourceReviewItem) -> dict[str,
     )
     detail = remove_human_confirmation_language(
         normalize_review_text(
-            str(raw.get("detail") or "LLM이 원문의 번역, 철자와 용어를 검토했습니다.")
+            str(raw.get("detail") or "LLM이 원문의 번역과 철자를 검토했습니다.")
         )
     )
     if status != "정상" and not re.search(r"[가-힣]", difference):
@@ -1737,7 +1734,6 @@ def canonical_decision_text(value: str) -> str:
 def korean_difference_for(issue_type: str) -> str:
     return {
         SPELLING_CHECK_TYPE: "국문·영문 표기 교정 제안",
-        TERMINOLOGY_CHECK_TYPE: "통계 문맥에 맞는 용어 표현 제안",
         TRANSLATION_CHECK_TYPE: "국문과 영문 번역 표현 검토",
     }.get(issue_type, "언어 표현 검토")
 
@@ -1745,7 +1741,6 @@ def korean_difference_for(issue_type: str) -> str:
 def korean_detail_for(issue_type: str, status: str) -> str:
     category = {
         SPELLING_CHECK_TYPE: "오탈자와 문자·숫자 표기",
-        TERMINOLOGY_CHECK_TYPE: "용어의 의미와 공공 통계 표현",
         TRANSLATION_CHECK_TYPE: "국문과 영문의 의미 일치 여부",
     }.get(issue_type, "언어 표현")
     conclusion = "교정이 필요한 내용을 제시했습니다" if status != "정상" else "특이사항이 없습니다"
@@ -1787,7 +1782,7 @@ def expected_drops_bilingual_context(
     expected_english = " ".join(re.findall(r"[A-Za-z]+", expected)).casefold()
     if not current_english or not expected_english:
         return False
-    if issue_type in {SPELLING_CHECK_TYPE, TERMINOLOGY_CHECK_TYPE}:
+    if issue_type == SPELLING_CHECK_TYPE:
         return True
     return bool(
         expected_english in current_english
@@ -1846,7 +1841,7 @@ def reconcile_non_actionable_bilingual_reviews(
 
     language_rule_ids = (
         LLM_SPELLING_RULE_ID,
-        LLM_TERMINOLOGY_RULE_ID,
+        RETIRED_LLM_TERMINOLOGY_RULE_ID,
         LLM_TRANSLATION_RULE_ID,
         BLUE_REVIEW_RULE_ID,
     )
@@ -1972,8 +1967,6 @@ def rule_id_for(issue_type: str) -> str:
         return BLUE_LLM_RULE_ID
     if issue_type == "오탈자 검수":
         return LLM_SPELLING_RULE_ID
-    if issue_type == "용어 제안":
-        return LLM_TERMINOLOGY_RULE_ID
     return LLM_TRANSLATION_RULE_ID
 
 
@@ -2208,8 +2201,6 @@ def llm_check_label(issue_type: str) -> str:
         return "HWPX 파란색 표기 LLM 검수"
     if issue_type == SPELLING_CHECK_TYPE:
         return "LLM 국문·영문 오탈자 검수"
-    if issue_type == TERMINOLOGY_CHECK_TYPE:
-        return "LLM 국문·영문 용어 제안"
     return "번역 사전 우선 LLM 검수"
 
 
@@ -2369,8 +2360,7 @@ def group_linguistic_items_by_context(items: list[SourceReviewItem]) -> list[Sou
 
     type_order = {
         SPELLING_CHECK_TYPE: 0,
-        TERMINOLOGY_CHECK_TYPE: 1,
-        TRANSLATION_CHECK_TYPE: 2,
+        TRANSLATION_CHECK_TYPE: 1,
     }
     return [
         item
