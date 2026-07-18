@@ -25,12 +25,14 @@ from app.validation.blue_review import (
 )
 from app.validation.linguistic_policy import (
     LINGUISTIC_CHECK_TYPES,
+    SPELLING_REPLACEMENTS,
     SPELLING_CHECK_TYPE,
     TRANSLATION_CHECK_TYPE,
 )
 from app.validation.linguistic_review import (
     LINGUISTIC_CANDIDATE_RULE_ID,
     LINGUISTIC_PROMPT_VERSION,
+    NON_TRANSLATION_LATIN_TOKENS,
 )
 from app.validation.source_review import SOURCE_FORMAT_RULE_ID, SOURCE_FORMAT_TYPE
 from app.validation.region_glossary import region_review_decision
@@ -51,6 +53,20 @@ DEFAULT_BIZROUTER_MODEL = "openai/gpt-5-mini"
 LLM_TRANSLATION_RULE_ID = "llm.translation_review"
 LLM_SPELLING_RULE_ID = "llm.spelling_review"
 RETIRED_LLM_TERMINOLOGY_RULE_ID = "llm.terminology_review"
+SPELLING_DEFECT_KINDS = {
+    "korean_spelling",
+    "english_spelling",
+    "spacing",
+    "punctuation",
+    "numeric_format",
+}
+TRANSLATION_DEFECT_KINDS = {
+    "semantic_omission",
+    "semantic_addition",
+    "wrong_meaning",
+    "entity_mismatch",
+    "measure_mismatch",
+}
 
 
 @dataclass(frozen=True)
@@ -162,8 +178,12 @@ def append_llm_translation_reviews(
     report_id: int | None = None,
     limit: int | None = None,
     blue_only: bool = False,
+    standard_language_only: bool = False,
     model_override: str | None = None,
 ) -> LLMReviewResult:
+    if blue_only and standard_language_only:
+        raise ValueError("blue_only and standard_language_only cannot both be enabled")
+
     settings = llm_review_settings()
     if model_override:
         settings["model"] = model_override
@@ -181,11 +201,13 @@ def append_llm_translation_reviews(
             dictionary_counts = resolve_linguistic_candidates_from_glossary(
                 connection,
                 resolved_run_id,
+                standard_language_only=standard_language_only,
             )
             cache_counts = reuse_cached_linguistic_reviews(
                 connection,
                 resolved_run_id,
                 reviewed_model=settings["model"],
+                standard_language_only=standard_language_only,
             )
         linguistic_items = load_linguistic_review_items(connection, resolved_run_id)
         if blue_only:
@@ -193,6 +215,11 @@ def append_llm_translation_reviews(
                 item for item in linguistic_items if item.source_rule_id == BLUE_REVIEW_RULE_ID
             ]
             source_items: list[SourceReviewItem] = []
+        elif standard_language_only:
+            linguistic_items = [
+                item for item in linguistic_items if is_standard_language_item(item)
+            ]
+            source_items = []
         else:
             source_items = load_source_review_items(connection, resolved_run_id)
         format_items = [item for item in source_items if item.source_rule_id == SOURCE_FORMAT_RULE_ID]
@@ -212,6 +239,10 @@ def append_llm_translation_reviews(
     if not items:
         if blue_only:
             synchronize_blue_review_checks(db_path, run_id=resolved_run_id)
+        with connect(db_path) as connection:
+            init_db(connection)
+            with connection:
+                refresh_issue_count(connection, resolved_run_id)
         return LLMReviewResult(
             processed,
             inserted_issues,
@@ -306,7 +337,14 @@ def append_llm_translation_reviews(
                 connection,
                 resolved_run_id,
                 blue_only=blue_only,
+                standard_language_only=standard_language_only,
             )
+            if pending == 0 and standard_language_only:
+                with connection:
+                    reconcile_standard_language_findings(
+                        connection,
+                        resolved_run_id,
+                    )
         if pending:
             raise RuntimeError(f"LLM 전수 언어 검수가 완료되지 않았습니다: pending {pending}건")
 
@@ -360,17 +398,359 @@ def pending_linguistic_candidate_count(
     run_id: int,
     *,
     blue_only: bool = False,
+    standard_language_only: bool = False,
 ) -> int:
+    if blue_only and standard_language_only:
+        raise ValueError("blue_only and standard_language_only cannot both be enabled")
+    scope_clause = ""
+    scope_params: list[object] = []
+    if blue_only:
+        scope_clause = "AND candidate_kind LIKE 'blue_text%'"
+    elif standard_language_only:
+        scope_clause = """
+            AND candidate_kind NOT LIKE 'blue_text%'
+            AND review_type IN (?, ?)
+        """
+        scope_params = [SPELLING_CHECK_TYPE, TRANSLATION_CHECK_TYPE]
     row = connection.execute(
         f"""
         SELECT COUNT(*) AS candidate_count
         FROM linguistic_review_candidates
         WHERE run_id = ? AND status <> 'reviewed'
-          {"AND candidate_kind LIKE 'blue_text%'" if blue_only else ""}
+          {scope_clause}
         """,
-        (run_id,),
+        (run_id, *scope_params),
     ).fetchone()
     return int(row["candidate_count"]) if row else 0
+
+
+def is_standard_language_item(item: SourceReviewItem) -> bool:
+    return (
+        item.source_rule_id == LINGUISTIC_CANDIDATE_RULE_ID
+        and item.requested_review_type in LINGUISTIC_CHECK_TYPES
+    )
+
+
+def reset_standard_language_review_results(
+    connection: sqlite3.Connection,
+    run_id: int,
+) -> tuple[int, int, int]:
+    """Reset spelling/translation results while preserving blue-text reviews."""
+
+    candidate_count = int(
+        connection.execute(
+            """
+            SELECT COUNT(*) AS item_count
+            FROM linguistic_review_candidates
+            WHERE run_id = ?
+              AND candidate_kind NOT LIKE 'blue_text%'
+              AND review_type IN (?, ?)
+            """,
+            (run_id, SPELLING_CHECK_TYPE, TRANSLATION_CHECK_TYPE),
+        ).fetchone()["item_count"]
+    )
+    issue_count = int(
+        connection.execute(
+            """
+            SELECT COUNT(*) AS item_count
+            FROM validation_issues
+            WHERE run_id = ? AND rule_id IN (?, ?)
+            """,
+            (run_id, LLM_SPELLING_RULE_ID, LLM_TRANSLATION_RULE_ID),
+        ).fetchone()["item_count"]
+    )
+    check_count = int(
+        connection.execute(
+            """
+            SELECT COUNT(*) AS item_count
+            FROM validation_checks
+            WHERE run_id = ? AND rule_id IN (?, ?)
+            """,
+            (run_id, LLM_SPELLING_RULE_ID, LLM_TRANSLATION_RULE_ID),
+        ).fetchone()["item_count"]
+    )
+    connection.execute(
+        "DELETE FROM validation_issues WHERE run_id = ? AND rule_id IN (?, ?)",
+        (run_id, LLM_SPELLING_RULE_ID, LLM_TRANSLATION_RULE_ID),
+    )
+    connection.execute(
+        "DELETE FROM validation_checks WHERE run_id = ? AND rule_id IN (?, ?)",
+        (run_id, LLM_SPELLING_RULE_ID, LLM_TRANSLATION_RULE_ID),
+    )
+    connection.execute(
+        """
+        UPDATE linguistic_review_candidates
+        SET status = 'pending',
+            prompt_version = ?,
+            reviewed_model = '',
+            review_result_json = '',
+            review_fingerprint = '',
+            resolution_source = '',
+            reviewed_at = NULL
+        WHERE run_id = ?
+          AND candidate_kind NOT LIKE 'blue_text%'
+          AND review_type IN (?, ?)
+        """,
+        (
+            LINGUISTIC_PROMPT_VERSION,
+            run_id,
+            SPELLING_CHECK_TYPE,
+            TRANSLATION_CHECK_TYPE,
+        ),
+    )
+    refresh_issue_count(connection, run_id)
+    return candidate_count, check_count, issue_count
+
+
+def reconcile_standard_language_findings(
+    connection: sqlite3.Connection,
+    run_id: int,
+) -> int:
+    """Remove duplicated or non-actionable findings after the full language run."""
+
+    rows = connection.execute(
+        """
+        SELECT
+            lrc.*, st.code, st.title, st.title_en, st.unit, st.base_date
+        FROM linguistic_review_candidates lrc
+        JOIN stat_tables st ON st.id = lrc.table_id
+        WHERE lrc.run_id = ?
+          AND lrc.status = 'reviewed'
+          AND lrc.candidate_kind NOT LIKE 'blue_text%'
+          AND lrc.review_type IN (?, ?)
+          AND lrc.review_result_json <> ''
+        """,
+        (run_id, SPELLING_CHECK_TYPE, TRANSLATION_CHECK_TYPE),
+    ).fetchall()
+    parsed_rows: list[tuple[sqlite3.Row, dict[str, Any], SourceReviewItem]] = []
+    spelling_corrections: set[tuple[int, str, str, str]] = set()
+    for row in rows:
+        try:
+            decision = json.loads(str(row["review_result_json"]))
+        except (json.JSONDecodeError, TypeError):
+            continue
+        if not isinstance(decision, dict) or str(decision.get("status") or "") == "정상":
+            continue
+        item = reviewed_candidate_item(row)
+        parsed_rows.append((row, decision, item))
+        if str(row["review_type"]) == SPELLING_CHECK_TYPE:
+            spelling_corrections.add(
+                (
+                    int(row["table_id"]),
+                    str(row["location"]),
+                    canonical_decision_text(str(row["current_value"])),
+                    canonical_decision_text(str(decision.get("expected_value") or "")),
+                )
+            )
+
+    reconciled = 0
+    for row, decision, item in parsed_rows:
+        signature = (
+            int(row["table_id"]),
+            str(row["location"]),
+            canonical_decision_text(str(row["current_value"])),
+            canonical_decision_text(str(decision.get("expected_value") or "")),
+        )
+        duplicated_spelling = (
+            str(row["review_type"]) == TRANSLATION_CHECK_TYPE
+            and signature in spelling_corrections
+        )
+        if not duplicated_spelling and not stored_language_finding_is_non_actionable(item, decision):
+            continue
+
+        review_type = str(row["review_type"])
+        current = normalize_review_text(str(row["current_value"]))
+        corrected = {
+            **decision,
+            "status": "정상",
+            "issue_type": review_type,
+            "rule_id": rule_id_for(review_type),
+            "defect_kind": "none",
+            "current_value": current,
+            "expected_value": current,
+            "difference": f"{review_type} 통과",
+            "detail": korean_detail_for(review_type, "정상"),
+        }
+        serialized = json.dumps(corrected, ensure_ascii=False)
+        connection.execute(
+            "UPDATE linguistic_review_candidates SET review_result_json = ? WHERE id = ?",
+            (serialized, int(row["id"])),
+        )
+        fingerprint = str(row["review_fingerprint"] or "")
+        if fingerprint:
+            connection.execute(
+                "UPDATE linguistic_review_cache SET decision_json = ? WHERE fingerprint = ?",
+                (serialized, fingerprint),
+            )
+        rule_id = rule_id_for(review_type)
+        connection.execute(
+            """
+            UPDATE validation_checks
+            SET status = '정상', severity = 'info', expected_value = ?,
+                difference = ?, detail = ?
+            WHERE run_id = ? AND table_id = ? AND rule_id = ?
+              AND location = ? AND current_value = ?
+            """,
+            (
+                current,
+                corrected["difference"],
+                corrected["detail"],
+                run_id,
+                int(row["table_id"]),
+                rule_id,
+                str(row["location"]),
+                current,
+            ),
+        )
+        connection.execute(
+            """
+            DELETE FROM validation_issues
+            WHERE run_id = ? AND table_id = ? AND rule_id = ?
+              AND location = ? AND current_value = ?
+            """,
+            (
+                run_id,
+                int(row["table_id"]),
+                rule_id,
+                str(row["location"]),
+                current,
+            ),
+        )
+        reconciled += 1
+    if reconciled:
+        refresh_issue_count(connection, run_id)
+    return reconciled
+
+
+def reviewed_candidate_item(row: sqlite3.Row) -> SourceReviewItem:
+    try:
+        glossary = json.loads(str(row["glossary_json"] or "[]"))
+    except (json.JSONDecodeError, TypeError):
+        glossary = []
+    return SourceReviewItem(
+        issue_id=-int(row["id"]),
+        source_rule_id=LINGUISTIC_CANDIDATE_RULE_ID,
+        candidate_kind=str(row["candidate_kind"]),
+        candidate_reason=str(row["reason"] or ""),
+        candidate_expected="",
+        table_id=int(row["table_id"]),
+        table_code=str(row["code"]),
+        table_title=str(row["title"]),
+        table_title_en=str(row["title_en"]),
+        unit=str(row["unit"]),
+        base_date=str(row["base_date"]),
+        location=str(row["location"]),
+        row_index=int(row["row_index"]) if row["row_index"] is not None else None,
+        col_index=int(row["col_index"]) if row["col_index"] is not None else None,
+        current_value=str(row["current_value"]),
+        cell_text=str(row["current_value"]),
+        row_label="",
+        column_label="",
+        surrounding_rows=[],
+        requested_review_type=str(row["review_type"]),
+        korean_text=str(row["korean_text"] or ""),
+        english_text=str(row["english_text"] or ""),
+        glossary_matches=glossary if isinstance(glossary, list) else [],
+        source_record_type="candidate",
+        source_record_id=int(row["id"]),
+        prompt_version=str(row["prompt_version"] or LINGUISTIC_PROMPT_VERSION),
+        review_fingerprint=str(row["review_fingerprint"] or ""),
+    )
+
+
+def stored_language_finding_is_non_actionable(
+    item: SourceReviewItem,
+    decision: dict[str, Any],
+) -> bool:
+    current = normalize_review_text(item.current_value)
+    expected = normalize_review_text(str(decision.get("expected_value") or ""))
+    notes = normalize_review_text(
+        f"{decision.get('difference') or ''} {decision.get('detail') or ''}"
+    )
+    if item.requested_review_type == SPELLING_CHECK_TYPE:
+        if current.casefold() == expected.casefold():
+            return True
+        if "일관성" in notes and not re.search(r"철자 오류|오탈자|잘못", notes):
+            return True
+        if "권고" in notes and not re.search(r"철자 오류|오탈자|잘못|residental", notes, re.I):
+            return True
+        return False
+
+    if item.requested_review_type != TRANSLATION_CHECK_TYPE:
+        return False
+    if not translation_context_has_meaningful_english(item):
+        return True
+    if canonical_decision_text(current) == canonical_decision_text(expected):
+        return True
+    if re.search(
+        r"의미.{0,4}확장|범위.{0,4}확장|권고|약칭|명시 권고|의역 권고|"
+        r"공식 명칭 확인 근거 부족|확인 근거 부족",
+        notes,
+    ):
+        return True
+    if translation_change_is_function_word_only(item, expected):
+        return True
+    if "등" in notes and re.search(r"etc\.?|and others", notes, re.I):
+        return True
+    if translation_repeats_same_numeric_marker(current, expected, notes):
+        return True
+    if "해양유도선사고" in current and re.search(r"excursion ship|ferry", current, re.I):
+        return True
+    return False
+
+
+def translation_change_is_function_word_only(
+    item: SourceReviewItem,
+    expected: str,
+) -> bool:
+    """Treat an English preposition/article preference as editorial, not semantic."""
+
+    function_words = {
+        "a", "an", "and", "at", "by", "for", "from", "in", "of", "on",
+        "or", "the", "to", "with",
+    }
+
+    def tokens(value: str) -> list[str]:
+        return re.findall(r"[A-Za-z]+", value.casefold())
+
+    current_tokens = tokens(item.english_text or item.current_value)
+    expected_tokens = tokens(expected)
+    if not current_tokens or not expected_tokens:
+        return False
+    matcher = SequenceMatcher(None, current_tokens, expected_tokens)
+    changed: list[str] = []
+    for operation, left_start, left_end, right_start, right_end in matcher.get_opcodes():
+        if operation == "equal":
+            continue
+        changed.extend(current_tokens[left_start:left_end])
+        changed.extend(expected_tokens[right_start:right_end])
+    return bool(changed) and all(token in function_words for token in changed)
+
+
+def translation_repeats_same_numeric_marker(
+    current: str,
+    expected: str,
+    notes: str,
+) -> bool:
+    """Accept a shared Korean/English index that the model tried to remove."""
+
+    if not re.search(r"숫자|number", notes, re.I):
+        return False
+    current_numbers = re.findall(r"\d+", current)
+    expected_numbers = re.findall(r"\d+", expected)
+    repeated = {number for number in current_numbers if current_numbers.count(number) >= 2}
+    return any(expected_numbers.count(number) < current_numbers.count(number) for number in repeated)
+
+
+def translation_context_has_meaningful_english(item: SourceReviewItem) -> bool:
+    tokens = [
+        token.casefold()
+        for token in re.findall(r"[A-Za-z]+", item.english_text or item.current_value)
+    ]
+    return any(
+        token not in NON_TRANSLATION_LATIN_TOKENS and len(token) > 1
+        for token in tokens
+    )
 
 
 def preview_llm_table_reviews(
@@ -559,6 +939,9 @@ class ResponsesAPIClient:
         prompt_payload = {
             "items": compact_prompt_items(items),
             "required_result_ids": [item.issue_id for item in items],
+            "required_context_tokens": {
+                str(item.issue_id): review_context_token(item) for item in items
+            },
             "required_result_count": len(items),
             "allowed_statuses": ["정상", "확인 필요", "오류 의심"],
             "allowed_issue_types": ["번역 검수", "오탈자 검수", "파란색 표기 확인"],
@@ -630,10 +1013,11 @@ class ResponsesAPIClient:
                         f"{self.provider} Responses API error {exc.code}: {body_text[:800]}"
                     ) from exc
                 retry_after = retry_after_seconds(body_text)
-            except error.URLError as exc:
+            except (error.URLError, TimeoutError) as exc:
                 if attempt == max_attempts - 1:
+                    reason = getattr(exc, "reason", str(exc))
                     raise RuntimeError(
-                        f"{self.provider} Responses API request failed: {exc.reason}"
+                        f"{self.provider} Responses API request failed: {reason}"
                     ) from exc
                 retry_after = 0.0
             delay = retry_after or min(2**attempt, 16)
@@ -668,7 +1052,7 @@ def review_batch_with_retries(
             item
             for item in batch
             if item.issue_id not in decisions_by_id
-            or review_decision_needs_retry(decisions_by_id[item.issue_id], item)
+            or llm_decision_needs_retry(decisions_by_id[item.issue_id], item)
         ]
         if not retry_items:
             break
@@ -687,7 +1071,7 @@ def review_batch_with_retries(
         item
         for item in batch
         if item.issue_id not in decisions_by_id
-        or review_decision_needs_retry(decisions_by_id[item.issue_id], item)
+        or llm_decision_needs_retry(decisions_by_id[item.issue_id], item)
     ]
     for context_items in group_items_for_retry(remaining_items):
         for _ in range(2):
@@ -695,7 +1079,7 @@ def review_batch_with_retries(
                 item
                 for item in context_items
                 if item.issue_id not in decisions_by_id
-                or review_decision_needs_retry(decisions_by_id[item.issue_id], item)
+                or llm_decision_needs_retry(decisions_by_id[item.issue_id], item)
             ]
             if not retry_items:
                 break
@@ -713,7 +1097,18 @@ def review_batch_with_retries(
         item
         for item in batch
         if item.issue_id not in decisions_by_id
-        or review_decision_needs_retry(decisions_by_id[item.issue_id], item)
+        or llm_decision_needs_retry(decisions_by_id[item.issue_id], item)
+    ]
+    for item in unresolved:
+        decision = decisions_by_id.get(item.issue_id)
+        recovered = recover_incomplete_bilingual_decision(decision, item)
+        if recovered is not None:
+            decisions_by_id[item.issue_id] = recovered
+    unresolved = [
+        item
+        for item in batch
+        if item.issue_id not in decisions_by_id
+        or llm_decision_needs_retry(decisions_by_id[item.issue_id], item)
     ]
     if unresolved:
         codes = ", ".join(f"{item.table_code}:{item.location}" for item in unresolved)
@@ -731,6 +1126,58 @@ def review_batch_with_retries(
             f"samples: {' | '.join(samples)}"
         )
     return list(decisions_by_id.values())
+
+
+def recover_incomplete_bilingual_decision(
+    raw: dict[str, Any] | None,
+    item: SourceReviewItem,
+) -> dict[str, Any] | None:
+    """Recover only unambiguous bilingual replacements after retry exhaustion.
+
+    A model occasionally returns an English fragment for a value containing
+    Korean and English. One Korean/English pair can be reconstructed safely.
+    Multi-pair headers cannot, so an incomplete suggestion is conservatively
+    treated as no finding instead of being attached to the wrong label.
+    """
+    if not raw:
+        return None
+    raw_current = normalize_review_text(str(raw.get("current_value") or ""))
+    if raw_current and not decision_current_matches_item(raw_current, item.current_value):
+        return None
+
+    expected = normalize_review_text(str(raw.get("expected_value") or ""))
+    current = normalize_review_text(item.current_value)
+    if str(raw.get("status") or "").strip() == "정상":
+        recovered = dict(raw)
+        recovered["expected_value"] = "__UNCHANGED__"
+        return recovered
+    if not expected or not re.search(r"[가-힣]", current):
+        return None
+    if re.search(r"[가-힣]", expected) or not re.search(r"[A-Za-z]", expected):
+        return None
+
+    korean_parts = [part.strip() for part in re.split(r"\s+/\s+", item.korean_text) if part.strip()]
+    english_parts = [part.strip() for part in re.split(r"\s+/\s+", item.english_text) if part.strip()]
+    recovered = dict(raw)
+    if len(korean_parts) == 1 and len(english_parts) == 1:
+        recovered["expected_value"] = normalize_review_text(
+            f"{korean_parts[0]} {expected}"
+        )
+        if not llm_decision_needs_retry(recovered, item):
+            return recovered
+
+    recovered.update(
+        {
+            "status": "정상",
+            "issue_type": item.requested_review_type,
+            "defect_kind": "none",
+            "current_value": current,
+            "expected_value": "__UNCHANGED__",
+            "difference": "보수적 검수 통과",
+            "detail": "복합 국문·영문 셀에서 완전한 교정값이 확인되지 않아 오류로 확정하지 않았습니다.",
+        }
+    )
+    return recovered
 
 
 def request_review_with_retries(
@@ -764,14 +1211,16 @@ def group_items_for_retry(items: list[SourceReviewItem]) -> list[list[SourceRevi
     return list(grouped.values())
 
 
-SYSTEM_PROMPT = """You are a meticulous Korean government statistical yearbook language reviewer.
+SYSTEM_PROMPT = """You are a high-precision Korean government statistical yearbook language reviewer.
 
-The input groups requests that share one title, metadata, header, or cell context. For every entry in review_requests, return one result using that request id. required_result_ids lists every id that must appear exactly once in the output, and the output items array must contain exactly required_result_count objects. Do not return one result per shared context; return one result per review request. Review the complete shared value for only its requested_review_type and return exactly the same issue_type. Values may contain numbers and text together. Never turn a translation mismatch into a spelling error.
+The input groups requests that share one title, header, or body-cell context. For every entry in review_requests, return one result using that request id. Copy that group's context_token exactly into every result for the group. required_result_ids and required_context_tokens define the only valid id-token mappings; never move a result between contexts. The output items array must contain exactly required_result_count objects. Review the complete shared value only for requested_review_type and return that same issue_type. Values may contain both text and numbers. Never turn a translation question into a spelling finding.
 
-The standard two categories are strictly separated:
-1. 오탈자 검수: Find clear Korean or English misspellings, broken characters, accidental casing errors, malformed numeric separators such as 3.445 instead of 3,445 in an integer context, and text that is clearly inconsistent with related cells. Korean orthographic errors such as "진행율" instead of "진행률" are spelling errors. Do not recommend a merely preferable, more formal, or stylistically different term. A clear error is "오류 의심"; an uncertain contextual notation is "확인 필요".
-2. 번역 검수: Check whether Korean and English have the same meaning. If English is missing, provide the English replacement. Return "확인 필요" for a missing, mismatched, awkward, or unverifiable translation, never "오류 의심". Do not propose a different Korean term when the Korean source is already valid.
-3. 파란색 표기 확인: This is a single combined review for an exact blue-marked HWPX value. Check clear Korean/English typos, Korean-English semantic alignment, official proper names, and public-sector wording together, then return exactly one result with issue_type "파란색 표기 확인". Do not split it into the standard two categories. For Korean-only text, provide a concrete English translation. For bilingual text, preserve the complete Korean and English value in a corrected replacement.
+Precision is more important than recall. Report a finding only when the supplied value has a concrete, actionable defect. If the wording is contextually acceptable, conventional in a statistical table, or merely one of several valid alternatives, return "정상". Never create a finding just to improve style.
+
+The standard categories are strictly separated:
+1. 오탈자 검수: Check only clear Korean or English spelling/orthographic errors, broken or duplicated characters, accidental letter/number substitution, spacing, punctuation, and malformed numeric separators when peer values prove the intended format. "진행율" to "진행률" is a spelling correction. Allowed non-normal defect_kind values are korean_spelling, english_spelling, spacing, punctuation, and numeric_format. Do not translate, change word order, improve grammar or style, alter singular/plural, rewrite, formalize, standardize terminology, change romanization style, or suggest a synonym. Those cases are normal for this category. Use "오류 의심" only when the correction is clear. When evidence is insufficient, return "정상" rather than speculating.
+2. 번역 검수: This request is created only for a value containing an identifiable Korean-English pair. Check whether the two sides convey the same material meaning in this table. Allowed non-normal defect_kind values are semantic_omission, semantic_addition, wrong_meaning, entity_mismatch, and measure_mismatch. Accept concise table translations, established abbreviations, non-literal but equivalent wording, word-order variation, capitalization, singular/plural variation, optional contextual scope phrases, and conventional labels. Spacing, spelling, punctuation, grammar polishing, or a merely more natural alternative is normal for this category because spelling has its own request. Return "확인 필요" only for a material omission, addition, role reversal, wrong entity, wrong measure, or clearly different core meaning. Do not propose a stylistic alternative and never return "오류 의심".
+3. 파란색 표기 확인: This remains one combined review for an exact blue-marked HWPX value. Check clear Korean/English typos, semantic alignment, official proper names, and public-sector wording together, then return exactly one result with issue_type "파란색 표기 확인". Do not split it into the standard categories. For Korean-only blue text, provide a concrete English translation. For bilingual blue text, preserve the complete Korean and English value in a corrected replacement.
 
 Translation dictionary policy:
 - translation_glossary is evidence, not permission to skip review.
@@ -779,25 +1228,28 @@ Translation dictionary policy:
 - status "official_name_only" means only the Korean proper name and entity classification were confirmed by an official registry; it does not verify any English translation.
 - status "llm_reviewed", "reference", and "seed" are supporting evidence only. They may be wrong or outdated and must never override context or an official source.
 - Check source_url, source_title, validity dates, aliases, category, and subcategory before applying an entry.
-- When no usable glossary entry exists, infer conservatively from the table context and provide the best concrete replacement directly.
+- When no usable glossary entry exists, judge conservatively from the table context. Lack of a glossary entry alone is never a defect.
 - Never mechanically translate organization suffixes such as 부, 처, 청, 원, 위원회. Organization names, event names and Korean administrative areas are proper names.
 
 General rules:
 - Use the table title, row label, column label, unit, surrounding rows and glossary evidence.
-- Copy the shared current_value exactly into every result's current_value. Never use text from another review request or reduce it to only one Korean/English fragment.
+- Use the id and context_token mapping exactly. The response does not repeat current_value; the application reads the authoritative original from the database.
 - For 오탈자 검수, correct spelling only. Preserve the source language composition: Korean-only stays Korean, English-only stays English, and bilingual text stays bilingual. Never translate a Korean name as a spelling correction.
-- Korean and English appearing together in one title, header, or cell is the yearbook's normal bilingual layout. Never flag it merely as duplicated, mixed, or inconsistently ordered. Judge only clear spelling errors and whether the two languages have the same meaning.
+- Korean and English appearing together in one title, header, or cell is the yearbook's normal bilingual layout. Line breaks, Korean-first ordering, slash-separated hierarchy, parenthesized formula letters, and repeated category labels are not defects by themselves.
+- Treat conventional statistical labels as valid when their meaning fits the table. Examples include 구분/Classification, 합계 or 계/Total, 소계/Subtotal, 평균/Average, 지역/Region, 연도/Year, 단위/Unit, 수 or 건수/Number, 비율/Rate or Ratio, 증감/Increase/Decrease or Change.
+- Do not flag a valid generic label because another dictionary translation is also possible. In particular, never replace Classification, Total, Subtotal, Average, Region, Year, Unit, Number, Rate, or Ratio solely as a preference.
+- Text adjacent because of table parsing is context, not necessarily one phrase. Do not replace one Korean-English pair with an unrelated neighboring header, row label, unit, source, or department name.
 - When a bilingual value genuinely needs translation correction, expected_value must preserve the exact complete Korean text and contain the corrected English text. An English-only fragment that drops the Korean half is not an actionable replacement.
 - candidate_kind beginning with "blue_text" is an exact HWPX blue-marked segment. Review the requested category for that segment and return a concrete corrected value, not a review request.
 - For a Korean-only blue_text translation request, expected_value must be a standalone English translation. Never return the Korean source, a placeholder, or an instruction to translate later.
-- For an English-only value under 번역 검수, use nearby Korean labels when available to check semantic correspondence. If there is no Korean counterpart and the English is not problematic, return 정상 instead of inventing a Korean source.
-- For Korean-only text under 번역 검수, provide a standalone English translation even if the same value is not normally printed bilingually.
+- Standard 번역 검수 is never requested for Korean-only or English-only ordinary text. Do not invent a missing counterpart for those values.
 - For number_format, distinguish thousands separators from decimals using the unit and peer values. Preserve valid decimals.
 - For punctuation_format, distinguish a typo from a line-break marker, URL, date, official notation or valid compound word.
 - Treat semantic hyphens such as "e-learning" as correct. Remove a hyphen only when it clearly marks a line break inside one word.
 - Do not perform or alter sum and ratio calculations.
 - Use "정상" when no action is needed.
-- expected_value must never be empty. For "정상", copy the reviewed source or current English. For a finding, provide only the corrected/recommended replacement.
+- For every normal result, set defect_kind to "none". Never use a semantic defect kind for an orthographic correction or an orthographic defect kind for a semantic correction.
+- expected_value must never be empty. For "정상", return the exact sentinel "__UNCHANGED__" instead of copying the source. For a finding, provide the complete corrected value in the same bilingual layout, not an isolated fragment.
 - difference and detail must be written in Korean. detail must briefly state the evidence used, including a glossary source when applicable.
 - Never output placeholders such as "담당자 확인", "담당자 확인 필요", "공식 명칭 확인 필요" or "LLM 문맥 확인". The application has no separate human-approval workflow, so always return the reviewed replacement and conclusion directly.
 
@@ -806,10 +1258,11 @@ Return JSON only, no markdown:
   "items": [
     {
       "id": 123,
+      "context_token": "ctx_...",
       "status": "정상|확인 필요|오류 의심",
       "issue_type": "번역 검수|오탈자 검수|파란색 표기 확인",
-      "current_value": "original text reviewed",
-      "expected_value": "recommended English/correction or empty string",
+      "defect_kind": "none|korean_spelling|english_spelling|spacing|punctuation|numeric_format|semantic_omission|semantic_addition|wrong_meaning|entity_mismatch|measure_mismatch",
+      "expected_value": "__UNCHANGED__ or the complete corrected value",
       "difference": "short reason",
       "detail": "one concise Korean explanation"
     }
@@ -819,7 +1272,7 @@ Return JSON only, no markdown:
 
 
 ENGLISH_REPLACEMENT_RETRY_PROMPT = """The previous response was incomplete.
-For every Korean source in this retry batch, expected_value must be the actual standalone English replacement text. Do not copy Korean, leave the value blank, write an explanation, or request later confirmation. If an official name is uncertain, provide the best conservative public-sector English translation and state the evidence limitation only in detail. difference and detail must be written in Korean.
+Copy each shared context_token exactly into its result. For every Korean source in this retry batch, expected_value must be the actual standalone English replacement text. Do not copy Korean, leave the value blank, write an explanation, or request later confirmation. If an official name is uncertain, provide the best conservative public-sector English translation and state the evidence limitation only in detail. difference and detail must be written in Korean.
 """
 
 
@@ -832,18 +1285,35 @@ REVIEW_RESPONSE_SCHEMA: dict[str, Any] = {
                 "type": "object",
                 "properties": {
                     "id": {"type": "integer"},
+                    "context_token": {"type": "string", "minLength": 8},
                     "status": {"type": "string", "enum": ["정상", "확인 필요", "오류 의심"]},
                     "issue_type": {"type": "string", "enum": ["번역 검수", "오탈자 검수", "파란색 표기 확인"]},
-                    "current_value": {"type": "string"},
+                    "defect_kind": {
+                        "type": "string",
+                        "enum": [
+                            "none",
+                            "korean_spelling",
+                            "english_spelling",
+                            "spacing",
+                            "punctuation",
+                            "numeric_format",
+                            "semantic_omission",
+                            "semantic_addition",
+                            "wrong_meaning",
+                            "entity_mismatch",
+                            "measure_mismatch"
+                        ]
+                    },
                     "expected_value": {"type": "string", "minLength": 1},
                     "difference": {"type": "string"},
                     "detail": {"type": "string"},
                 },
                 "required": [
                     "id",
+                    "context_token",
                     "status",
                     "issue_type",
-                    "current_value",
+                    "defect_kind",
                     "expected_value",
                     "difference",
                     "detail",
@@ -1156,10 +1626,6 @@ def source_candidate_kind(row: sqlite3.Row) -> str:
 
 
 def review_decision_needs_retry(raw: dict[str, Any], item: SourceReviewItem) -> bool:
-    raw_current = normalize_review_text(str(raw.get("current_value") or ""))
-    if raw_current and not decision_current_matches_item(raw_current, item.current_value):
-        return True
-
     expected = normalize_review_text(str(raw.get("expected_value") or ""))
     if not expected:
         return True
@@ -1167,6 +1633,23 @@ def review_decision_needs_retry(raw: dict[str, Any], item: SourceReviewItem) -> 
     issue_type = str(raw.get("issue_type") or "").strip()
     status = str(raw.get("status") or "").strip()
     current = normalize_review_text(item.current_value)
+    requires_english_replacement = bool(
+        (
+            item.requested_review_type == BLUE_REVIEW_TYPE
+            or (item.candidate_kind == "blue_text" and not item.requested_review_type)
+        )
+        and re.search(r"[가-힣]", current)
+        and not re.search(r"[A-Za-z]", current)
+    )
+    if status == "정상" and not requires_english_replacement:
+        return False
+    if decision_should_be_normal(raw, item):
+        return False
+
+    raw_current = normalize_review_text(str(raw.get("current_value") or ""))
+    if raw_current and not decision_current_matches_item(raw_current, item.current_value):
+        return True
+
     translation_requested = (
         item.requested_review_type == TRANSLATION_CHECK_TYPE
         or (item.candidate_kind == "blue_text" and not item.requested_review_type)
@@ -1184,7 +1667,7 @@ def review_decision_needs_retry(raw: dict[str, Any], item: SourceReviewItem) -> 
         translation_requested
         and re.search(r"[가-힣]", current)
         and expected == current
-        and not re.search(r"[A-Za-z]{3,}", current)
+        and not re.search(r"[A-Za-z]", current)
     ):
         return True
     if status == "정상" or issue_type != "번역 검수" or not re.search(r"[가-힣]", current):
@@ -1200,6 +1683,166 @@ def review_decision_needs_retry(raw: dict[str, Any], item: SourceReviewItem) -> 
         "표현입니다",
     )
     return not re.search(r"[A-Za-z]", expected) or any(token in expected for token in explanatory_korean)
+
+
+def llm_decision_needs_retry(raw: dict[str, Any], item: SourceReviewItem) -> bool:
+    """Reject a response that was copied from another batched table or cell."""
+
+    return (
+        str(raw.get("context_token") or "") != review_context_token(item)
+        or review_decision_needs_retry(raw, item)
+    )
+
+
+def decision_should_be_normal(raw: dict[str, Any], item: SourceReviewItem) -> bool:
+    """Enforce the spelling/translation boundary after the model classifies a defect."""
+
+    if str(raw.get("status") or "").strip() == "정상":
+        return False
+    defect_kind = str(raw.get("defect_kind") or "").strip()
+    if not defect_kind:
+        return False
+    current = normalize_review_text(item.current_value)
+    expected = normalize_review_text(str(raw.get("expected_value") or ""))
+    review_type = item.requested_review_type or str(raw.get("issue_type") or "")
+
+    if review_type == SPELLING_CHECK_TYPE:
+        return (
+            defect_kind not in SPELLING_DEFECT_KINDS
+            or not is_plausible_spelling_correction(current, expected, raw, defect_kind)
+        )
+    if review_type == TRANSLATION_CHECK_TYPE:
+        return (
+            defect_kind not in TRANSLATION_DEFECT_KINDS
+            or english_only_replacement_is_incomplete_fragment(item, expected)
+            or not is_material_translation_correction(current, expected, raw)
+        )
+    return False
+
+
+def is_plausible_spelling_correction(
+    current: str,
+    expected: str,
+    raw: dict[str, Any],
+    defect_kind: str,
+) -> bool:
+    if not current or not expected or current == expected:
+        return False
+    notes = normalize_review_text(
+        f"{raw.get('difference') or ''} {raw.get('detail') or ''}"
+    ).casefold()
+    if re.search(r"어순|단수|복수|문법|문체|스타일|권장|자연스|의미|누락|추가|불필요", notes):
+        return False
+
+    current_compact = canonical_decision_text(current)
+    expected_compact = canonical_decision_text(expected)
+    if current_compact == expected_compact:
+        return True
+    if same_words_ignoring_order_or_inflection(current, expected):
+        return False
+    if defect_kind == "numeric_format":
+        return bool(re.search(r"\d", current) and re.search(r"\d", expected))
+
+    if defect_kind == "korean_spelling":
+        current_text = "".join(re.findall(r"[가-힣]", current))
+        expected_text = "".join(re.findall(r"[가-힣]", expected))
+    elif defect_kind == "english_spelling":
+        current_text = "".join(re.findall(r"[A-Za-z]", current)).casefold()
+        expected_text = "".join(re.findall(r"[A-Za-z]", expected)).casefold()
+    else:
+        return False
+    if not current_text or not expected_text:
+        return False
+    if len(current_text) == len(expected_text):
+        mismatch_count = sum(left != right for left, right in zip(current_text, expected_text))
+        if mismatch_count <= 2:
+            return True
+    return bool(
+        abs(len(current_text) - len(expected_text)) <= 2
+        and SequenceMatcher(None, current_text, expected_text).ratio() >= 0.9
+    )
+
+
+def is_material_translation_correction(
+    current: str,
+    expected: str,
+    raw: dict[str, Any],
+) -> bool:
+    if not current or not expected or current == expected:
+        return False
+    notes = normalize_review_text(
+        f"{raw.get('difference') or ''} {raw.get('detail') or ''}"
+    ).casefold()
+    if re.search(
+        r"띄어쓰기|철자|대소문자|어순|단수|복수|문법|전치사|문체|스타일|"
+        r"더 자연|권장|권고|의미.{0,4}확장|범위.{0,4}확장",
+        notes,
+    ):
+        return False
+    if canonical_decision_text(current) == canonical_decision_text(expected):
+        return False
+    return not same_words_ignoring_order_or_inflection(current, expected)
+
+
+def english_only_replacement_is_incomplete_fragment(
+    item: SourceReviewItem,
+    expected: str,
+) -> bool:
+    current = normalize_review_text(item.current_value)
+    expected = normalize_review_text(expected)
+    if not (
+        re.search(r"[가-힣]", current)
+        and re.search(r"[A-Za-z]", current)
+        and re.search(r"[A-Za-z]", expected)
+        and not re.search(r"[가-힣]", expected)
+    ):
+        return False
+
+    def english_tokens(value: str) -> list[str]:
+        result: list[str] = []
+        for token in re.findall(r"[A-Za-z]+", value.casefold()):
+            if len(token) > 3 and token.endswith("s"):
+                token = token[:-1]
+            result.append(token)
+        return result
+
+    current_tokens = english_tokens(item.english_text or current)
+    expected_tokens = english_tokens(expected)
+    if len(current_tokens) < 4 or len(expected_tokens) >= len(current_tokens) * 0.65:
+        return False
+    overlap = sum(token in current_tokens for token in expected_tokens)
+    return bool(expected_tokens and overlap / len(expected_tokens) >= 0.8)
+
+
+def english_replacement_has_context_overlap(item: SourceReviewItem, expected: str) -> bool:
+    def token_set(value: str) -> set[str]:
+        result: set[str] = set()
+        for token in re.findall(r"[A-Za-z]+", value.casefold()):
+            if len(token) > 3 and token.endswith("s"):
+                token = token[:-1]
+            result.add(token)
+        return result
+
+    current_tokens = token_set(item.english_text or item.current_value)
+    expected_tokens = token_set(expected)
+    if not current_tokens or not expected_tokens:
+        return False
+    overlap = len(current_tokens & expected_tokens)
+    return overlap / min(len(current_tokens), len(expected_tokens)) >= 0.4
+
+
+def same_words_ignoring_order_or_inflection(left: str, right: str) -> bool:
+    def tokens(value: str) -> list[str]:
+        result: list[str] = []
+        for token in re.findall(r"[A-Za-z]+|[가-힣]+|\d+", value.casefold()):
+            if re.fullmatch(r"[a-z]+", token) and len(token) > 3 and token.endswith("s"):
+                token = token[:-1]
+            result.append(token)
+        return sorted(result)
+
+    left_tokens = tokens(left)
+    right_tokens = tokens(right)
+    return bool(left_tokens and left_tokens == right_tokens)
 
 
 def decision_expected_matches_requested_scope(
@@ -1237,10 +1880,13 @@ def decision_expected_matches_requested_scope(
     if review_type != TRANSLATION_CHECK_TYPE:
         return True
     if current_has_korean and current_has_english:
+        if expected_has_korean and expected_has_english:
+            return canonical_korean_text(expected) == canonical_korean_text(current)
         return bool(
-            expected_has_korean
-            and expected_has_english
-            and canonical_korean_text(expected) == canonical_korean_text(current)
+            expected_has_english
+            and item.korean_text
+            and not english_only_replacement_is_incomplete_fragment(item, expected)
+            and english_replacement_has_context_overlap(item, expected)
         )
     if current_has_korean:
         return expected_has_english and not expected_has_korean
@@ -1323,10 +1969,14 @@ def column_header_text(connection: sqlite3.Connection, table_id: int, col_index:
 def resolve_linguistic_candidates_from_glossary(
     connection: sqlite3.Connection,
     run_id: int,
+    *,
+    standard_language_only: bool = False,
 ) -> tuple[int, int, int]:
     """Resolve only exact, authoritative glossary matches without an API call."""
 
     items = load_linguistic_review_items(connection, run_id)
+    if standard_language_only:
+        items = [item for item in items if is_standard_language_item(item)]
     resolved_items: list[SourceReviewItem] = []
     decisions: list[dict[str, Any]] = []
     for item in items:
@@ -1348,17 +1998,27 @@ def resolve_linguistic_candidates_from_glossary(
 
 
 def glossary_decision_for(item: SourceReviewItem) -> dict[str, str] | None:
+    explicit_spelling = explicit_spelling_decision_for(item)
+    if explicit_spelling is not None:
+        return explicit_spelling
+
     entries = item.glossary_matches or []
     korean = normalize_review_text(item.korean_text)
     english = normalize_review_text(item.english_text)
-    current = normalize_review_text(item.current_value)
     source_normalized = normalize_source(korean) if korean else ""
     target_normalized = normalize_target(english) if english else ""
 
-    # Repeated yearbook forms are valid alternatives when the exact Korean-English
-    # pair already exists. They can confirm a value, but cannot propose a new one.
+    # Only audited or authoritative pairs can close a candidate. Raw yearbook
+    # repetition is evidence, not proof: the same typo may be copied every year.
+    exact_match_statuses = {
+        "approved",
+        "official_verified",
+        "seed",
+        "llm_verified",
+        "llm_reviewed",
+    }
     for entry in entries:
-        if str(entry.get("status") or "") == "llm_reviewed":
+        if str(entry.get("status") or "") not in exact_match_statuses:
             continue
         entry_source = normalize_source(str(entry.get("source") or ""))
         aliases = [normalize_source(str(alias)) for alias in entry.get("aliases", []) if alias]
@@ -1379,7 +2039,6 @@ def glossary_decision_for(item: SourceReviewItem) -> dict[str, str] | None:
     if not authoritative:
         return None
 
-    translation_recommendation: dict[str, str] | None = None
     for entry in authoritative:
         entry_source = normalize_source(str(entry.get("source") or ""))
         aliases = [normalize_source(str(alias)) for alias in entry.get("aliases", []) if alias]
@@ -1406,23 +2065,43 @@ def glossary_decision_for(item: SourceReviewItem) -> dict[str, str] | None:
         if source_matches:
             if target_matches:
                 return normal_glossary_decision(item, source_title)
-            if translation_recommendation is None:
-                expected_value = (
-                    normalize_review_text(f"{korean} {entry_target}")
-                    if korean and english
-                    else entry_target
-                )
-                translation_recommendation = {
-                    "status": "확인 필요",
-                    "issue_type": TRANSLATION_CHECK_TYPE,
-                    "current_value": current,
-                    "expected_value": expected_value,
-                    "difference": "승인 사전 영문명 적용",
-                    "detail": f"{source_title}에 수록된 국문·영문 대응을 적용해 영문안을 제시했습니다.",
-                }
         if not korean and target_matches:
             return normal_glossary_decision(item, source_title)
-    return translation_recommendation
+    # A dictionary mismatch is evidence for the contextual LLM review, not an
+    # automatic finding. Statistical labels and historical organization names
+    # often have multiple valid translations depending on year and table scope.
+    return None
+
+
+def explicit_spelling_decision_for(item: SourceReviewItem) -> dict[str, str] | None:
+    """Apply unambiguous typo corrections before any glossary can approve them."""
+
+    if item.requested_review_type != SPELLING_CHECK_TYPE:
+        return None
+    expected = normalize_review_text(item.current_value)
+    reasons: list[str] = []
+    defect_kind = "english_spelling"
+    for replacement in SPELLING_REPLACEMENTS:
+        current = str(replacement.get("current") or "")
+        corrected = str(replacement.get("expected") or "")
+        if not current or current not in expected:
+            continue
+        expected = expected.replace(current, corrected)
+        reasons.append(f"{current} → {corrected}")
+        if str(replacement.get("language") or "") == "ko":
+            defect_kind = "korean_spelling"
+    if not reasons:
+        return None
+    return {
+        "status": "오류 의심",
+        "issue_type": SPELLING_CHECK_TYPE,
+        "rule_id": LLM_SPELLING_RULE_ID,
+        "defect_kind": defect_kind,
+        "current_value": normalize_review_text(item.current_value),
+        "expected_value": expected,
+        "difference": ", ".join(reasons),
+        "detail": "명시 오탈자 사전에서 잘못된 문자·숫자 표기가 확인되었습니다.",
+    }
 
 
 def normal_glossary_decision(item: SourceReviewItem, source_title: str) -> dict[str, str]:
@@ -1446,8 +2125,11 @@ def reuse_cached_linguistic_reviews(
     run_id: int,
     *,
     reviewed_model: str,
+    standard_language_only: bool = False,
 ) -> tuple[int, int, int]:
     items = load_linguistic_review_items(connection, run_id)
+    if standard_language_only:
+        items = [item for item in items if is_standard_language_item(item)]
     cache_rows = connection.execute(
         """
         SELECT fingerprint, decision_json
@@ -1563,8 +2245,24 @@ def save_llm_review_decisions(
         if issue_id is None or issue_id not in by_id:
             continue
         item = by_id[issue_id]
+        if (
+            resolution_source == "llm"
+            and str(raw_decision.get("context_token") or "") != review_context_token(item)
+        ):
+            continue
+        if item.source_record_type == "candidate" and not candidate_source_still_matches(
+            connection,
+            run_id,
+            item,
+        ):
+            continue
         raw_current = normalize_review_text(str(raw_decision.get("current_value") or ""))
-        if raw_current and not decision_current_matches_item(raw_current, item.current_value):
+        if (
+            raw_current
+            and not decision_current_matches_item(raw_current, item.current_value)
+            and str(raw_decision.get("status") or "").strip() != "정상"
+            and not decision_should_be_normal(raw_decision, item)
+        ):
             continue
         if review_decision_needs_retry(raw_decision, item):
             continue
@@ -1607,6 +2305,34 @@ def save_llm_review_decisions(
     return inserted_issues, inserted_checks, processed
 
 
+def candidate_source_still_matches(
+    connection: sqlite3.Connection,
+    run_id: int,
+    item: SourceReviewItem,
+) -> bool:
+    if item.source_record_id is None:
+        return False
+    row = connection.execute(
+        """
+        SELECT run_id, table_id, location, row_index, col_index, current_value, status
+        FROM linguistic_review_candidates
+        WHERE id = ?
+        """,
+        (item.source_record_id,),
+    ).fetchone()
+    if row is None or str(row["status"]) != "pending":
+        return False
+    return (
+        int(row["run_id"]) == run_id
+        and int(row["table_id"]) == item.table_id
+        and str(row["location"]) == item.location
+        and row["row_index"] == item.row_index
+        and row["col_index"] == item.col_index
+        and normalize_review_text(str(row["current_value"]))
+        == normalize_review_text(item.current_value)
+    )
+
+
 def normalize_decision(raw: dict[str, Any], item: SourceReviewItem) -> dict[str, str]:
     status = str(raw.get("status") or "확인 필요").strip()
     if status not in {"정상", "확인 필요", "오류 의심"}:
@@ -1621,6 +2347,25 @@ def normalize_decision(raw: dict[str, Any], item: SourceReviewItem) -> dict[str,
         issue_type = item.requested_review_type
 
     expected = normalize_review_text(str(raw.get("expected_value") or ""))
+    if decision_should_be_normal(raw, item):
+        status = "정상"
+        expected = normalize_review_text(item.current_value)
+        raw = {
+            **raw,
+            "difference": f"{issue_type} 범위 외 제안 제외",
+            "detail": (
+                "오탈자와 번역의 검수 범위를 분리해 어순, 단복수, 문체 또는 "
+                "다른 검수 유형의 제안은 문제로 분류하지 않았습니다."
+            ),
+        }
+    elif (
+        status != "정상"
+        and issue_type == TRANSLATION_CHECK_TYPE
+        and item.korean_text
+        and re.search(r"[A-Za-z]", expected)
+        and not re.search(r"[가-힣]", expected)
+    ):
+        expected = normalize_review_text(f"{item.korean_text} {expected}")
     if is_contextual_source_url_parenthesis(item):
         status = "정상"
         issue_type = "오탈자 검수"
@@ -1699,6 +2444,7 @@ def normalize_decision(raw: dict[str, Any], item: SourceReviewItem) -> dict[str,
     if not re.search(r"[가-힣]", detail):
         detail = korean_detail_for(issue_type, status)
     if status == "정상":
+        expected = normalize_review_text(item.current_value)
         difference = f"{issue_type} 통과"
         detail = korean_detail_for(issue_type, status)
     if item.source_rule_id == BLUE_REVIEW_RULE_ID:
@@ -1715,6 +2461,7 @@ def normalize_decision(raw: dict[str, Any], item: SourceReviewItem) -> dict[str,
         "status": status,
         "issue_type": issue_type,
         "rule_id": rule_id_for(issue_type),
+        "defect_kind": str(raw.get("defect_kind") or "none"),
         "current_value": normalize_review_text(item.current_value),
         "expected_value": expected,
         "difference": difference,
@@ -2301,6 +3048,19 @@ def prompt_context_key(item: SourceReviewItem) -> tuple[object, ...]:
     )
 
 
+def review_context_token(item: SourceReviewItem) -> str:
+    payload = {
+        "table_id": item.table_id,
+        "table_code": item.table_code,
+        "location": normalize_review_text(item.location),
+        "row_index": item.row_index,
+        "col_index": item.col_index,
+        "current_value": normalize_review_text(item.current_value),
+    }
+    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
+    return f"ctx_{hashlib.sha256(encoded).hexdigest()[:24]}"
+
+
 def compact_prompt_items(items: list[SourceReviewItem]) -> list[dict[str, Any]]:
     """Send shared cell context once while keeping one output id per review type."""
 
@@ -2316,20 +3076,66 @@ def compact_prompt_items(items: list[SourceReviewItem]) -> list[dict[str, Any]]:
                 "candidate_reason",
                 "candidate_expected",
                 "requested_review_type",
+                "prompt_version",
             ):
                 group.pop(field, None)
+            group["translation_glossary"] = compact_prompt_glossary(
+                item.glossary_matches or []
+            )
+            group["context_token"] = review_context_token(item)
+            if normalize_review_text(str(group.get("cell_text") or "")) == normalize_review_text(
+                item.current_value
+            ):
+                group.pop("cell_text", None)
+            if normalize_review_text(str(group.get("row_label") or "")) == normalize_review_text(
+                item.current_value
+            ):
+                group.pop("row_label", None)
+            if normalize_review_text(str(group.get("column_label") or "")) == normalize_review_text(
+                item.current_value
+            ):
+                group.pop("column_label", None)
             group["review_requests"] = []
             grouped[key] = group
-        group["review_requests"].append(
+        request_item = {
+            "id": item.issue_id,
+            "requested_review_type": item.requested_review_type,
+            "candidate_kind": item.candidate_kind,
+        }
+        if item.source_rule_id == BLUE_REVIEW_RULE_ID and item.candidate_reason:
+            request_item["candidate_reason"] = item.candidate_reason
+        if item.candidate_expected:
+            request_item["candidate_expected"] = item.candidate_expected
+        group["review_requests"].append(request_item)
+    return list(grouped.values())
+
+
+def compact_prompt_glossary(entries: list[dict[str, object]]) -> list[dict[str, object]]:
+    """Keep only source-traceable glossary evidence that can affect a decision."""
+
+    compacted: list[dict[str, object]] = []
+    seen: set[tuple[str, str, str]] = set()
+    for entry in entries:
+        status = str(entry.get("status") or "")
+        if status not in {"approved", "official_verified", "official_name_only"}:
+            continue
+        source = normalize_review_text(str(entry.get("source") or ""))
+        target = normalize_review_text(str(entry.get("target") or ""))
+        key = (source.casefold(), target.casefold(), status)
+        if key in seen:
+            continue
+        seen.add(key)
+        compacted.append(
             {
-                "id": item.issue_id,
-                "requested_review_type": item.requested_review_type,
-                "candidate_kind": item.candidate_kind,
-                "candidate_reason": item.candidate_reason,
-                "candidate_expected": item.candidate_expected,
+                "source": source,
+                "target": target,
+                "status": status,
+                "subcategory": str(entry.get("subcategory") or ""),
+                "source_title": normalize_review_text(str(entry.get("source_title") or "")),
+                "source_url": str(entry.get("source_url") or ""),
             }
         )
-    return list(grouped.values())
+    return compacted[:8]
 
 
 def chunked_by_context(items: list[SourceReviewItem], context_size: int) -> list[list[SourceReviewItem]]:

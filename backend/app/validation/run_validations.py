@@ -105,7 +105,7 @@ def rebuild_linguistic_review_scope(
     report_id: int,
     run_id: int,
 ) -> dict[str, int]:
-    """Rebuild language candidates without making any paid LLM request."""
+    """Rebuild standard language candidates without touching completed blue reviews."""
 
     with connect(db_path) as connection:
         init_db(connection)
@@ -121,13 +121,26 @@ def rebuild_linguistic_review_scope(
                 report_id=report_id,
                 run_id=run_id,
             )
+            blue_candidates = int(
+                connection.execute(
+                    """
+                    SELECT COUNT(*)
+                    FROM linguistic_review_candidates
+                    WHERE run_id = ? AND candidate_kind LIKE 'blue_text%'
+                    """,
+                    (run_id,),
+                ).fetchone()[0]
+            )
 
-    blue_candidates = append_blue_text_review_checks(
-        db_path,
-        report_id=report_id,
-        run_id=run_id,
-        source_path=str(report["source_file_path"]),
-    )
+    # A legacy run may not have blue candidates yet. Populate them once, but do
+    # not recreate existing reviewed candidates when only language scope changes.
+    if blue_candidates == 0:
+        blue_candidates = append_blue_text_review_checks(
+            db_path,
+            report_id=report_id,
+            run_id=run_id,
+            source_path=str(report["source_file_path"]),
+        )
     with connect(db_path) as connection:
         init_db(connection)
         with connection:

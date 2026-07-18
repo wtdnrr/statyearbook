@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from app.db.schema import connect, init_db, repair_misaligned_linguistic_reviews
 from app.validation.blue_review import insert_blue_review
@@ -16,20 +17,26 @@ from app.validation.llm_translation_review import (
     decision_current_matches_item,
     group_linguistic_items_by_context,
     glossary_decision_for,
+    is_standard_language_item,
     expected_is_existing_bilingual_text,
     expected_drops_bilingual_context,
     linguistic_review_fingerprint,
+    llm_decision_needs_retry,
     load_linguistic_review_items,
     normalize_decision,
+    pending_linguistic_candidate_count,
     parse_response_json,
     request_review_with_retries,
     retry_after_seconds,
     translate_temporal_notation,
     review_batch_with_retries,
+    review_context_token,
     looks_like_translation_mismatch,
     review_decision_needs_retry,
     reuse_cached_linguistic_reviews,
     reconcile_non_actionable_bilingual_reviews,
+    stored_language_finding_is_non_actionable,
+    reset_standard_language_review_results,
     save_llm_review_decisions,
 )
 
@@ -60,6 +67,84 @@ class LLMTranslationReviewTest(unittest.TestCase):
         values.update(overrides)
         return SourceReviewItem(**values)  # type: ignore[arg-type]
 
+    def test_reconciliation_keeps_only_actionable_language_findings(self) -> None:
+        style_item = self.source_item(
+            source_rule_id="source.linguistic_review",
+            candidate_kind="translation_pair",
+            requested_review_type="번역 검수",
+            current_value="제안 Proposal System",
+            korean_text="제안",
+            english_text="Proposal System",
+        )
+        semantic_item = self.source_item(
+            source_rule_id="source.linguistic_review",
+            candidate_kind="translation_pair",
+            requested_review_type="번역 검수",
+            current_value="성별 Region",
+            korean_text="성별",
+            english_text="Region",
+        )
+        style_decision = {
+            "expected_value": "제안 Proposal",
+            "difference": "영문 의미 확장",
+            "detail": "표현 범위를 간결하게 조정하는 것을 권고합니다.",
+        }
+        semantic_decision = {
+            "expected_value": "성별 Sex",
+            "difference": "핵심 의미 불일치",
+            "detail": "Region은 성별을 뜻하지 않습니다.",
+        }
+
+        self.assertTrue(
+            stored_language_finding_is_non_actionable(style_item, style_decision)
+        )
+        self.assertFalse(
+            stored_language_finding_is_non_actionable(semantic_item, semantic_decision)
+        )
+
+    def test_reconciliation_ignores_preposition_and_shared_index_preferences(self) -> None:
+        preposition_item = self.source_item(
+            source_rule_id="source.linguistic_review",
+            candidate_kind="translation_pair",
+            requested_review_type="번역 검수",
+            current_value=(
+                "비영리민간단체 등록 Enrollment of Nonprofit Organizations on Government"
+            ),
+            korean_text="비영리민간단체 등록",
+            english_text="Enrollment of Nonprofit Organizations on Government",
+        )
+        index_item = self.source_item(
+            source_rule_id="source.linguistic_review",
+            candidate_kind="translation_bilingual_context",
+            requested_review_type="번역 검수",
+            current_value="서울역2 Seoul Station2 이전구축",
+            korean_text="서울역 / 이전구축",
+            english_text="Seoul Station",
+        )
+
+        self.assertTrue(
+            stored_language_finding_is_non_actionable(
+                preposition_item,
+                {
+                    "expected_value": (
+                        "비영리민간단체 등록 Enrollment of Nonprofit Organizations to Government"
+                    ),
+                    "difference": "전치사 사용 확인",
+                    "detail": "on 대신 to가 더 자연스럽습니다.",
+                },
+            )
+        )
+        self.assertTrue(
+            stored_language_finding_is_non_actionable(
+                index_item,
+                {
+                    "expected_value": "서울역 Seoul Station 이전구축",
+                    "difference": "불필요한 숫자 2 삭제",
+                    "detail": "영문 숫자 표기를 확인했습니다.",
+                },
+            )
+        )
+
     def test_gpt5_review_uses_minimal_reasoning(self) -> None:
         client = ResponsesAPIClient(
             api_key="test-key",
@@ -78,6 +163,122 @@ class LLMTranslationReviewTest(unittest.TestCase):
         client.review([self.source_item()])
 
         self.assertEqual(captured["reasoning"], {"effort": "minimal"})
+
+    def test_direct_timeout_is_retried(self) -> None:
+        client = ResponsesAPIClient(
+            api_key="test-key",
+            model="openai/gpt-5-mini",
+            base_url="https://example.invalid/v1",
+            timeout=10,
+            provider="bizrouter",
+        )
+
+        class FakeResponse:
+            def __enter__(self) -> "FakeResponse":
+                return self
+
+            def __exit__(self, *args: object) -> None:
+                return None
+
+            def read(self) -> bytes:
+                return b'{"output_text":"ok"}'
+
+        with (
+            patch(
+                "app.validation.llm_translation_review.request.urlopen",
+                side_effect=[TimeoutError("read timed out"), FakeResponse()],
+            ) as mocked_urlopen,
+            patch("app.validation.llm_translation_review.time.sleep"),
+        ):
+            response = client._post({"model": "openai/gpt-5-mini"})
+
+        self.assertEqual(response["output_text"], "ok")
+        self.assertEqual(mocked_urlopen.call_count, 2)
+
+    def test_standard_language_scope_excludes_blue_and_source_items(self) -> None:
+        spelling = self.source_item(
+            source_rule_id="source.linguistic_review",
+            requested_review_type="오탈자 검수",
+        )
+        translation = self.source_item(
+            source_rule_id="source.linguistic_review",
+            requested_review_type="번역 검수",
+        )
+        blue = self.source_item(
+            source_rule_id="source.blue_text_review",
+            requested_review_type="파란색 표기 확인",
+        )
+        source_format = self.source_item(
+            source_rule_id="source.format_review",
+            requested_review_type="오탈자 검수",
+        )
+
+        self.assertTrue(is_standard_language_item(spelling))
+        self.assertTrue(is_standard_language_item(translation))
+        self.assertFalse(is_standard_language_item(blue))
+        self.assertFalse(is_standard_language_item(source_format))
+
+    def test_pending_standard_language_count_excludes_blue_candidates(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "scope.sqlite"
+            with connect(db_path) as connection:
+                init_db(connection)
+                report_id = int(
+                    connection.execute(
+                        """
+                        INSERT INTO annual_reports (
+                            year, title, source_file_name, source_file_path, file_hash, imported_at
+                        ) VALUES (2026, '연보', 'test.hwpx', 'test.hwpx', 'scope', CURRENT_TIMESTAMP)
+                        """
+                    ).lastrowid
+                )
+                table_id = int(
+                    connection.execute(
+                        "INSERT INTO stat_tables (report_id, code, title) VALUES (?, '1-1', '표')",
+                        (report_id,),
+                    ).lastrowid
+                )
+                run_id = self.insert_run(connection, report_id)
+                connection.executemany(
+                    """
+                    INSERT INTO linguistic_review_candidates (
+                        run_id, table_id, review_type, candidate_kind, location, current_value
+                    ) VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        (run_id, table_id, "오탈자 검수", "language_spelling", "1행 1열", "오탈자"),
+                        (run_id, table_id, "번역 검수", "translation_pair", "1행 2열", "합계 Total"),
+                        (run_id, table_id, "파란색 표기 확인", "blue_text", "1행 3열", "파란색"),
+                    ),
+                )
+
+                self.assertEqual(
+                    pending_linguistic_candidate_count(
+                        connection,
+                        run_id,
+                        standard_language_only=True,
+                    ),
+                    2,
+                )
+                connection.execute(
+                    "UPDATE linguistic_review_candidates SET status = 'reviewed' WHERE run_id = ?",
+                    (run_id,),
+                )
+                reset_standard_language_review_results(connection, run_id)
+                statuses = {
+                    row["review_type"]: row["status"]
+                    for row in connection.execute(
+                        """
+                        SELECT review_type, status
+                        FROM linguistic_review_candidates
+                        WHERE run_id = ?
+                        """,
+                        (run_id,),
+                    )
+                }
+                self.assertEqual(statuses["오탈자 검수"], "pending")
+                self.assertEqual(statuses["번역 검수"], "pending")
+                self.assertEqual(statuses["파란색 표기 확인"], "reviewed")
 
     def test_empty_structured_output_reports_response_state(self) -> None:
         with self.assertRaisesRegex(RuntimeError, "status=incomplete"):
@@ -144,6 +345,170 @@ class LLMTranslationReviewTest(unittest.TestCase):
             )
         )
 
+    def test_normal_abbreviated_bilingual_value_is_not_retried(self) -> None:
+        item = self.source_item(
+            source_rule_id="source.linguistic_review",
+            candidate_kind="translation_bilingual_context",
+            requested_review_type="번역 검수",
+            current_value="50대 50s",
+            korean_text="대",
+            english_text="s",
+        )
+        raw = {
+            "status": "정상",
+            "issue_type": "번역 검수",
+            "current_value": "50대 50s",
+            "expected_value": "50대 50s",
+            "difference": "번역 일치",
+            "detail": "연령대 표기가 일치합니다.",
+        }
+
+        self.assertFalse(review_decision_needs_retry(raw, item))
+        self.assertEqual(normalize_decision(raw, item)["expected_value"], "50대 50s")
+
+    def test_translation_does_not_duplicate_a_spacing_finding(self) -> None:
+        item = self.source_item(
+            source_rule_id="source.linguistic_review",
+            candidate_kind="translation_pair",
+            requested_review_type="번역 검수",
+            current_value="기관별 By Local GovernmentLevel",
+        )
+        raw = {
+            "status": "확인 필요",
+            "issue_type": "번역 검수",
+            "defect_kind": "spacing",
+            "current_value": item.current_value,
+            "expected_value": "기관별 By Local Government Level",
+            "difference": "영어 띄어쓰기 누락",
+            "detail": "Government와 Level 사이의 띄어쓰기를 확인했습니다.",
+        }
+
+        self.assertFalse(review_decision_needs_retry(raw, item))
+        self.assertEqual(normalize_decision(raw, item)["status"], "정상")
+
+    def test_spelling_does_not_report_translation_or_word_order_rewrite(self) -> None:
+        item = self.source_item(
+            source_rule_id="source.linguistic_review",
+            candidate_kind="language_spelling",
+            requested_review_type="오탈자 검수",
+            current_value="퇴직 지방공무원 Local Civil Servants Retirement",
+        )
+        raw = {
+            "status": "오류 의심",
+            "issue_type": "오탈자 검수",
+            "defect_kind": "wrong_meaning",
+            "current_value": item.current_value,
+            "expected_value": "퇴직 지방공무원 Retirement of Local Civil Servants",
+            "difference": "영어 어순 개선 권고",
+            "detail": "더 자연스러운 영어 어순을 제안했습니다.",
+        }
+
+        self.assertFalse(review_decision_needs_retry(raw, item))
+        self.assertEqual(normalize_decision(raw, item)["status"], "정상")
+
+    def test_translation_word_order_preference_is_normal(self) -> None:
+        item = self.source_item(
+            source_rule_id="source.linguistic_review",
+            candidate_kind="translation_pair",
+            requested_review_type="번역 검수",
+            current_value="퇴직 지방공무원 Local Civil Servants Retirement",
+        )
+        raw = {
+            "status": "확인 필요",
+            "issue_type": "번역 검수",
+            "defect_kind": "wrong_meaning",
+            "current_value": item.current_value,
+            "expected_value": "퇴직 지방공무원 Retirement of Local Civil Servants",
+            "difference": "영어 어순 권장 변경",
+            "detail": "더 자연스러운 영어 어순을 제안했습니다.",
+        }
+
+        self.assertFalse(review_decision_needs_retry(raw, item))
+        self.assertEqual(normalize_decision(raw, item)["status"], "정상")
+
+    def test_incomplete_english_fragment_is_normalized_instead_of_retried(self) -> None:
+        current = (
+            "재난문자(영어, 중국어, 일본어, 태국어, 베트남어 등 22종), 국민행동요령, "
+            "대피소 정보 등 Disaster safety information including disaster text message"
+            "(English, Chinese, Japanese, Thai, Vietnamese), public emergency response, "
+            "evacuation shelter information"
+        )
+        item = self.source_item(
+            source_rule_id="source.linguistic_review",
+            candidate_kind="translation_pair",
+            requested_review_type="번역 검수",
+            current_value=current,
+            korean_text=(
+                "재난문자(영어, 중국어, 일본어, 태국어, 베트남어 등 22종), "
+                "국민행동요령, 대피소 정보 등"
+            ),
+            english_text=(
+                "Disaster safety information including disaster text message(English, Chinese, "
+                "Japanese, Thai, Vietnamese), public emergency response, evacuation shelter information"
+            ),
+        )
+        raw = {
+            "status": "확인 필요",
+            "issue_type": "번역 검수",
+            "defect_kind": "semantic_omission",
+            "current_value": current[:80],
+            "expected_value": "Disaster safety information including disaster text messages",
+            "difference": "일부 번역 누락",
+            "detail": "일부 정보가 누락됐다고 판단했습니다.",
+        }
+
+        self.assertFalse(review_decision_needs_retry(raw, item))
+        decision = normalize_decision(raw, item)
+        self.assertEqual(decision["status"], "정상")
+        self.assertEqual(decision["expected_value"], current)
+
+    def test_normal_long_value_uses_database_source_when_model_copy_is_truncated(self) -> None:
+        current = "긴 지역 목록 " + "서울 부산 대구 인천 광주 대전 울산 세종 " * 20
+        item = self.source_item(
+            source_rule_id="source.linguistic_review",
+            candidate_kind="language_spelling",
+            requested_review_type="오탈자 검수",
+            current_value=current,
+        )
+        raw = {
+            "status": "정상",
+            "issue_type": "오탈자 검수",
+            "defect_kind": "none",
+            "expected_value": "__UNCHANGED__",
+            "difference": "오탈자 없음",
+            "detail": "문제가 없습니다.",
+        }
+
+        self.assertFalse(review_decision_needs_retry(raw, item))
+        self.assertEqual(normalize_decision(raw, item)["expected_value"], current.strip())
+
+    def test_complete_english_translation_correction_is_recombined_with_korean(self) -> None:
+        item = self.source_item(
+            source_rule_id="source.linguistic_review",
+            candidate_kind="translation_pair",
+            requested_review_type="번역 검수",
+            current_value="정부원격근무서비스(GVPN) 이용자 수 Number of Users",
+            korean_text="정부원격근무서비스(GVPN) 이용자 수",
+            english_text="Number of Users",
+        )
+        raw = {
+            "status": "확인 필요",
+            "issue_type": "번역 검수",
+            "defect_kind": "semantic_omission",
+            "current_value": item.current_value,
+            "expected_value": "Number of GVPN Users",
+            "difference": "핵심 서비스명 누락",
+            "detail": "한국어에 있는 GVPN이 영어에서 누락됐습니다.",
+        }
+
+        self.assertFalse(review_decision_needs_retry(raw, item))
+        decision = normalize_decision(raw, item)
+        self.assertEqual(decision["status"], "확인 필요")
+        self.assertEqual(
+            decision["expected_value"],
+            "정부원격근무서비스(GVPN) 이용자 수 Number of GVPN Users",
+        )
+
     def test_response_using_another_candidate_value_is_retried_and_not_trusted(self) -> None:
         item = self.source_item(
             source_rule_id="source.linguistic_review",
@@ -164,6 +529,38 @@ class LLMTranslationReviewTest(unittest.TestCase):
         self.assertFalse(decision_current_matches_item(raw["current_value"], item.current_value))
         self.assertTrue(review_decision_needs_retry(raw, item))
         self.assertEqual(normalize_decision(raw, item)["current_value"], item.current_value)
+
+    def test_same_text_from_another_table_is_rejected_by_context_token(self) -> None:
+        first = self.source_item(
+            issue_id=-1,
+            table_id=10,
+            table_code="1-1",
+            location="1행 1열",
+            row_index=0,
+            col_index=0,
+            current_value="합계 Total",
+        )
+        second = self.source_item(
+            issue_id=-2,
+            table_id=20,
+            table_code="2-1",
+            location="4행 2열",
+            row_index=3,
+            col_index=1,
+            current_value="합계 Total",
+        )
+        raw = {
+            "id": first.issue_id,
+            "context_token": review_context_token(second),
+            "status": "정상",
+            "issue_type": first.requested_review_type,
+            "current_value": first.current_value,
+            "expected_value": first.current_value,
+            "difference": "정상",
+            "detail": "검수를 통과했습니다.",
+        }
+
+        self.assertTrue(llm_decision_needs_retry(raw, first))
 
     def test_misaligned_stored_results_are_reset_without_touching_other_rules(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -455,6 +852,7 @@ class LLMTranslationReviewTest(unittest.TestCase):
                 return [
                     {
                         "id": item.issue_id,
+                        "context_token": review_context_token(item),
                         "status": "정상",
                         "issue_type": item.requested_review_type,
                         "current_value": item.current_value,
@@ -698,6 +1096,27 @@ class LLMTranslationReviewTest(unittest.TestCase):
         self.assertIsNotNone(decision)
         self.assertEqual(decision["status"], "정상")  # type: ignore[index]
 
+    def test_dictionary_mismatch_is_deferred_to_contextual_llm_review(self) -> None:
+        item = self.source_item(
+            source_rule_id="source.linguistic_review",
+            candidate_kind="translation_pair",
+            requested_review_type="번역 검수",
+            current_value="소계 Total",
+            korean_text="소계",
+            english_text="Total",
+            glossary_matches=[
+                {
+                    "source": "소계",
+                    "target": "Subtotal",
+                    "status": "approved",
+                    "source_title": "통계 표준어 사전",
+                    "aliases": [],
+                }
+            ],
+        )
+
+        self.assertIsNone(glossary_decision_for(item))
+
     def test_official_name_only_does_not_skip_english_translation(self) -> None:
         item = self.source_item(
             source_rule_id="source.linguistic_review",
@@ -794,6 +1213,7 @@ class LLMTranslationReviewTest(unittest.TestCase):
                     [
                         {
                             "id": first_item.issue_id,
+                            "context_token": review_context_token(first_item),
                             "status": "정상",
                             "issue_type": "오탈자 검수",
                             "current_value": "서울 Seoul",

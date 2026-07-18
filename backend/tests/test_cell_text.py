@@ -20,6 +20,29 @@ class CellTextTest(unittest.TestCase):
         self.assertEqual(split_cell_text("2292)", markers), ("229", "2)"))
         self.assertEqual(split_cell_text("621)"), ("621)", ""))
 
+    def test_defined_footnote_is_split_from_dates_and_text(self) -> None:
+        markers = footnote_markers_from_texts(
+            [f"#주{index}) 재난대응 안전한국훈련 주석" for index in range(1, 7)]
+        )
+
+        self.assertEqual(
+            split_cell_text("10.30~11.3.1)", markers),
+            ("10.30~11.3.", "1)"),
+        )
+        self.assertEqual(split_cell_text("미실시2)", markers), ("미실시", "2)"))
+        self.assertEqual(split_cell_text("10.1~11.31.3)", markers), ("10.1~11.31.", "3)"))
+        self.assertEqual(split_cell_text("3회4)", markers), ("3회", "4)"))
+        self.assertEqual(split_cell_text("6.5.~11.3.5)", markers), ("6.5.~11.3.", "5)"))
+        self.assertEqual(split_cell_text("5.20.~11.16)", markers), ("5.20.~11.1", "6)"))
+        self.assertEqual(
+            split_cell_text("10.1~11.31.3)\nOct. 1 ∼ Nov. 31", markers),
+            ("10.1~11.31.\nOct. 1 ∼ Nov. 31", "3)"),
+        )
+        self.assertEqual(
+            split_cell_text("303회\n(중앙 89, 지자체 214)", markers),
+            ("303회\n(중앙 89, 지자체 214)", ""),
+        )
+
     def test_hwpx_superscript_run_is_stored_as_footnote_marker(self) -> None:
         cell = ET.fromstring(
             """

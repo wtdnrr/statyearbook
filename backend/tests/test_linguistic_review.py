@@ -6,7 +6,12 @@ import unittest
 
 from app.db.schema import connect, init_db
 from app.validation.linguistic_policy import SPELLING_REPLACEMENTS
-from app.validation.linguistic_review import extract_subtable_caption, prepare_linguistic_reviews
+from app.validation.linguistic_review import (
+    clear_linguistic_review_run,
+    extract_subtable_caption,
+    mixed_bilingual_context,
+    prepare_linguistic_reviews,
+)
 from app.validation.translation_glossary import (
     GlossaryEntry,
     extract_bilingual_pair,
@@ -30,6 +35,15 @@ class LinguisticReviewTest(unittest.TestCase):
         self.assertEqual(extract_bilingual_pair("지식재산처 Ministry of Intellectual Property"), ("지식재산처", "Ministry of Intellectual Property"))
         self.assertEqual(extract_bilingual_pair("계(A+B) Total"), ("계(A+B)", "Total"))
         self.assertIsNone(extract_bilingual_pair("구분 Classification 연도 Year"))
+
+    def test_unit_symbols_do_not_create_translation_pairs(self) -> None:
+        self.assertIsNone(
+            mixed_bilingual_context("농작물 피해면적 3,419ha, 피해액 12,500백만원")
+        )
+        self.assertEqual(
+            mixed_bilingual_context("지역 Region 합계 Total"),
+            ("지역 / 합계", "Region / Total"),
+        )
 
     def test_subtable_caption_is_reviewed_as_its_own_title(self) -> None:
         raw_context = "▫ 공용차량 정수 Government Vehicles (2025. 12. 31. 기준) 구분\nClassification"
@@ -93,6 +107,14 @@ class LinguisticReviewTest(unittest.TestCase):
                     """,
                     (current_table_id,),
                 )
+                connection.execute(
+                    """
+                    INSERT INTO stat_table_cells (
+                        table_id, row_index, col_index, text_value, is_header
+                    ) VALUES (?, 4, 0, '구분 Classification 연도 Year', 1)
+                    """,
+                    (current_table_id,),
+                )
                 long_value = " ".join(["행정안전 통계연보 검수 대상 문장"] * 90)
                 connection.execute(
                     """
@@ -153,7 +175,7 @@ class LinguisticReviewTest(unittest.TestCase):
                     """,
                     (run_id,),
                 ).fetchone()
-                self.assertEqual(mixed_numeric_candidates["candidate_count"], 2)
+                self.assertEqual(mixed_numeric_candidates["candidate_count"], 1)
 
                 repeated_location_candidates = connection.execute(
                     """
@@ -163,7 +185,7 @@ class LinguisticReviewTest(unittest.TestCase):
                     """,
                     (run_id,),
                 ).fetchone()
-                self.assertEqual(repeated_location_candidates["candidate_count"], 2)
+                self.assertEqual(repeated_location_candidates["candidate_count"], 1)
 
                 long_value_candidates = connection.execute(
                     """
@@ -173,7 +195,7 @@ class LinguisticReviewTest(unittest.TestCase):
                     """,
                     (run_id,),
                 ).fetchone()
-                self.assertGreaterEqual(long_value_candidates["candidate_count"], 4)
+                self.assertGreaterEqual(long_value_candidates["candidate_count"], 2)
 
                 title_candidates = connection.execute(
                     """
@@ -184,6 +206,16 @@ class LinguisticReviewTest(unittest.TestCase):
                     (run_id,),
                 ).fetchone()
                 self.assertEqual(title_candidates["candidate_count"], 2)
+
+                multi_pair_candidates = connection.execute(
+                    """
+                    SELECT COUNT(*) AS candidate_count
+                    FROM linguistic_review_candidates
+                    WHERE run_id = ? AND row_index = 4 AND col_index = 0
+                    """,
+                    (run_id,),
+                ).fetchone()
+                self.assertEqual(multi_pair_candidates["candidate_count"], 2)
 
                 metadata_candidates = connection.execute(
                     """
@@ -213,6 +245,85 @@ class LinguisticReviewTest(unittest.TestCase):
                 self.assertEqual(public_institution_entries[0].status, "official_name_only")
                 self.assertEqual(public_institution_entries[0].subcategory, "공공기관")
                 self.assertEqual(public_institution_entries[0].target_text, "")
+
+    def test_language_cleanup_preserves_blue_review_artifacts(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "review.sqlite"
+            with connect(db_path) as connection:
+                init_db(connection)
+                report_id = self.insert_report(connection, 2026, "current")
+                table_id = self.insert_table(connection, report_id, "1-1", "제목", "Title")
+                run_id = int(
+                    connection.execute(
+                        """
+                        INSERT INTO validation_runs (
+                            report_id, rules_version, started_at, completed_at
+                        ) VALUES (?, 'test', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                        """,
+                        (report_id,),
+                    ).lastrowid
+                )
+                for review_type, candidate_kind in (
+                    ("오탈자 검수", "language_spelling"),
+                    ("번역 검수", "translation_pair"),
+                    ("파란색 표기 확인", "blue_text_bilingual"),
+                ):
+                    connection.execute(
+                        """
+                        INSERT INTO linguistic_review_candidates (
+                            run_id, table_id, review_type, candidate_kind, location,
+                            current_value, status, prompt_version
+                        ) VALUES (?, ?, ?, ?, '1행 1열', ?, 'reviewed', ?)
+                        """,
+                        (
+                            run_id,
+                            table_id,
+                            review_type,
+                            candidate_kind,
+                            review_type,
+                            "blue-review-v1-combined"
+                            if candidate_kind.startswith("blue_text")
+                            else "language-review-old",
+                        ),
+                    )
+                for rule_id in (
+                    "llm.spelling_review",
+                    "llm.translation_review",
+                    "source.blue_text_review",
+                ):
+                    connection.execute(
+                        """
+                        INSERT INTO validation_checks (
+                            run_id, table_id, rule_id, check_type, check_label, status, severity,
+                            location, current_value, expected_value, difference, detail
+                        ) VALUES (?, ?, ?, '언어', '언어 검수', '정상', 'info', '1행 1열', ?, ?, '', '')
+                        """,
+                        (run_id, table_id, rule_id, rule_id, rule_id),
+                    )
+                connection.commit()
+
+                clear_linguistic_review_run(
+                    connection,
+                    report_id=report_id,
+                    run_id=run_id,
+                )
+
+                remaining_candidates = connection.execute(
+                    "SELECT review_type FROM linguistic_review_candidates WHERE run_id = ?",
+                    (run_id,),
+                ).fetchall()
+                self.assertEqual(
+                    [row["review_type"] for row in remaining_candidates],
+                    ["파란색 표기 확인"],
+                )
+                remaining_checks = connection.execute(
+                    "SELECT rule_id FROM validation_checks WHERE run_id = ?",
+                    (run_id,),
+                ).fetchall()
+                self.assertEqual(
+                    [row["rule_id"] for row in remaining_checks],
+                    ["source.blue_text_review"],
+                )
 
     def test_conflicting_generic_reference_terms_are_context_only(self) -> None:
         entries = [

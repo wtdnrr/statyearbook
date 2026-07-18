@@ -20,9 +20,24 @@ from app.validation.models import restore_hyphenated_line_breaks
 
 
 LINGUISTIC_CANDIDATE_RULE_ID = "source.linguistic_review"
-LINGUISTIC_PROMPT_VERSION = "language-review-v6-without-terminology"
+LINGUISTIC_PROMPT_VERSION = "language-review-v8-defect-classification"
+NON_TRANSLATION_LATIN_TOKENS = {
+    "cm",
+    "etc",
+    "g",
+    "ha",
+    "kg",
+    "km",
+    "krw",
+    "m",
+    "mm",
+    "usd",
+    "won",
+}
 HANGUL_RE = re.compile(r"[가-힣]")
 LATIN_RE = re.compile(r"[A-Za-z]")
+LATIN_WORD_RE = re.compile(r"[A-Za-z]{2,}")
+LATIN_TERM_RE = re.compile(r"[A-Za-z][A-Za-z'’-]*(?:\s+[A-Za-z][A-Za-z'’-]*)*")
 MAX_REVIEW_CHARS = 1400
 EXCLUDED_METADATA_REVIEW_LOCATIONS = frozenset({"분야", "단위", "기준일", "주석", "출처"})
 
@@ -46,8 +61,6 @@ def clear_linguistic_review_run(
         "llm.spelling_review",
         "llm.terminology_review",
         "llm.translation_review",
-        "source.blue_text_review",
-        "source.blue_text_review.preview",
     )
     placeholders = ", ".join("?" for _ in language_rule_ids)
     connection.execute(
@@ -58,7 +71,13 @@ def clear_linguistic_review_run(
         f"DELETE FROM validation_checks WHERE run_id = ? AND rule_id IN ({placeholders})",
         (run_id, *language_rule_ids),
     )
-    connection.execute("DELETE FROM linguistic_review_candidates WHERE run_id = ?", (run_id,))
+    connection.execute(
+        """
+        DELETE FROM linguistic_review_candidates
+        WHERE run_id = ? AND candidate_kind NOT LIKE 'blue_text%'
+        """,
+        (run_id,),
+    )
     connection.execute(
         """
         DELETE FROM translation_glossary
@@ -68,8 +87,7 @@ def clear_linguistic_review_run(
         (report_id,),
     )
     connection.execute(
-        "DELETE FROM linguistic_review_cache WHERE prompt_version <> ?",
-        (LINGUISTIC_PROMPT_VERSION,),
+        "DELETE FROM linguistic_review_cache WHERE prompt_version LIKE 'language-review-%'",
     )
     restore_report_hyphenated_line_breaks(connection, report_id)
     connection.execute(
@@ -300,8 +318,21 @@ def review_text_value(
         )
 
     pair = extract_bilingual_pair(current_value)
-    korean_text = pair[0] if pair else korean_only_text(current_value)
-    english_text = pair[1] if pair else english_only_text(current_value)
+    mixed_pair = mixed_bilingual_context(current_value) if pair is None else None
+    korean_text = (
+        pair[0]
+        if pair
+        else mixed_pair[0]
+        if mixed_pair
+        else korean_only_text(current_value)
+    )
+    english_text = (
+        pair[1]
+        if pair
+        else mixed_pair[1]
+        if mixed_pair
+        else english_only_text(current_value)
+    )
     entries = glossary_entries_for_text(
         connection,
         current_value,
@@ -316,11 +347,14 @@ def review_text_value(
             "위치별 원문 전체를 LLM으로 검토하여 국문·영문 철자, 문자 깨짐, 숫자 혼입 및 문맥상 표기 오류를 확인",
         ),
     ]
-    if korean_text or HANGUL_RE.search(current_value):
+    # Ordinary Korean-only or English-only cells have no translation pair to
+    # compare. Creating a translation request for them produced thousands of
+    # artificial "missing English" findings in the previous pipeline.
+    if pair is not None or mixed_pair is not None:
         review_specs.append((
             TRANSLATION_CHECK_TYPE,
-            translation_candidate_kind(current_value, pair),
-            "위치별 원문 전체를 LLM으로 검토하여 한국어와 영어의 의미 대응, 번역 누락 및 공식 고유명사를 확인",
+            "translation_pair" if pair is not None else "translation_bilingual_context",
+            "동일 위치에 명확히 병기된 한국어와 영어가 문맥상 같은 의미인지 검토",
         ))
     for review_type, candidate_kind, reason in review_specs:
         candidates += insert_candidate_once(
@@ -430,7 +464,7 @@ def joined_bilingual_value(korean: str, english: str) -> str:
 
 
 def has_language_text(value: str) -> bool:
-    return bool(value) and bool(HANGUL_RE.search(value) or LATIN_RE.search(value))
+    return bool(value) and bool(HANGUL_RE.search(value) or LATIN_WORD_RE.search(value))
 
 
 def korean_only_text(value: str) -> str:
@@ -445,16 +479,39 @@ def english_only_text(value: str) -> str:
     return value if LATIN_RE.search(value) else ""
 
 
-def translation_candidate_kind(value: str, pair: tuple[str, str] | None) -> str:
-    if pair is not None:
-        return "translation_pair"
-    has_korean = bool(HANGUL_RE.search(value))
-    has_english = bool(LATIN_RE.search(value))
-    if has_korean and has_english:
-        return "translation_mixed_context"
-    if has_korean:
-        return "translation_missing"
-    return "translation_english_context"
+def mixed_bilingual_context(value: str) -> tuple[str, str] | None:
+    """Extract review evidence from a cell containing multiple bilingual labels."""
+
+    if not HANGUL_RE.search(value):
+        return None
+    korean_parts = [
+        normalize_review_text(part)
+        for part in re.findall(r"[가-힣][가-힣\s·/()~%+-]*", value)
+        if normalize_review_text(part)
+    ]
+    english_parts = [
+        normalize_review_text(part)
+        for part in LATIN_TERM_RE.findall(value)
+        if normalize_review_text(part)
+    ]
+    if not korean_parts or not english_parts:
+        return None
+    # A formula letter or an all-caps unit beside Korean is not an English
+    # translation. It remains in the spelling context but gets no translation
+    # request of its own.
+    if all(part.isupper() and len(part.replace(" ", "")) <= 4 for part in english_parts):
+        return None
+    latin_tokens = [
+        token.casefold()
+        for part in english_parts
+        for token in re.findall(r"[A-Za-z]+", part)
+    ]
+    if latin_tokens and all(
+        token in NON_TRANSLATION_LATIN_TOKENS or len(token) == 1
+        for token in latin_tokens
+    ):
+        return None
+    return " / ".join(korean_parts), " / ".join(english_parts)
 
 
 def split_review_chunks(value: str, *, max_chars: int = MAX_REVIEW_CHARS) -> list[str]:

@@ -6,7 +6,6 @@ import re
 
 YEAR_FOOTNOTE_CAPTURE_RE = re.compile(r"^(\d{4})\s*(\d+\))$")
 LEADING_ZERO_THOUSANDS_RE = re.compile(r"^([+-]?)0,(\d{3})(\.\d+)?$")
-NUMERIC_BODY_RE = re.compile(r"^[+-]?(?:\d+|\d{1,3}(?:,\d{3})+)(?:\.\d+)?%?$")
 FOOTNOTE_DEFINITION_RE = re.compile(r"(?:^|\s)#?\s*주\s*(\d+)\)")
 
 
@@ -28,12 +27,25 @@ def split_cell_text(
     footnote_markers: Iterable[str] = (),
 ) -> tuple[str, str]:
     cleaned = value.strip()
-    for marker in sorted(set(footnote_markers), key=len, reverse=True):
-        if not marker or not cleaned.endswith(marker):
+    markers = sorted(set(footnote_markers), key=len, reverse=True)
+    lines = cleaned.splitlines()
+    found_markers: list[str] = []
+    for line_index, line in enumerate(lines):
+        stripped_line = line.rstrip()
+        if stripped_line.count("(") > 0 and stripped_line.count("(") == stripped_line.count(")"):
             continue
-        numeric_text = cleaned[: -len(marker)].strip()
-        if NUMERIC_BODY_RE.fullmatch(numeric_text):
-            return normalize_numeric_display_text(numeric_text), marker
+        for marker in markers:
+            if not marker or not stripped_line.endswith(marker):
+                continue
+            body_text = stripped_line[: -len(marker)].rstrip()
+            if not body_text:
+                continue
+            lines[line_index] = body_text
+            if marker not in found_markers:
+                found_markers.append(marker)
+            break
+    if found_markers:
+        return normalize_numeric_display_text("\n".join(lines).strip()), " ".join(found_markers)
 
     year_footnote = YEAR_FOOTNOTE_CAPTURE_RE.fullmatch(cleaned)
     if year_footnote:

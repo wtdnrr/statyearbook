@@ -265,7 +265,11 @@ def refresh_translation_glossary(connection: sqlite3.Connection) -> int:
     """Rebuild reusable glossary evidence from curated terms and all imported yearbooks."""
 
     connection.execute(
-        "DELETE FROM translation_glossary WHERE source_kind IN ('yearbook', 'curated', 'seed', 'official')"
+        """
+        DELETE FROM translation_glossary
+        WHERE source_kind IN ('yearbook', 'curated', 'seed', 'official')
+          AND status NOT IN ('llm_verified', 'rejected', 'quarantined')
+        """
     )
     changed = seed_base_glossary(connection)
     changed += seed_official_glossary(connection)
@@ -640,12 +644,15 @@ def glossary_entries_for_source(
           AND (tg.source_report_id IS NULL OR tg.source_report_id <> ?)
         ORDER BY
             CASE tg.status
-                WHEN 'approved' THEN 0
-                WHEN 'official_verified' THEN 1
-                WHEN 'official_name_only' THEN 2
-                WHEN 'llm_reviewed' THEN 3
-                WHEN 'reference' THEN 4
-                ELSE 5
+                WHEN 'rejected' THEN 0
+                WHEN 'quarantined' THEN 1
+                WHEN 'approved' THEN 2
+                WHEN 'official_verified' THEN 3
+                WHEN 'llm_verified' THEN 4
+                WHEN 'official_name_only' THEN 5
+                WHEN 'llm_reviewed' THEN 6
+                WHEN 'reference' THEN 7
+                ELSE 8
             END,
             tg.priority DESC,
             tg.occurrence_count DESC,
@@ -695,12 +702,15 @@ def glossary_entries_for_text(
           )
         ORDER BY
             CASE tg.status
-                WHEN 'approved' THEN 0
-                WHEN 'official_verified' THEN 1
-                WHEN 'official_name_only' THEN 2
-                WHEN 'llm_reviewed' THEN 3
-                WHEN 'reference' THEN 4
-                ELSE 5
+                WHEN 'rejected' THEN 0
+                WHEN 'quarantined' THEN 1
+                WHEN 'approved' THEN 2
+                WHEN 'official_verified' THEN 3
+                WHEN 'llm_verified' THEN 4
+                WHEN 'official_name_only' THEN 5
+                WHEN 'llm_reviewed' THEN 6
+                WHEN 'reference' THEN 7
+                ELSE 8
             END,
             tg.priority DESC,
             length(tg.source_normalized) DESC,

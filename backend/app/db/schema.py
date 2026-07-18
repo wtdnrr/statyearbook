@@ -209,6 +209,27 @@ CREATE TABLE IF NOT EXISTS translation_glossary_aliases (
 CREATE INDEX IF NOT EXISTS idx_translation_glossary_alias
 ON translation_glossary_aliases(alias_normalized, glossary_id);
 
+CREATE TABLE IF NOT EXISTS glossary_audit_results (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    source_normalized TEXT NOT NULL,
+    target_normalized TEXT NOT NULL,
+    source_text TEXT NOT NULL,
+    target_text TEXT NOT NULL,
+    audit_status TEXT NOT NULL,
+    spelling_status TEXT NOT NULL,
+    translation_status TEXT NOT NULL,
+    replacement_text TEXT NOT NULL DEFAULT '',
+    difference TEXT NOT NULL DEFAULT '',
+    detail TEXT NOT NULL DEFAULT '',
+    model TEXT NOT NULL,
+    prompt_version TEXT NOT NULL,
+    audited_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE (source_normalized, target_normalized, model, prompt_version)
+);
+
+CREATE INDEX IF NOT EXISTS idx_glossary_audit_pair
+ON glossary_audit_results(source_normalized, target_normalized, audit_status);
+
 CREATE TABLE IF NOT EXISTS linguistic_review_candidates (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     run_id INTEGER NOT NULL,
