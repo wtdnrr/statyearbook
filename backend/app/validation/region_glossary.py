@@ -8,9 +8,11 @@ import re
 
 
 REGION_DATA_PATH = Path(__file__).resolve().parents[1] / "data" / "korean_admin_regions.csv"
+SGIS_REGION_DATA_PATH = (
+    Path(__file__).resolve().parents[1] / "data" / "korean_admin_districts_en.csv"
+)
 REGION_DATA_SOURCE = (
-    "KOSIS 행정구역 코드 참조표를 정리한 tidycensuskr "
-    "inst/extdata/lookup_district_code.csv (CRAN 0.2.8)"
+    "국가데이터처 SGIS 행정동영문(2024. 12. 31.) 및 KOSIS 행정구역 코드 참조표"
 )
 
 PROVINCE_SHORT_NAMES = {
@@ -175,6 +177,11 @@ def region_english_names() -> dict[str, str]:
             child_en = clean_csv_value(row.get("sigungu_1_en", ""))
             add_region_name(names, child_ko, child_en)
 
+    for row in load_sgis_region_rows():
+        add_region_name(names, row.get("시도명", ""), row.get("시도영문명", ""))
+        add_region_name(names, row.get("시군구명", ""), row.get("시군구영문명", ""))
+        add_region_name(names, row.get("읍면동명", ""), row.get("읍면동영문명", ""))
+
     # The bundled KOSIS lookup predates the current English brands for the two
     # special self-governing provinces. The official current names win.
     names.update(
@@ -185,6 +192,46 @@ def region_english_names() -> dict[str, str]:
     )
 
     return names
+
+
+@cache
+def region_path_english_names() -> dict[str, str]:
+    """Return parent-aware SGIS names for ambiguous 읍·면·동 labels."""
+
+    names: dict[str, str] = {}
+    for row in load_sgis_region_rows():
+        sido_ko = clean_csv_value(row.get("시도명", ""))
+        sigungu_ko = clean_csv_value(row.get("시군구명", ""))
+        emdong_ko = clean_csv_value(row.get("읍면동명", ""))
+        sido_en = clean_csv_value(row.get("시도영문명", ""))
+        sigungu_en = clean_csv_value(row.get("시군구영문명", ""))
+        emdong_en = clean_csv_value(row.get("읍면동영문명", ""))
+
+        add_region_path(names, (sigungu_ko, emdong_ko), (sigungu_en, emdong_en))
+        add_region_path(
+            names,
+            (sido_ko, sigungu_ko, emdong_ko),
+            (sido_en, sigungu_en, emdong_en),
+        )
+    return names
+
+
+@cache
+def load_sgis_region_rows() -> tuple[dict[str, str], ...]:
+    if not SGIS_REGION_DATA_PATH.exists():
+        return ()
+    with SGIS_REGION_DATA_PATH.open(encoding="cp949", newline="") as stream:
+        return tuple(dict(row) for row in csv.DictReader(stream))
+
+
+def add_region_path(
+    names: dict[str, str],
+    korean_parts: tuple[str, ...],
+    english_parts: tuple[str, ...],
+) -> None:
+    if not all(korean_parts) or not all(english_parts):
+        return
+    names[normalize_region_name(" ".join(korean_parts))] = " ".join(english_parts)
 
 
 def add_region_name(names: dict[str, str], korean: str, english: str) -> None:
@@ -301,6 +348,20 @@ def translate_region_item(value: str) -> str | None:
     tokens = source.split()
     if len(tokens) < 2:
         return None
+    paths = region_path_english_names()
+    for start in range(len(tokens)):
+        contextual = paths.get(normalize_region_name(" ".join(tokens[start:])))
+        if not contextual:
+            continue
+        prefix: list[str] = []
+        for token in tokens[:start]:
+            translated = names.get(normalize_region_name(token))
+            if not translated:
+                break
+            prefix.append(translated)
+        else:
+            return f"{' '.join([*prefix, contextual])}{count_suffix}"
+
     translated_tokens: list[str] = []
     for token in tokens:
         translated = names.get(normalize_region_name(token))

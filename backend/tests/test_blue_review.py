@@ -22,6 +22,7 @@ from app.validation.blue_review import (
     should_skip_blue_review,
     synchronize_blue_review_checks,
 )
+from app.validation.llm_translation_review import apply_reusable_linguistic_reviews
 from app.validation.region_glossary import region_review_decision
 
 
@@ -260,6 +261,95 @@ class BlueReviewExtractionTests(unittest.TestCase):
         self.assertIsNotNone(grouped)
         self.assertIn("예산군", grouped.expected_value)  # type: ignore[union-attr]
         self.assertNotIn("Yesan-si", grouped.expected_value)  # type: ignore[union-attr]
+
+    def test_region_dictionary_covers_nationwide_sgis_administrative_districts(self) -> None:
+        decisions = {
+            value: region_review_decision(value)
+            for value in (
+                "부산 해운대구",
+                "강원 강릉시 주문진읍",
+                "전남 구례군 간전면",
+                "서울 종로구 사직동",
+                "경기 시흥시 신현동",
+                "경기 광주시 신현동",
+            )
+        }
+
+        self.assertEqual(decisions["부산 해운대구"].expected_value, "Busan Haeundae-gu")  # type: ignore[union-attr]
+        self.assertEqual(
+            decisions["강원 강릉시 주문진읍"].expected_value,  # type: ignore[union-attr]
+            "Gangwon Gangneung-si Jumunjin-eup",
+        )
+        self.assertEqual(
+            decisions["전남 구례군 간전면"].expected_value,  # type: ignore[union-attr]
+            "Jeonnam Gurye-gun Ganjeon-myeon",
+        )
+        self.assertEqual(
+            decisions["서울 종로구 사직동"].expected_value,  # type: ignore[union-attr]
+            "Seoul Jongno-gu Sajik-dong",
+        )
+        self.assertEqual(
+            decisions["경기 시흥시 신현동"].expected_value,  # type: ignore[union-attr]
+            "Gyeonggi Siheung-si Sinhyeon-dong",
+        )
+        self.assertEqual(
+            decisions["경기 광주시 신현동"].expected_value,  # type: ignore[union-attr]
+            "Gyeonggi Gwangju-si Shinhyeon-dong",
+        )
+
+    def test_reusable_reviews_resolve_blue_region_candidate_without_llm(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            db_path = Path(directory) / "test.sqlite"
+            with connect(db_path) as connection:
+                init_db(connection)
+                report_id = connection.execute(
+                    """
+                    INSERT INTO annual_reports (
+                        year, title, source_file_name, source_file_path, file_hash, imported_at
+                    ) VALUES (2026, '연보', 'draft.hwpx', 'draft.hwpx', 'region-test', '2026-07-18')
+                    """
+                ).lastrowid
+                table_id = connection.execute(
+                    "INSERT INTO stat_tables (report_id, code, title) VALUES (?, '7-1-6-1', '표')",
+                    (report_id,),
+                ).lastrowid
+                run_id = connection.execute(
+                    """
+                    INSERT INTO validation_runs (report_id, rules_version, started_at, completed_at)
+                    VALUES (?, 'test', '2026-07-18', '2026-07-18')
+                    """,
+                    (report_id,),
+                ).lastrowid
+                connection.execute(
+                    """
+                    INSERT INTO linguistic_review_candidates (
+                        run_id, table_id, review_type, candidate_kind, location,
+                        row_index, col_index, current_value, korean_text, status
+                    ) VALUES (?, ?, ?, 'blue_text_korean_translation',
+                              '18행 3열', 17, 2, '경남 사천시, 경남 합천군',
+                              '경남 사천시, 경남 합천군', 'pending')
+                    """,
+                    (run_id, table_id, BLUE_REVIEW_TYPE),
+                )
+                connection.commit()
+
+            counts = apply_reusable_linguistic_reviews(db_path, run_id=int(run_id))
+
+            with connect(db_path) as connection:
+                candidate = connection.execute(
+                    """
+                    SELECT status, reviewed_model, resolution_source, review_result_json
+                    FROM linguistic_review_candidates
+                    WHERE run_id = ?
+                    """,
+                    (run_id,),
+                ).fetchone()
+
+        self.assertEqual(counts[2], 1)
+        self.assertEqual(candidate["status"], "reviewed")
+        self.assertEqual(candidate["reviewed_model"], "region-dictionary-v1")
+        self.assertEqual(candidate["resolution_source"], "region_dictionary")
+        self.assertIn("Gyeongnam Sacheon-si", candidate["review_result_json"])
 
 
 class TableDisplayParsingTests(unittest.TestCase):

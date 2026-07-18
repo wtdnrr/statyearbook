@@ -282,6 +282,34 @@ class ValidationHighlightTest(unittest.TestCase):
         self.assertEqual(targets, {(1, 1)})
         self.assertEqual(related, {(3, 1)})
 
+    def test_weighted_average_keeps_placeholder_rows_in_the_highlight_scope(self) -> None:
+        row = {"row_index": 1, "col_index": 4}
+        spec = {
+            "type": "cross_table_weighted_average",
+            "target_row": 1,
+            "target_column": 4,
+            "value_column": 4,
+            "row_pairs": [
+                {"value_row": 2, "weight_row": 3},
+                {"value_row": 3, "weight_row": 4},
+                {"value_row": 4, "weight_row": 5},
+            ],
+        }
+        matrix = [
+            [{"text_value": "구분"}, {"text_value": ""}, {"text_value": ""}, {"text_value": ""}, {"text_value": "시"}],
+            [{"text_value": "평균"}, None, None, None, {"text_value": "31.1"}],
+            [{"text_value": "서울"}, None, None, None, {"text_value": "-"}],
+            [{"text_value": "경기"}, None, None, None, {"text_value": "41.8"}],
+            [{"text_value": "제주"}, None, None, None, {"text_value": "-"}],
+        ]
+
+        cells = highlight_cells_for(row, spec, matrix)  # type: ignore[arg-type]
+        targets = {(cell.row_index, cell.col_index) for cell in cells if cell.role == "target"}
+        related = {(cell.row_index, cell.col_index) for cell in cells if cell.role == "related"}
+
+        self.assertEqual(targets, {(1, 4)})
+        self.assertEqual(related, {(2, 4), (3, 4), (4, 4)})
+
 
 if __name__ == "__main__":
     unittest.main()

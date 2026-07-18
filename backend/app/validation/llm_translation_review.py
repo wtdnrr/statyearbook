@@ -140,6 +140,7 @@ def apply_reusable_linguistic_reviews(
     with connect(db_path) as connection:
         init_db(connection)
         with connection:
+            region_counts = resolve_blue_region_candidates(connection, run_id)
             dictionary_counts = resolve_linguistic_candidates_from_glossary(connection, run_id)
             cache_counts = reuse_cached_linguistic_reviews(
                 connection,
@@ -148,9 +149,9 @@ def apply_reusable_linguistic_reviews(
             )
             refresh_issue_count(connection, run_id)
     return (
-        dictionary_counts[0] + cache_counts[0],
-        dictionary_counts[1] + cache_counts[1],
-        dictionary_counts[2] + cache_counts[2],
+        region_counts[0] + dictionary_counts[0] + cache_counts[0],
+        region_counts[1] + dictionary_counts[1] + cache_counts[1],
+        region_counts[2] + dictionary_counts[2] + cache_counts[2],
     )
 
 

@@ -455,13 +455,14 @@ class ConfiguredCrossTableWeightedAverageRule:
         target_label = combined_row_label(target_table, target_row_values) or f"{target_row + 1}행"
         column_label = target_table.column_text(target_column)
         label = str(spec.get("label") or "교차표 가중 평균")
+        weight_description = str(spec.get("weight_description") or "예산 규모")
         current = leading_numeric_value(target_row_values, target_column)
         if current is None or included_rows < 2 or weight_sum == 0:
             current_text = clean_display_text(cell_text(target_row_values, target_column)) or "공란"
             unavailable_reason = (
                 "검수 대상 평균값이 숫자로 입력되지 않았습니다."
                 if current is None
-                else f"가중 평균에 사용할 지역별 값 또는 예산 분모가 부족합니다. 사용 가능 {included_rows}개"
+                else f"가중 평균에 사용할 지역별 값 또는 {weight_description}가 부족합니다. 사용 가능 {included_rows}개"
             )
             check = ValidationCheckRecord(
                 table_id=target_table.id,
@@ -475,7 +476,7 @@ class ConfiguredCrossTableWeightedAverageRule:
                 status="정상",
                 severity="info",
                 detail=(
-                    f"{unavailable_reason} 설정된 {len(row_pairs)}개 지역 중 {skipped_rows}개는 값 또는 예산 분모가 없어 "
+                    f"{unavailable_reason} 설정된 {len(row_pairs)}개 지역 중 {skipped_rows}개는 값 또는 {weight_description}가 없어 "
                     "계산에는 반영되지 않았습니다. 다음 연도 값 입력을 확인할 수 있도록 산식의 대상·구성 셀은 모두 하이라이트합니다."
                 ),
                 row_index=target_row,
@@ -490,9 +491,9 @@ class ConfiguredCrossTableWeightedAverageRule:
         tolerance = float(spec.get("tolerance", 1.0))
         passed = abs(current - expected) <= tolerance
         detail = (
-            f"{source_table.code}의 예산 규모를 가중치로 사용해 {included_rows}개 지역 비율의 가중 평균을 확인했습니다. "
-            f"값 또는 예산 분모가 없어 계산에서 제외된 지역은 {skipped_rows}개입니다. "
-            "평균과 지역별 수치의 예산 기준 차이 및 표시 반올림은 프로파일 허용오차에 반영했습니다."
+            f"{source_table.code}의 {weight_description}를 가중치로 사용해 {included_rows}개 지역 값의 가중 평균을 확인했습니다. "
+            f"값 또는 {weight_description}가 없어 계산에서 제외된 지역은 {skipped_rows}개입니다. "
+            "원자료의 집계 기준 차이와 표시 반올림은 프로파일 허용오차에 반영했습니다."
         )
         check = ValidationCheckRecord(
             table_id=target_table.id,

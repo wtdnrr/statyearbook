@@ -1096,6 +1096,28 @@ class ProfileCalculationTest(unittest.TestCase):
             "curated_total_and_change_profile",
         )
 
+    def test_financial_ratio_profiles_cover_city_county_and_district_averages(self) -> None:
+        profiles = curated_profiles()
+
+        for code in ("5-1-2-1", "5-1-2-2", "5-1-2-3"):
+            checks = profiles[code]["checks"]
+            checks_by_column = {
+                check["target_column"]: check
+                for check in checks
+                if check.get("type") == "cross_table_weighted_average"
+            }
+
+            self.assertEqual(set(checks_by_column), {1, 2, 3, 4, 5, 6})
+            for check in checks_by_column.values():
+                self.assertEqual(len(check["row_pairs"]), 17)
+                self.assertEqual(check["row_pairs"][0], {"value_row": 2, "weight_row": 3})
+                self.assertEqual(check["row_pairs"][-1], {"value_row": 18, "weight_row": 19})
+            for target_column, source_column in ((4, 2), (5, 3), (6, 4)):
+                check = checks_by_column[target_column]
+                self.assertEqual(check["source_table_code"], "4-1-1-2")
+                self.assertEqual(check["source_weight_column"], source_column)
+                self.assertIn(check["weight_description"], {"시 개수", "군 개수", "자치구 개수"})
+
     def test_direct_profile_overrides_shared_group_profile(self) -> None:
         application = apply_curated_profile(
             "4-1-7-3",
