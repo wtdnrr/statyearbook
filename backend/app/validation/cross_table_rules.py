@@ -27,6 +27,7 @@ if TYPE_CHECKING:
 PART_SUFFIX_RE = re.compile(r"\s+표\s*\d+$")
 PART_NUMBER_RE = re.compile(r"\s+표\s*(\d+)$")
 SINGLE_MEASURE_SPLIT_KEY = "__single_measure_split__"
+LEADING_NUMBER_RE = re.compile(r"^([+-]?(?:\d+|\d{1,3}(?:,\d{3})+)(?:\.\d+)?)")
 
 
 @dataclass(frozen=True)
@@ -252,11 +253,15 @@ class ConfiguredCrossTableRowSumRule:
     ) -> tuple[list[ValidationIssueRecord], list[ValidationCheckRecord]]:
         target_column = int(spec.get("target_column", -1))
         target_operand_columns = [int(value) for value in spec.get("operand_columns", [])]
-        source_column = int(spec.get("source_column", -1))
+        source_columns = [int(value) for value in spec.get("source_columns", [])]
+        if not source_columns:
+            source_columns = [int(spec.get("source_column", -1))]
         row_indices = [int(value) for value in spec.get("row_indices", [])]
-        if target_column < 0 or source_column < 0 or not target_operand_columns:
+        if target_column < 0 or any(column < 0 for column in source_columns) or not target_operand_columns:
             return [], []
-        if target_column >= column_count(target_table) or source_column >= column_count(source_table):
+        if target_column >= column_count(target_table) or any(
+            column >= column_count(source_table) for column in source_columns
+        ):
             return [], []
 
         source_rows = rows_by_label(source_table)
@@ -287,15 +292,18 @@ class ConfiguredCrossTableRowSumRule:
                 additive_value(target_row, column, blank_as_zero=True)
                 for column in target_operand_columns
             ]
-            source_value = additive_value(
-                source_table.matrix[source_row_index],
-                source_column,
-                blank_as_zero=True,
-            )
-            if source_value is None or any(value is None for value in operand_values):
+            source_values = [
+                additive_value(
+                    source_table.matrix[source_row_index],
+                    column,
+                    blank_as_zero=True,
+                )
+                for column in source_columns
+            ]
+            if any(value is None for value in [*source_values, *operand_values]):
                 continue
 
-            expected = sum(value for value in operand_values if value is not None) + source_value
+            expected = sum(value for value in [*operand_values, *source_values] if value is not None)
             passed = abs(current - expected) <= tolerance
             row_label = combined_row_label(target_table, target_row) or f"{target_row_index + 1}행"
             target_label = target_table.column_text(target_column)
@@ -305,9 +313,10 @@ class ConfiguredCrossTableRowSumRule:
                 for column in target_operand_columns
             ]
             source_row = source_table.matrix[source_row_index]
-            evidence.append(
-                f"{row_label} / {source_table.code} {source_table.column_text(source_column)} = "
-                f"{clean_display_text(cell_text(source_row, source_column)) or '공란(0 처리)'}"
+            evidence.extend(
+                f"{row_label} / {source_table.code} {source_table.column_text(column)} = "
+                f"{clean_display_text(cell_text(source_row, column)) or '공란(0 처리)'}"
+                for column in source_columns
             )
             detail = (
                 "서로 분리된 하위표의 같은 연도 값을 포함해 총계를 확인했습니다. "
@@ -332,10 +341,283 @@ class ConfiguredCrossTableRowSumRule:
                 confidence=float(spec.get("confidence", 1.0)),
             )
             checks.append(check)
+            if spec.get("emit_source_checks") is True:
+                source_rule_id = (
+                    f"cross.profile_row_sum_operand:{spec.get('id') or self.rule_id}:"
+                    f"related={','.join(str(column) for column in source_columns)}"
+                )
+                checks.append(
+                    ValidationCheckRecord(
+                        table_id=source_table.id,
+                        rule_id=source_rule_id,
+                        check_type=str(spec.get("check_type") or self.check_type),
+                        check_label=label,
+                        location=f"{clean_display_text(row_label)} {source_table.code} 계산 근거",
+                        current_value=format_number(current),
+                        expected_value=format_number(expected),
+                        difference=None if passed else format_number(current - expected),
+                        status="정상" if passed else failure_status,
+                        severity="info" if passed else failure_severity,
+                        detail=detail,
+                        row_index=source_row_index,
+                        col_index=None,
+                        formula=label,
+                        profile_id=profile.id,
+                        confidence=float(spec.get("confidence", 1.0)),
+                    )
+                )
             if not passed:
                 issues.append(issue_from_check(check))
 
         return issues, checks
+
+
+class ConfiguredCrossTableWeightedAverageRule:
+    """Execute profile-defined averages using weights stored in another table."""
+
+    rule_id = "cross.profile_weighted_average"
+    check_type = "평균 검수"
+
+    def __init__(self, profiles: dict[str, "ValidationProfile"]) -> None:
+        self._profiles = profiles
+
+    def evaluate(self, tables: list[ValidationTable]) -> CrossTableValidationResult:
+        table_by_code = {table.code: table for table in tables}
+        issues: list[ValidationIssueRecord] = []
+        checks: list[ValidationCheckRecord] = []
+
+        for target_table in tables:
+            profile = self._profiles.get(target_table.code)
+            if profile is None:
+                continue
+
+            for spec in profile.check_specs:
+                if spec.get("type") != "cross_table_weighted_average" or spec.get("execute") is False:
+                    continue
+                source_table = table_by_code.get(str(spec.get("source_table_code") or ""))
+                if source_table is None:
+                    continue
+                spec_issues, spec_checks = self._evaluate_spec(target_table, source_table, profile, spec)
+                issues.extend(spec_issues)
+                checks.extend(spec_checks)
+
+        return CrossTableValidationResult(issues=issues, checks=checks)
+
+    def _evaluate_spec(
+        self,
+        target_table: ValidationTable,
+        source_table: ValidationTable,
+        profile: "ValidationProfile",
+        spec: dict[str, Any],
+    ) -> tuple[list[ValidationIssueRecord], list[ValidationCheckRecord]]:
+        target_row = int(spec.get("target_row", -1))
+        target_column = int(spec.get("target_column", -1))
+        value_column = int(spec.get("value_column", target_column))
+        weight_column = int(spec.get("source_weight_column", -1))
+        row_pairs = [item for item in spec.get("row_pairs", []) if isinstance(item, dict)]
+        if (
+            target_row < 0
+            or target_column < 0
+            or value_column < 0
+            or weight_column < 0
+            or target_row >= len(target_table.matrix)
+            or target_column >= column_count(target_table)
+            or value_column >= column_count(target_table)
+            or weight_column >= column_count(source_table)
+            or len(row_pairs) < 2
+        ):
+            return [], []
+
+        weighted_sum = 0.0
+        weight_sum = 0.0
+        included_rows = 0
+        skipped_rows = 0
+        for pair in row_pairs:
+            value_row_index = int(pair.get("value_row", -1))
+            weight_row_index = int(pair.get("weight_row", -1))
+            if value_row_index < 0 or weight_row_index < 0:
+                skipped_rows += 1
+                continue
+            if value_row_index >= len(target_table.matrix) or weight_row_index >= len(source_table.matrix):
+                skipped_rows += 1
+                continue
+
+            value = leading_numeric_value(target_table.matrix[value_row_index], value_column)
+            weight = additive_value(source_table.matrix[weight_row_index], weight_column, blank_as_zero=False)
+            if value is None or weight is None:
+                skipped_rows += 1
+                continue
+            weighted_sum += value * weight
+            weight_sum += weight
+            included_rows += 1
+
+        target_row_values = target_table.matrix[target_row]
+        target_label = combined_row_label(target_table, target_row_values) or f"{target_row + 1}행"
+        column_label = target_table.column_text(target_column)
+        label = str(spec.get("label") or "교차표 가중 평균")
+        current = leading_numeric_value(target_row_values, target_column)
+        if current is None or included_rows < 2 or weight_sum == 0:
+            current_text = clean_display_text(cell_text(target_row_values, target_column)) or "공란"
+            unavailable_reason = (
+                "검수 대상 평균값이 숫자로 입력되지 않았습니다."
+                if current is None
+                else f"가중 평균에 사용할 지역별 값 또는 예산 분모가 부족합니다. 사용 가능 {included_rows}개"
+            )
+            check = ValidationCheckRecord(
+                table_id=target_table.id,
+                rule_id=str(spec.get("id") or self.rule_id),
+                check_type=str(spec.get("check_type") or self.check_type),
+                check_label=label,
+                location=f"{clean_display_text(target_label)} {column_label}",
+                current_value=current_text,
+                expected_value="계산 제외 (연산값 부족)",
+                difference=None,
+                status="정상",
+                severity="info",
+                detail=(
+                    f"{unavailable_reason} 설정된 {len(row_pairs)}개 지역 중 {skipped_rows}개는 값 또는 예산 분모가 없어 "
+                    "계산에는 반영되지 않았습니다. 다음 연도 값 입력을 확인할 수 있도록 산식의 대상·구성 셀은 모두 하이라이트합니다."
+                ),
+                row_index=target_row,
+                col_index=target_column,
+                formula=label,
+                profile_id=profile.id,
+                confidence=float(spec.get("confidence", 1.0)),
+            )
+            return [], [check]
+
+        expected = weighted_sum / weight_sum
+        tolerance = float(spec.get("tolerance", 1.0))
+        passed = abs(current - expected) <= tolerance
+        detail = (
+            f"{source_table.code}의 예산 규모를 가중치로 사용해 {included_rows}개 지역 비율의 가중 평균을 확인했습니다. "
+            f"값 또는 예산 분모가 없어 계산에서 제외된 지역은 {skipped_rows}개입니다. "
+            "평균과 지역별 수치의 예산 기준 차이 및 표시 반올림은 프로파일 허용오차에 반영했습니다."
+        )
+        check = ValidationCheckRecord(
+            table_id=target_table.id,
+            rule_id=str(spec.get("id") or self.rule_id),
+            check_type=str(spec.get("check_type") or self.check_type),
+            check_label=label,
+            location=f"{clean_display_text(target_label)} {column_label}",
+            current_value=format_number(current),
+            expected_value=format_number(expected),
+            difference=None if passed else format_number(current - expected),
+            status="정상" if passed else str(spec.get("failure_status") or "오류 의심"),
+            severity="info" if passed else str(spec.get("severity") or "critical"),
+            detail=detail,
+            row_index=target_row,
+            col_index=target_column,
+            formula=label,
+            profile_id=profile.id,
+            confidence=float(spec.get("confidence", 1.0)),
+        )
+        return ([issue_from_check(check)] if not passed else []), [check]
+
+
+class ConfiguredCrossTableCellMatchRule:
+    """Compare a configured cell with the corresponding value in another table."""
+
+    rule_id = "cross.profile_cell_match"
+    check_type = "평균 검수"
+
+    def __init__(self, profiles: dict[str, "ValidationProfile"]) -> None:
+        self._profiles = profiles
+
+    def evaluate(self, tables: list[ValidationTable]) -> CrossTableValidationResult:
+        table_by_code = {table.code: table for table in tables}
+        issues: list[ValidationIssueRecord] = []
+        checks: list[ValidationCheckRecord] = []
+
+        for target_table in tables:
+            profile = self._profiles.get(target_table.code)
+            if profile is None:
+                continue
+
+            for spec in profile.check_specs:
+                if spec.get("type") != "cross_table_cell_match" or spec.get("execute") is False:
+                    continue
+                source_table = table_by_code.get(str(spec.get("source_table_code") or ""))
+                if source_table is None:
+                    continue
+
+                spec_issues, spec_checks = self._evaluate_spec(target_table, source_table, profile, spec)
+                issues.extend(spec_issues)
+                checks.extend(spec_checks)
+
+        return CrossTableValidationResult(issues=issues, checks=checks)
+
+    def _evaluate_spec(
+        self,
+        target_table: ValidationTable,
+        source_table: ValidationTable,
+        profile: "ValidationProfile",
+        spec: dict[str, Any],
+    ) -> tuple[list[ValidationIssueRecord], list[ValidationCheckRecord]]:
+        target_row = configured_row_index(target_table, spec.get("target_row"))
+        source_row = configured_row_index(source_table, spec.get("source_row"))
+        target_column = configured_column_index(spec.get("target_column"))
+        source_column = configured_column_index(spec.get("source_column"))
+        if target_row is None or source_row is None or target_column is None or source_column is None:
+            return [], []
+        if (
+            target_row >= len(target_table.matrix)
+            or source_row >= len(source_table.matrix)
+            or target_column >= column_count(target_table)
+            or source_column >= column_count(source_table)
+        ):
+            return [], []
+
+        current = additive_value(target_table.matrix[target_row], target_column, blank_as_zero=False)
+        expected = additive_value(source_table.matrix[source_row], source_column, blank_as_zero=False)
+        if current is None or expected is None:
+            return [], []
+
+        tolerance = float(spec.get("tolerance", 1.0))
+        passed = abs(current - expected) <= tolerance
+        target_label = combined_row_label(target_table, target_table.matrix[target_row]) or f"{target_row + 1}행"
+        source_label = combined_row_label(source_table, source_table.matrix[source_row]) or f"{source_row + 1}행"
+        target_column_label = target_table.column_text(target_column)
+        source_column_label = source_table.column_text(source_column)
+        label = str(spec.get("label") or "교차표 값 일치")
+        detail = (
+            f"{source_table.code}의 {clean_display_text(source_label)} {source_column_label} 값을 기준으로 "
+            f"{target_table.code}의 {clean_display_text(target_label)} {target_column_label} 값을 비교했습니다."
+        )
+        check = ValidationCheckRecord(
+            table_id=target_table.id,
+            rule_id=str(spec.get("id") or self.rule_id),
+            check_type=str(spec.get("check_type") or self.check_type),
+            check_label=label,
+            location=f"{clean_display_text(target_label)} {target_column_label}",
+            current_value=format_number(current),
+            expected_value=format_number(expected),
+            difference=None if passed else format_number(current - expected),
+            status="정상" if passed else str(spec.get("failure_status") or "오류 의심"),
+            severity="info" if passed else str(spec.get("severity") or "critical"),
+            detail=detail,
+            row_index=target_row,
+            col_index=target_column,
+            formula=label,
+            profile_id=profile.id,
+            confidence=float(spec.get("confidence", 1.0)),
+        )
+        return ([issue_from_check(check)] if not passed else []), [check]
+
+
+def configured_row_index(table: ValidationTable, value: Any) -> int | None:
+    if value == "latest_data_row":
+        data_rows = table.data_rows()
+        return data_rows[-1][0] if data_rows else None
+    return configured_column_index(value)
+
+
+def configured_column_index(value: Any) -> int | None:
+    try:
+        column_index = int(value)
+    except (TypeError, ValueError):
+        return None
+    return column_index if column_index >= 0 else None
 
 
 def issue_from_check(check: ValidationCheckRecord) -> ValidationIssueRecord:
@@ -523,6 +805,18 @@ def additive_value(row: list, col_index: int, *, blank_as_zero: bool) -> float |
     if text in {"-", "－", "―"} or (blank_as_zero and not text):
         return 0.0
     return None
+
+
+def leading_numeric_value(row: list, col_index: int) -> float | None:
+    value = cell_number(row, col_index)
+    if value is not None:
+        return value
+
+    text = clean_display_text(cell_text(row, col_index))
+    match = LEADING_NUMBER_RE.match(text)
+    if match is None:
+        return None
+    return float(match.group(1).replace(",", ""))
 
 
 def split_row_total_candidate_is_reliable(checks: list[ValidationCheckRecord]) -> bool:

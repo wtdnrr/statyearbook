@@ -276,6 +276,21 @@ def write_statistic_sheet(
     sheet.cell(2, 1).fill = PatternFill("solid", fgColor=GRAY)
     sheet.cell(2, 1).font = Font(name="Arial", size=10, color=TEXT)
     sheet.cell(2, 1).alignment = Alignment(vertical="center")
+    metadata_checks = [
+        check
+        for table in tables
+        for check in checks_by_table.get(int(table["id"]), [])
+        if check["check_type"] == "메타정보 검수"
+    ]
+    if metadata_checks:
+        metadata_status = (
+            "오류 의심"
+            if any(check["status"] == "오류 의심" for check in metadata_checks)
+            else "확인 필요"
+        )
+        apply_highlight(sheet.cell(2, 1), status=metadata_status, role="target")
+        for check in metadata_checks:
+            append_issue_comment(sheet.cell(2, 1), check)
 
     sheet.cell(3, 1, "■ 오류/확인 대상 셀")
     sheet.cell(3, 2, "■ 계산 관련 셀")
@@ -347,11 +362,12 @@ def write_table_section(
         if cell["is_header"]:
             excel_cell.fill = PatternFill("solid", fgColor=BLUE)
 
+    validation_table = validation_table_from_cells(table, cells)
     specs = load_rule_specs_by_id(connection, checks) if checks else {}
     applied_roles: dict[tuple[int, int], str] = {}
     for check in checks:
         spec = specs.get(check["rule_id"])
-        for highlight in highlight_cells_for(check, spec):
+        for highlight in highlight_cells_for(check, spec, validation_table.matrix):
             if highlight.row_index > max_row or highlight.col_index > max_col:
                 continue
             key = (highlight.row_index, highlight.col_index)
@@ -367,9 +383,8 @@ def write_table_section(
     detail_start = table_start_row + max_row + 2
     sheet.cell(detail_start, 1, "검수 내용")
     sheet.cell(detail_start, 1).font = Font(name="Arial", size=11, bold=True, color=TEXT)
-    detail_headers = ["상태", "검수내용", "행", "열", "현재값", "검수값", "차이", "산식", "설명"]
+    detail_headers = ["상태", "검수 항목", "행", "열", "현재값", "검수값", "차이", "산식", "설명"]
     write_header_row(sheet, detail_start + 1, detail_headers)
-    validation_table = validation_table_from_cells(table, cells)
     for offset, check in enumerate(checks, start=1):
         row_label, column_label = check_axis_labels(validation_table, check)
         values = [

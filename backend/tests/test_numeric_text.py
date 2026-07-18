@@ -49,6 +49,10 @@ class NumericTextTest(unittest.TestCase):
             )
         )
 
+    def test_percentage_annotation_is_excluded_from_calculation_value(self) -> None:
+        self.assertEqual(parse_numeric_value("257,702\n(123.2%)"), 257702.0)
+        self.assertEqual(parse_numeric_value("47.3(42.4%)"), 47.3)
+
 
 if __name__ == "__main__":
     unittest.main()

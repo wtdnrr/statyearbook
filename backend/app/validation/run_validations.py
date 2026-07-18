@@ -20,6 +20,7 @@ def run_validations(
     db_path: Path = DB_PATH,
     *,
     include_llm: bool = False,
+    refresh_profiles: bool = False,
 ) -> dict[str, int | str]:
     repository = SQLiteValidationRepository(db_path)
     report = repository.latest_report()
@@ -29,6 +30,12 @@ def run_validations(
     tables = repository.load_tables(report["id"])
     profile_repository = SQLiteValidationProfileRepository(db_path)
     profiles = profile_repository.ensure_profiles(report_id=report["id"], tables=tables)
+    if refresh_profiles:
+        refreshed_profiles = profile_repository.refresh_curated_profiles(
+            report_id=report["id"],
+            tables=tables,
+        )
+        profiles.update(refreshed_profiles)
     engine = ValidationEngine(profiles=profiles)
     outcome = engine.evaluate(tables)
     run_id = repository.save_run(
@@ -198,13 +205,22 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="규칙·사전 검수 후 LLM 오탈자·용어·번역 검수를 명시적으로 추가합니다.",
     )
+    parser.add_argument(
+        "--refresh-profiles",
+        action="store_true",
+        help="소스에 관리하는 표별 큐레이션 검수 프로파일을 SQLite에 반영합니다.",
+    )
     return parser
 
 
 def main() -> None:
     parser = build_parser()
     args = parser.parse_args()
-    result = run_validations(args.db, include_llm=args.with_llm)
+    result = run_validations(
+        args.db,
+        include_llm=args.with_llm,
+        refresh_profiles=args.refresh_profiles,
+    )
     print(
         "Validation run {run_id}: checked {tables} tables and found {issues} issues; "
         "language review {language_status} ({language_pending}/{language_candidates} pending)".format(

@@ -12,6 +12,9 @@ INTEGER_OR_DECIMAL_RE = re.compile(
 PARENTHESIZED_NUMBER_RE = re.compile(
     r"^\([+-]?(?:\d+|\d{1,3}(?:,\d{3})+)(?:\.\d+)?%?\)$"
 )
+PERCENT_ANNOTATED_NUMBER_RE = re.compile(
+    r"^(?P<number>[+-]?(?:\d+|\d{1,3}(?:,\d{3})+)(?:\.\d+)?)(?:\([+-]?(?:\d+|\d{1,3}(?:,\d{3})+)(?:\.\d+)?%\))+$"
+)
 MALFORMED_DIGIT_SEPARATOR_RE = re.compile(r"(?<=\d)[ㅡㆍ·'’`´](?=\d)")
 REPEATED_SEPARATOR_RE = re.compile(r"(?<=\d)[,.]{2,}(?=\d)")
 DOT_GROUPED_INTEGER_RE = re.compile(r"^[+-]?\d{1,3}(?:\.\d{3})+$")
@@ -44,6 +47,12 @@ def parse_numeric_value(value: str) -> float | None:
     cleaned = normalized_numeric_token(value)
     if cleaned in PLACEHOLDER_TOKENS:
         return None
+
+    # A following parenthesized percentage is reference information, not an
+    # additional term. Example: ``257,702\n(123.2%)``.
+    annotated_match = PERCENT_ANNOTATED_NUMBER_RE.fullmatch(cleaned)
+    if annotated_match:
+        return float(annotated_match.group("number").replace(",", ""))
     if PARENTHESIZED_NUMBER_RE.fullmatch(cleaned):
         cleaned = cleaned[1:-1]
     if not INTEGER_OR_DECIMAL_RE.fullmatch(cleaned):

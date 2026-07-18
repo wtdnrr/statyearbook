@@ -297,6 +297,11 @@ def init_db(connection: sqlite3.Connection) -> None:
         "repair_misaligned_linguistic_reviews_v1",
         repair_misaligned_linguistic_reviews,
     )
+    apply_data_migration(
+        connection,
+        "restore_semantic_type_qualifiers_v1",
+        restore_semantic_type_qualifiers,
+    )
     seed_validation_rule_definitions(connection)
     connection.commit()
 
@@ -322,6 +327,33 @@ def apply_data_migration(
         return
     migration(connection)
     connection.execute("INSERT INTO schema_migrations (key) VALUES (?)", (key,))
+
+
+def restore_semantic_type_qualifiers(connection: sqlite3.Connection) -> None:
+    """Restore Type A/B header qualifiers removed by an older cell normalizer."""
+
+    qualifier_by_column = {2: "[Type A]", 3: "[Type B]"}
+    for col_index, qualifier in qualifier_by_column.items():
+        header_text = (
+            "출자기관\nGovernment-funded Organizations"
+            if col_index == 2
+            else "출연기관\nGovernment-funded Organizations"
+        )
+        connection.execute(
+            """
+            UPDATE stat_table_cells
+            SET text_value = text_value || char(10) || ?
+            WHERE row_index = 0
+              AND col_index = ?
+              AND text_value = ?
+              AND table_id IN (
+                  SELECT id
+                  FROM stat_tables
+                  WHERE code = '5-1-10'
+              )
+            """,
+            (qualifier, col_index, header_text),
+        )
 
 
 def retire_metadata_validation(connection: sqlite3.Connection) -> None:

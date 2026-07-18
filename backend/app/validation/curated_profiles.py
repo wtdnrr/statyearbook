@@ -25,14 +25,20 @@ def curated_profiles() -> dict[str, dict[str, Any]]:
         return {}
 
     payload = json.loads(CURATED_PROFILE_PATH.read_text(encoding="utf-8"))
-    profiles: dict[str, dict[str, Any]] = {
-        code: deepcopy(profile)
-        for code, profile in payload.get("profiles", {}).items()
-    }
+    profiles: dict[str, dict[str, Any]] = {}
     for group in payload.get("groups", []):
         profile = group.get("profile", {})
         for code in group.get("codes", []):
             profiles[code] = deepcopy(profile)
+
+    # A table-specific profile is more precise than a shared fallback group.
+    # Load it last so a newly curated table can override its former group.
+    profiles.update(
+        {
+            code: deepcopy(profile)
+            for code, profile in payload.get("profiles", {}).items()
+        }
+    )
     return profiles
 
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import datetime
 import json
 from pathlib import Path
@@ -14,6 +15,7 @@ from app.validation.profiles import (
     ValidationProfile,
     structure_signature,
 )
+from app.validation.curated_profiles import curated_profiles
 
 
 class SQLiteValidationProfileRepository:
@@ -63,6 +65,57 @@ class SQLiteValidationProfileRepository:
                 """
             ).fetchall()
             return [row_to_profile(row) for row in rows]
+
+    def refresh_curated_profiles(
+        self,
+        *,
+        report_id: int,
+        tables: list[ValidationTable],
+        provider: ProfileDraftProvider | None = None,
+    ) -> dict[str, ValidationProfile]:
+        """Persist the currently maintained curated rules for this report.
+
+        Curated profiles are authored in source control, but the validation
+        engine always reads profiles from SQLite. This explicit refresh keeps
+        those two layers in sync without replacing unrelated, manually
+        approved profiles.
+        """
+
+        curated_codes = set(curated_profiles())
+        if not curated_codes:
+            return {}
+
+        draft_provider = provider or HeuristicProfileDraftProvider()
+        profiles: dict[str, ValidationProfile] = {}
+        with connect(self._db_path) as connection:
+            init_db(connection)
+            with connection:
+                for table in tables:
+                    if table.code not in curated_codes:
+                        continue
+
+                    signature = structure_signature(table)
+                    current = self._profile_by_code_signature(connection, table.code, signature)
+                    previous = current or self._latest_profile_by_code(connection, table.code)
+                    draft = draft_provider.draft(table, previous_profile=previous)
+                    draft = replace(draft, source="curated")
+
+                    if current is None:
+                        profile_id = self._insert_profile(connection, report_id=report_id, draft=draft)
+                        current = self._profile_by_id(connection, profile_id)
+                    else:
+                        self._update_profile(
+                            connection,
+                            profile_id=current.id,
+                            report_id=report_id,
+                            draft=draft,
+                        )
+                        current = self._profile_by_id(connection, current.id)
+
+                    if current is not None:
+                        profiles[table.code] = current
+
+        return profiles
 
     def approve_profile(self, profile_id: int, *, approved_by: str = "담당자") -> ValidationProfile | None:
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")

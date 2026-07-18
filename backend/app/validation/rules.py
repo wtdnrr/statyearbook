@@ -105,6 +105,10 @@ def leading_label_columns(table: ValidationTable) -> list[int]:
             continue
         if labels and is_schedule_descriptor_column(header_text):
             continue
+        # A total column is a measure even when most detailed rows contain
+        # '-'. Do not merge it into the hierarchical row label.
+        if labels and is_total_measure_column(table, col_index, header_text):
+            break
         if numeric_ratio <= 0.25:
             labels.append(col_index)
             continue
@@ -113,6 +117,20 @@ def leading_label_columns(table: ValidationTable) -> list[int]:
     resolved = [0] if len(labels) > 3 else labels or [0]
     table._leading_label_columns_cache = tuple(resolved)
     return list(resolved)
+
+
+def is_total_measure_column(table: ValidationTable, col_index: int, header_text: str) -> bool:
+    if not any(cell_number(row, col_index) is not None for _, row in table.data_rows()):
+        return False
+
+    normalized = re.sub(r"\s+", "", header_text).lower()
+    return (
+        "전체" in header_text
+        or "합계" in header_text
+        or "총계" in header_text
+        or "total" in normalized
+        or bool(re.fullmatch(r"계(?:\([^)]*\))?", re.sub(r"\s+", "", header_text)))
+    )
 
 
 def combined_row_label(table: ValidationTable, row: list) -> str:

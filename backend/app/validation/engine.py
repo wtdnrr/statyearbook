@@ -7,7 +7,9 @@ import json
 from app.validation.cross_table_rules import (
     DEFAULT_CROSS_TABLE_RULES,
     AdjacentDuplicateTableRule,
+    ConfiguredCrossTableCellMatchRule,
     ConfiguredCrossTableRowSumRule,
+    ConfiguredCrossTableWeightedAverageRule,
 )
 from app.validation.models import ValidationCheckRecord, ValidationIssueRecord, ValidationTable
 from app.validation.profile_rules import ProfileSpecRule, ProfileStateRule
@@ -39,6 +41,8 @@ class ValidationEngine:
         self._cross_table_rules = [*DEFAULT_CROSS_TABLE_RULES]
         if profiles is not None:
             self._cross_table_rules.append(ConfiguredCrossTableRowSumRule(self._profiles))
+            self._cross_table_rules.append(ConfiguredCrossTableWeightedAverageRule(self._profiles))
+            self._cross_table_rules.append(ConfiguredCrossTableCellMatchRule(self._profiles))
 
     @property
     def rules_version(self) -> str:

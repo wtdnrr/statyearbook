@@ -6,6 +6,9 @@ import zipfile
 
 from app.db.schema import connect, init_db
 from app.services.sqlite_report_service import (
+    build_columns,
+    clean_label,
+    english_label,
     leading_label_column_indexes,
     remove_unmatched_closing_parentheses,
 )
@@ -259,6 +262,42 @@ class BlueReviewExtractionTests(unittest.TestCase):
 
 
 class TableDisplayParsingTests(unittest.TestCase):
+    def test_service_description_is_kept_as_a_separate_text_column(self) -> None:
+        matrix = [
+            ["구분\nClassification", "서비스 내용\nService", "이용량\nUsage"],
+            ["기관 A", "민원 안내", "10"],
+            ["기관 B", "증명서 발급", "20"],
+        ]
+
+        label_columns = leading_label_column_indexes(matrix, 1)
+        columns = build_columns(matrix, 1, label_columns)
+
+        self.assertEqual(label_columns, [0])
+        self.assertEqual([column.source_col_indexes for column in columns], [[0], [1], [2]])
+
+    def test_bilingual_labels_support_decades_curly_apostrophes_and_suffix_hyphens(self) -> None:
+        self.assertEqual(clean_label("20대\n20s"), "20대")
+        self.assertEqual(english_label("20대\n20s"), "20s")
+        self.assertEqual(clean_label("대로\n-daero"), "대로")
+        self.assertEqual(english_label("대로\n-daero"), "-daero")
+        self.assertEqual(
+            clean_label("검찰청\nPublic\nProsecutor’s Office"),
+            "검찰청",
+        )
+        self.assertEqual(
+            english_label("검찰청\nPublic\nProsecutor’s Office"),
+            "Public Prosecutor’s Office",
+        )
+
+    def test_bracketed_type_qualifiers_are_preserved_in_english_headers(self) -> None:
+        type_a = "출자기관\nGovernment-funded Organizations\n[Type A]"
+        type_b = "출연기관\nGovernment-funded Organizations\n[Type B]"
+
+        self.assertEqual(clean_label(type_a), "출자기관")
+        self.assertEqual(english_label(type_a), "Government-funded Organizations [Type A]")
+        self.assertEqual(clean_label(type_b), "출연기관")
+        self.assertEqual(english_label(type_b), "Government-funded Organizations [Type B]")
+
     def test_registry_descriptor_columns_are_not_collapsed(self) -> None:
         matrix = [
             ["위원회명\nName", "설치근거\nBasis for Establishment", "위원장\nChairperson", "위원수"],
@@ -266,6 +305,29 @@ class TableDisplayParsingTests(unittest.TestCase):
             ["위원회 B", "법률 제2조", "민간인", "12"],
         ]
         self.assertEqual(leading_label_column_indexes(matrix, 1), [0])
+
+    def test_total_measure_column_is_not_merged_into_the_row_label(self) -> None:
+        matrix = [
+            ["기준일", "", "", ""],
+            ["구분\nClassification", "전체\nTotal", "최초 이용자수", ""],
+            ["구분\nClassification", "전체\nTotal", "전체\nTotal", "여성\nFemale"],
+            ["일반직 계", "24,266", "18,935", "13,849"],
+            ["4급 이상", "-", "18", "4"],
+        ]
+
+        self.assertEqual(leading_label_column_indexes(matrix, 3), [0])
+
+    def test_public_enterprise_header_shift_is_corrected_for_display(self) -> None:
+        matrix = [
+            ["구분", "계", "직영기업 소계", "상수도", "하수도", "공영개발", "운송", "공사·공단 소계", "도시철도", "도시개발", "시설·환경", "기타"],
+            ["계", "422", "256", "123", "105", "27", "1", "-", "166", "6", "16", "88"],
+        ]
+
+        columns = build_columns(matrix, 1, [0], table_code="5-1-9-1")
+
+        self.assertEqual(columns[7].label, "직영기업 / 지역개발기금")
+        self.assertEqual(columns[8].label, "공사·공단 등 / 소계")
+        self.assertEqual(columns[11].label, "공사·공단 등 / 시설·환경·경륜 등")
 
     def test_only_unmatched_closing_parentheses_are_removed(self) -> None:
         self.assertEqual(remove_unmatched_closing_parentheses("Number of Persons)"), "Number of Persons")

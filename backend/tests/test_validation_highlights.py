@@ -65,6 +65,19 @@ class ValidationHighlightTest(unittest.TestCase):
         self.assertEqual(targets, {(2, 6)})
         self.assertEqual(related, {(2, 4), (2, 5)})
 
+    def test_cross_table_cell_match_highlights_only_the_visible_target_cell(self) -> None:
+        row = {"row_index": 8, "col_index": 7}
+        spec = {
+            "type": "cross_table_cell_match",
+            "target_row": "latest_data_row",
+            "target_column": 7,
+            "source_table_code": "7-2-4-1",
+            "source_row": 1,
+            "source_column": 1,
+        }
+
+        self.assert_highlight_cells(row, spec, targets={(8, 7)}, related=set())
+
     def test_calculation_highlights_use_only_direct_formula_cells(self) -> None:
         cases = [
             (
@@ -85,6 +98,21 @@ class ValidationHighlightTest(unittest.TestCase):
                 },
                 {(5, 1)},
                 {(6, 1), (7, 2)},
+            ),
+            (
+                "cumulative relationship",
+                {"row_index": 2, "col_index": 1},
+                {
+                    "type": "cell_relation_sum",
+                    "comparisons": [
+                        {
+                            "target": {"row": 2, "column": 1},
+                            "operand_cells": [{"row": 6, "column": 1}],
+                        }
+                    ],
+                },
+                {(2, 1)},
+                {(6, 1)},
             ),
             (
                 "row arithmetic",
@@ -152,6 +180,28 @@ class ValidationHighlightTest(unittest.TestCase):
                 {(6, 3), (6, 4)},
             ),
             (
+                "paired year over year rate",
+                {"row_index": 5, "col_index": 4},
+                {
+                    "type": "row_year_over_year_rate",
+                    "row_pairs": [{"target_row": 5, "source_row": 6}],
+                    "columns": [2, 3, 4],
+                },
+                {(5, 4)},
+                {(6, 3), (6, 4)},
+            ),
+            (
+                "paired year over year rate with dash values",
+                {"row_index": 2, "col_index": 2},
+                {
+                    "type": "row_year_over_year_rate",
+                    "row_pairs": [{"target_row": 2, "source_row": 1}],
+                    "columns": [1, 2],
+                },
+                {(2, 2)},
+                {(1, 1), (1, 2)},
+            ),
+            (
                 "year rows rate",
                 {"row_index": 5, "col_index": 3},
                 {"type": "year_rows_change_rate", "value_column": 1, "rate_column": 3, "row_indices": [4, 5]},
@@ -172,11 +222,65 @@ class ValidationHighlightTest(unittest.TestCase):
                 set(),
                 {(5, 2), (5, 5), (5, 8)},
             ),
+            (
+                "cross table total",
+                {"row_index": 5, "col_index": 1},
+                {
+                    "type": "cross_table_row_sum",
+                    "target_column": 1,
+                    "operand_columns": [2],
+                    "source_table_code": "1-2-2 표2",
+                    "source_column": 1,
+                },
+                {(5, 1)},
+                {(5, 2)},
+            ),
+            (
+                "cross table weighted average",
+                {"row_index": 1, "col_index": 1},
+                {
+                    "type": "cross_table_weighted_average",
+                    "target_row": 1,
+                    "target_column": 1,
+                    "value_column": 1,
+                    "row_pairs": [
+                        {"value_row": 2, "weight_row": 3},
+                        {"value_row": 3, "weight_row": 4},
+                    ],
+                },
+                {(1, 1)},
+                {(2, 1), (3, 1)},
+            ),
         ]
 
         for name, row, spec, targets, related in cases:
             with self.subTest(name=name):
                 self.assert_highlight_cells(row, spec, targets=targets, related=related)
+
+    def test_dynamic_cumulative_relation_highlights_the_latest_year_cell(self) -> None:
+        row = {"row_index": 1, "col_index": 1}
+        spec = {
+            "type": "cell_relation_sum",
+            "comparisons": [
+                {
+                    "target": {"row_selector": "cumulative_total", "column": 1},
+                    "operand_cells": [{"row_selector": "latest_year", "column": 1}],
+                }
+            ],
+        }
+        matrix = [
+            [{"text_value": "구분"}, {"text_value": "활용처"}],
+            [{"text_value": "누적 계"}, {"text_value": "141"}],
+            [{"text_value": "2025"}, {"text_value": "103"}],
+            [{"text_value": "2026"}, {"text_value": "141"}],
+        ]
+
+        cells = highlight_cells_for(row, spec, matrix)  # type: ignore[arg-type]
+        targets = {(cell.row_index, cell.col_index) for cell in cells if cell.role == "target"}
+        related = {(cell.row_index, cell.col_index) for cell in cells if cell.role == "related"}
+
+        self.assertEqual(targets, {(1, 1)})
+        self.assertEqual(related, {(3, 1)})
 
 
 if __name__ == "__main__":

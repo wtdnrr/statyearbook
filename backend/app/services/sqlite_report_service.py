@@ -229,10 +229,15 @@ class SQLiteReportService:
         footnote_matrix = footnote_matrix_from_cells(cells)
         header_count = header_count_from_cells(cells, matrix)
         label_column_indexes = leading_label_column_indexes(matrix, header_count)
-        columns = build_columns(matrix, header_count, label_column_indexes)
+        columns = build_columns(
+            matrix,
+            header_count,
+            label_column_indexes,
+            table_code=table_row["code"],
+        )
         rows = build_rows(matrix, columns, header_count, footnote_matrix, label_column_indexes)
         table_id = f"db-{table_row['id']}"
-        checks = build_validation_issues(connection, run_id, table_row["id"], header_count)
+        checks = build_validation_issues(connection, run_id, table_row["id"], header_count, matrix)
         status, status_label = status_from_checks(checks)
         contact = parse_contact_metadata(table_row["source"] or "")
 
@@ -305,6 +310,7 @@ def build_validation_issues(
     run_id: int | None,
     table_id: int,
     header_count: int,
+    matrix: list[list[Any]] | None = None,
 ) -> list[ValidationIssue]:
     if run_id is None:
         return []
@@ -352,9 +358,9 @@ def build_validation_issues(
                 detail=row["detail"],
                 formula=row["formula"],
                 highlight_scope=highlight_scope_for(row, specs_by_rule_id.get(row["rule_id"]), header_count),
-                highlight_cells=highlight_cells_for(row, specs_by_rule_id.get(row["rule_id"])),
+                highlight_cells=highlight_cells_for(row, specs_by_rule_id.get(row["rule_id"]), matrix),
                 highlight_rows=highlight_rows_for(row, specs_by_rule_id.get(row["rule_id"])),
-                focus_cell=focus_cell_for(row, specs_by_rule_id.get(row["rule_id"])),
+                focus_cell=focus_cell_for(row, specs_by_rule_id.get(row["rule_id"]), matrix),
             )
             for row in check_rows
         ]
@@ -440,9 +446,12 @@ def load_rule_specs_by_id(
                 specs[str(spec["id"])] = spec
 
     for row in check_rows:
-        spec = cross_split_part_row_total_spec(str(row["rule_id"]))
+        rule_id = str(row["rule_id"])
+        spec = cross_split_part_row_total_spec(rule_id)
+        if spec is None:
+            spec = cross_profile_row_sum_operand_spec(rule_id)
         if spec is not None:
-            specs[str(row["rule_id"])] = spec
+            specs[rule_id] = spec
     return specs
 
 
@@ -478,6 +487,28 @@ def cross_split_part_row_total_spec(rule_id: str) -> dict[str, Any] | None:
         "id": rule_id,
         "type": "row_sum",
         "target_column": target,
+        "operand_columns": related,
+    }
+
+
+def cross_profile_row_sum_operand_spec(rule_id: str) -> dict[str, Any] | None:
+    if not rule_id.startswith("cross.profile_row_sum_operand:"):
+        return None
+
+    related_chunk = next(
+        (chunk for chunk in rule_id.split(":") if chunk.startswith("related=")),
+        "",
+    )
+    related = [
+        int(value)
+        for value in related_chunk.removeprefix("related=").split(",")
+        if value.strip().isdigit()
+    ]
+    if not related:
+        return None
+    return {
+        "id": rule_id,
+        "type": "cross_split_operand_row",
         "operand_columns": related,
     }
 
@@ -522,6 +553,66 @@ def spec_rows(spec: dict[str, Any] | None, key: str) -> list[int]:
     return [int(value) for value in spec.get(key, []) if value is not None]
 
 
+def relation_cell_for_view(
+    descriptor: Any,
+    matrix: list[list[Any]] | None,
+) -> tuple[int, int] | None:
+    """Resolve a profile relation cell for exact table-cell highlighting."""
+
+    if not isinstance(descriptor, dict):
+        return None
+    column = int(descriptor.get("column", -1))
+    if column < 0:
+        return None
+
+    if descriptor.get("row") is not None:
+        row = int(descriptor.get("row", -1))
+        return (row, column) if row >= 0 else None
+    if not matrix:
+        return None
+
+    selector = str(descriptor.get("row_selector") or "")
+    if selector == "latest_year":
+        candidates: list[tuple[int, int]] = []
+        for row_index, cells in enumerate(matrix):
+            label = matrix_row_label(cells)
+            match = re.fullmatch(r"(?:19|20)(\d{2})", label)
+            if match:
+                candidates.append((int(match.group(0)), row_index))
+        if candidates:
+            return max(candidates)[1], column
+
+    if selector == "cumulative_total":
+        for row_index, cells in enumerate(matrix):
+            label = normalize_lookup_text(matrix_row_label(cells))
+            if "누적계" in label or "cumulativetotal" in label:
+                return row_index, column
+
+    return None
+
+
+def matrix_row_label(cells: list[Any]) -> str:
+    if not cells or cells[0] is None:
+        return ""
+    return clean_table_cell_text(cells[0])
+
+
+def clean_table_cell_text(cell: Any) -> str:
+    if isinstance(cell, str):
+        value = cell
+    elif isinstance(cell, sqlite3.Row):
+        value = cell["text_value"]
+    elif isinstance(cell, dict):
+        value = cell.get("text_value", "")
+    else:
+        value = str(cell or "")
+    return re.sub(r"\s+", " ", str(value or "")).strip()
+
+
+def normalize_lookup_text(value: str) -> str:
+    return re.sub(r"[\s·,._\-()/%]+", "", value).lower()
+
+
 def formula_previous_column(spec: dict[str, Any] | None, current_col: int | None) -> int | None:
     if spec is None or current_col is None:
         return None
@@ -530,7 +621,11 @@ def formula_previous_column(spec: dict[str, Any] | None, current_col: int | None
     return previous_columns[-1] if previous_columns else None
 
 
-def highlight_cells_for(row: sqlite3.Row, spec: dict[str, Any] | None) -> list[ValidationHighlightCell]:
+def highlight_cells_for(
+    row: sqlite3.Row,
+    spec: dict[str, Any] | None,
+    matrix: list[list[Any]] | None = None,
+) -> list[ValidationHighlightCell]:
     row_index = int_or_none(row["row_index"])
     col_index = int_or_none(row["col_index"])
     if spec is None:
@@ -543,6 +638,24 @@ def highlight_cells_for(row: sqlite3.Row, spec: dict[str, Any] | None) -> list[V
         target_col = int(spec.get("target_column", col_index if col_index is not None else -1))
         cells.append(highlight_cell(row_index, target_col, "target"))
         cells.extend(highlight_cell(row_index, col, "related") for col in spec_columns(spec, "operand_columns"))
+    elif rule_type == "cross_table_row_sum":
+        target_col = int(spec.get("target_column", col_index if col_index is not None else -1))
+        cells.append(highlight_cell(row_index, target_col, "target"))
+        # The paired-table operand is rendered on its own tab. Highlight the
+        # same-table subtotal here, which is the directly visible input.
+        cells.extend(highlight_cell(row_index, col, "related") for col in spec_columns(spec, "operand_columns"))
+    elif rule_type == "cross_table_weighted_average":
+        target_row = int(spec.get("target_row", row_index if row_index is not None else -1))
+        target_col = int(spec.get("target_column", col_index if col_index is not None else -1))
+        value_col = int(spec.get("value_column", target_col))
+        cells.append(highlight_cell(target_row, target_col, "target"))
+        for pair in spec.get("row_pairs", []):
+            if isinstance(pair, dict):
+                cells.append(highlight_cell(int(pair.get("value_row", -1)), value_col, "related"))
+    elif rule_type == "cross_table_cell_match":
+        # The source cell belongs to a different table. Only the visible target
+        # value is highlighted in this table's original-table panel.
+        cells.append(highlight_cell(row_index, col_index, "target"))
     elif rule_type == "cell_sum":
         target_row = int(spec.get("target_row", row_index if row_index is not None else -1))
         target_col = int(spec.get("target_column", col_index if col_index is not None else -1))
@@ -556,6 +669,22 @@ def highlight_cells_for(row: sqlite3.Row, spec: dict[str, Any] | None) -> list[V
                         "related",
                     )
                 )
+    elif rule_type == "cell_relation_sum":
+        for comparison in spec.get("comparisons", []):
+            if not isinstance(comparison, dict):
+                continue
+            target = relation_cell_for_view(comparison.get("target"), matrix)
+            if target is None:
+                continue
+            target_row, target_col = target
+            if target_row != row_index or target_col != col_index:
+                continue
+            cells.append(highlight_cell(target_row, target_col, "target"))
+            for operand in comparison.get("operand_cells", []):
+                resolved_operand = relation_cell_for_view(operand, matrix)
+                if resolved_operand is not None:
+                    cells.append(highlight_cell(*resolved_operand, "related"))
+            break
     elif rule_type == "row_arithmetic":
         target_col = int(spec.get("target_column", col_index if col_index is not None else -1))
         cells.append(highlight_cell(row_index, target_col, "target"))
@@ -628,8 +757,15 @@ def highlight_cells_for(row: sqlite3.Row, spec: dict[str, Any] | None) -> list[V
             cells.append(highlight_cell(operand_row, value_col, "related"))
             cells.append(highlight_cell(operand_row, weight_col, "related"))
     elif rule_type == "row_year_over_year_rate":
-        target_row = int(spec.get("target_row", row_index if row_index is not None else -1))
-        source_row = int(spec.get("source_row", -1))
+        target_row = row_index if row_index is not None else int(spec.get("target_row", -1))
+        source_row = next(
+            (
+                int(pair.get("source_row", -1))
+                for pair in spec.get("row_pairs", [])
+                if isinstance(pair, dict) and int(pair.get("target_row", -1)) == target_row
+            ),
+            int(spec.get("source_row", -1)),
+        )
         previous_col = formula_previous_column(spec, col_index)
         cells.extend(
             [
@@ -704,6 +840,7 @@ def highlight_rows_for(row: sqlite3.Row, spec: dict[str, Any] | None) -> list[Va
     if rule_type in {
         "row_sum",
         "cell_sum",
+        "cell_relation_sum",
         "row_arithmetic",
         "row_ratio",
         "column_share_ratio",
@@ -717,14 +854,21 @@ def highlight_rows_for(row: sqlite3.Row, spec: dict[str, Any] | None) -> list[Va
         "year_rows_change_rate",
         "year_rows_change_amount",
         "cross_split_operand_row",
+        "cross_table_row_sum",
+        "cross_table_weighted_average",
+        "cross_table_cell_match",
     }:
         return []
 
     return []
 
 
-def focus_cell_for(row: sqlite3.Row, spec: dict[str, Any] | None) -> ValidationHighlightCell | None:
-    cells = highlight_cells_for(row, spec)
+def focus_cell_for(
+    row: sqlite3.Row,
+    spec: dict[str, Any] | None,
+    matrix: list[list[Any]] | None = None,
+) -> ValidationHighlightCell | None:
+    cells = highlight_cells_for(row, spec, matrix)
     target = next((cell for cell in cells if cell.role == "target"), None)
     return target or next(iter(cells), None)
 
@@ -742,6 +886,7 @@ def highlight_scope_for(row: sqlite3.Row, spec: dict[str, Any] | None, header_co
     if rule_type in {
         "row_sum",
         "cell_sum",
+        "cell_relation_sum",
         "row_arithmetic",
         "row_ratio",
         "column_share_ratio",
@@ -749,9 +894,10 @@ def highlight_scope_for(row: sqlite3.Row, spec: dict[str, Any] | None, header_co
         "row_year_over_year_change_amount",
         "year_rows_change_amount",
         "cross_split_operand_row",
+        "cross_table_row_sum",
     }:
         return "row"
-    if rule_type in {"column_sum", "region_total", "row_ratio_by_rows"}:
+    if rule_type in {"column_sum", "region_total", "row_ratio_by_rows", "cross_table_weighted_average"}:
         return "column"
     if rule_type == "weighted_average":
         return "column"
@@ -1028,13 +1174,19 @@ def row_is_caption_metadata(row: list[str]) -> bool:
     return first.startswith("▫") or first.startswith("※")
 
 
+ENGLISH_LABEL_SPAN_RE = re.compile(
+    r"\[\s*[A-Za-z][A-Za-z0-9 /&().,%·･+\-'’‘]*\s*\]"
+    r"|(?:-\s*)?(?:\d+s|[A-Za-z])[A-Za-z0-9 /&().,%·･+\-'’‘]*"
+)
+
+
 def clean_label(text: str) -> str:
     cleaned = re.sub(r"\s+", " ", restore_hyphenated_line_breaks(text)).strip()
     if not cleaned:
         return ""
 
     cleaned = re.sub(r"\([^가-힣)]*[A-Za-z][^)]*\)", "", cleaned)
-    koreanish = re.sub(r"[A-Za-z][A-Za-z0-9 /&().,%·･+\-']*", "", cleaned)
+    koreanish = ENGLISH_LABEL_SPAN_RE.sub("", cleaned)
     koreanish = re.sub(r"\s+", " ", koreanish).strip(" /")
     if diagonal_region_header_label(koreanish, cleaned):
         return "지역"
@@ -1049,7 +1201,7 @@ def english_label(text: str) -> str | None:
     text = restore_hyphenated_line_breaks(text)
     if diagonal_region_header_label(clean_label_korean_only(text), text):
         return "Region"
-    matches = re.findall(r"[A-Za-z][A-Za-z0-9 /&().,%·･+\-']*", text)
+    matches = ENGLISH_LABEL_SPAN_RE.findall(text)
     value = " ".join(item.strip() for item in matches if item.strip())
     value = remove_unmatched_closing_parentheses(value)
     return value or None
@@ -1080,7 +1232,7 @@ def remove_unmatched_closing_parentheses(value: str, *, preserve_numbered_marker
 def clean_label_korean_only(text: str) -> str:
     cleaned = re.sub(r"\s+", " ", restore_hyphenated_line_breaks(text)).strip()
     cleaned = re.sub(r"\([^가-힣)]*[A-Za-z][^)]*\)", "", cleaned)
-    koreanish = re.sub(r"[A-Za-z][A-Za-z0-9 /&().,%·･+\-']*", "", cleaned)
+    koreanish = ENGLISH_LABEL_SPAN_RE.sub("", cleaned)
     return re.sub(r"\s+", " ", koreanish).strip(" /")
 
 
@@ -1155,6 +1307,11 @@ def leading_label_column_indexes(matrix: list[list[str]], header_count: int) -> 
             continue
         if label_indexes and is_schedule_descriptor_column_label(header_text):
             continue
+        # A total measure can contain mostly '-' values (for example, a
+        # grand total shown only on the subtotal row). It is still a numeric
+        # column, not a second row-label dimension.
+        if label_indexes and is_total_measure_column_label(header_text, values):
+            break
         if numeric_ratio <= 0.25:
             label_indexes.append(col_index)
             continue
@@ -1178,6 +1335,20 @@ def leading_label_column_indexes(matrix: list[list[str]], header_count: int) -> 
             return [0]
 
     return label_indexes or [0]
+
+
+def is_total_measure_column_label(header_text: str, values: list[str]) -> bool:
+    if not any(parse_numeric(value) is not None for value in values):
+        return False
+
+    normalized = re.sub(r"\s+", "", header_text).lower()
+    return (
+        "전체" in header_text
+        or "합계" in header_text
+        or "총계" in header_text
+        or "total" in normalized
+        or bool(re.fullmatch(r"계(?:\([^)]*\))?", re.sub(r"\s+", "", header_text)))
+    )
 
 
 def independent_descriptor_label_columns(
@@ -1206,6 +1377,10 @@ def independent_descriptor_label_columns(
         re.sub(r"\s+", "", header_text_for_column(matrix, header_count, col_index))
         for col_index in label_indexes
     ]
+    # A service name and its description are parallel text dimensions. They
+    # must remain separate columns even though both happen to be non-numeric.
+    if any("서비스내용" in header or "servicedescription" in header.lower() for header in headers[1:]):
+        return True
     return sum(any(hint in header for hint in descriptor_hints) for header in headers) >= 2
 
 
@@ -1284,6 +1459,7 @@ def build_columns(
     matrix: list[list[str]],
     header_count: int,
     label_column_indexes: list[int] | None = None,
+    table_code: str | None = None,
 ) -> list[ColumnDefinition]:
     if not matrix:
         return []
@@ -1335,7 +1511,31 @@ def build_columns(
             )
         )
 
+    apply_column_label_overrides(table_code, columns)
     return columns
+
+
+def apply_column_label_overrides(
+    table_code: str | None,
+    columns: list[ColumnDefinition],
+) -> None:
+    """Correct known HWPX header shifts without changing the source values."""
+
+    if table_code != "5-1-9-1":
+        return
+
+    labels = {
+        7: ("직영기업 / 지역개발기금", "Business Directly Managed by Local Governments / Local Development Fund"),
+        8: ("공사·공단 등 / 소계", "Local Public Corporation and Facilities Management Corporation / Sub-total"),
+        9: ("공사·공단 등 / 도시철도", "Local Public Corporation and Facilities Management Corporation / Urban Railway"),
+        10: ("공사·공단 등 / 도시개발", "Local Public Corporation and Facilities Management Corporation / Urban Development"),
+        11: ("공사·공단 등 / 시설·환경·경륜 등", "Local Public Corporation and Facilities Management Corporation / Facility, Environment, Bicycle Racing, etc."),
+    }
+    for column in columns:
+        source_col = column.source_col_index
+        if source_col not in labels:
+            continue
+        column.label, column.label_en = labels[source_col]
 
 
 def column_alignment(col_index: int, label: str, label_en: str | None) -> str:

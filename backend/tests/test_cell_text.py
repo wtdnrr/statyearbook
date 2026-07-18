@@ -37,10 +37,10 @@ class CellTextTest(unittest.TestCase):
         self.assertTrue(line_is_note("#주1) 기준 변경"))
         self.assertTrue(line_is_note("# Onnara BPS : Onnara business process system"))
 
-    def test_nonsemantic_type_qualifier_line_is_removed(self) -> None:
+    def test_semantic_type_qualifier_line_is_preserved(self) -> None:
         self.assertEqual(
             split_cell_text("출자기관\nGovernment-funded Organizations\n[Type A]"),
-            ("출자기관\nGovernment-funded Organizations", ""),
+            ("출자기관\nGovernment-funded Organizations\n[Type A]", ""),
         )
 
 
