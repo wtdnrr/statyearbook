@@ -7,6 +7,7 @@ import zipfile
 from app.db.schema import connect, init_db
 from app.services.sqlite_report_service import (
     build_columns,
+    build_rows,
     clean_label,
     english_label,
     leading_label_column_indexes,
@@ -297,6 +298,72 @@ class TableDisplayParsingTests(unittest.TestCase):
         self.assertEqual(english_label(type_a), "Government-funded Organizations [Type A]")
         self.assertEqual(clean_label(type_b), "출연기관")
         self.assertEqual(english_label(type_b), "Government-funded Organizations [Type B]")
+
+    def test_formula_markers_stay_with_both_header_languages(self) -> None:
+        fiscal_year = "2026년도(A)\nFY 2026"
+        balance = "2024\n연말잔액\n(d=a+b-c)\nYear-end Balance of 2024\n(d=a+b-c)"
+        magnitude = "2≤M＜3"
+
+        self.assertEqual(clean_label(fiscal_year), "2026년도(A)")
+        self.assertEqual(english_label(fiscal_year), "FY 2026")
+        self.assertEqual(clean_label(balance), "2024 연말잔액 (d=a+b-c)")
+        self.assertEqual(english_label(balance), "Year-end Balance of 2024 (d=a+b-c)")
+        self.assertEqual(clean_label(magnitude), magnitude)
+        self.assertIsNone(english_label(magnitude))
+
+    def test_parenthesized_english_descriptions_and_metric_units_are_not_split(self) -> None:
+        agency = "온나라시스템 구축 기관\n(Agencies Using Onnara)"
+        area = "면적\n(㎡)\nExtent\n(㎡)"
+
+        self.assertEqual(clean_label(agency), "온나라시스템 구축 기관")
+        self.assertEqual(english_label(agency), "(Agencies Using Onnara)")
+        self.assertEqual(clean_label(area), "면적 (㎡)")
+        self.assertEqual(english_label(area), "Extent (㎡)")
+
+    def test_parallel_descriptor_dimensions_are_not_collapsed(self) -> None:
+        matrices = [
+            [
+                ["연도\nYear", "구분\nClassification", "합계\nTotal"],
+                ["2025", "중앙행정기관", "10"],
+            ],
+            [
+                ["구분\nClassification", "단위\nUnit", "대상\nTarget"],
+                ["공공건축물", "개소", "10"],
+            ],
+            [
+                ["생산(이관)기관\nInstruments of Production", "기록물분야\nRecord Subjects", "합계"],
+                ["경찰청", "수사기록", "10"],
+            ],
+        ]
+
+        for matrix in matrices:
+            with self.subTest(headers=matrix[0]):
+                self.assertEqual(leading_label_column_indexes(matrix, 1), [0])
+
+    def test_split_bilingual_descriptor_column_is_presented_once(self) -> None:
+        matrix = [
+            ["지역\nRegion", "시·군·구\nCities Counties Districts", "", "합계\nTotal"],
+            ["부산\nBusan", "서구", "Seo-gu", "3"],
+            ["부산\nBusan", "남구", "Nam-gu", "1"],
+            ["부산\nBusan", "해운대구", "Haeundae-gu", "2"],
+        ]
+
+        label_columns = leading_label_column_indexes(matrix, 1)
+        columns = build_columns(matrix, 1, label_columns)
+        rows = build_rows(matrix, columns, 1, label_column_indexes=label_columns)
+
+        self.assertEqual(label_columns, [0])
+        self.assertEqual([column.source_col_indexes for column in columns], [[0], [1, 2], [3]])
+        self.assertEqual(rows[0]["c1"], "서구")
+        self.assertEqual(rows[0]["c1_en"], "Seo-gu")
+
+    def test_year_measure_header_is_not_merged_into_label_column(self) -> None:
+        matrix = [
+            ["구분\nClassification", "2010", "2011"],
+            ["주민소환투표\nRecalls", "-", "1"],
+        ]
+
+        self.assertEqual(leading_label_column_indexes(matrix, 1), [0])
 
     def test_registry_descriptor_columns_are_not_collapsed(self) -> None:
         matrix = [

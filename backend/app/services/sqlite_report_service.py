@@ -1174,9 +1174,13 @@ def row_is_caption_metadata(row: list[str]) -> bool:
     return first.startswith("▫") or first.startswith("※")
 
 
+ENGLISH_LABEL_BODY = r"A-Za-z0-9 /&().,%·･+=:\-'’‘㎡㎢㎞㎏㎘㎖㎥"
 ENGLISH_LABEL_SPAN_RE = re.compile(
-    r"\[\s*[A-Za-z][A-Za-z0-9 /&().,%·･+\-'’‘]*\s*\]"
-    r"|(?:-\s*)?(?:\d+s|[A-Za-z])[A-Za-z0-9 /&().,%·･+\-'’‘]*"
+    rf"\[\s*[A-Za-z][{ENGLISH_LABEL_BODY}]*\s*\]"
+    rf"|\((?=[^)]*[A-Za-z]{{2}})(?=[^)]*\s)[{ENGLISH_LABEL_BODY}]+\)"
+    rf"|(?<![A-Za-z0-9가-힣(/=+\-])(?:-\s*)?"
+    rf"(?:\d+s|(?=[A-Za-z][{ENGLISH_LABEL_BODY}]*[A-Za-z])[A-Za-z])"
+    rf"[{ENGLISH_LABEL_BODY}]*"
 )
 
 
@@ -1185,20 +1189,18 @@ def clean_label(text: str) -> str:
     if not cleaned:
         return ""
 
-    cleaned = re.sub(r"\([^가-힣)]*[A-Za-z][^)]*\)", "", cleaned)
     koreanish = ENGLISH_LABEL_SPAN_RE.sub("", cleaned)
     koreanish = re.sub(r"\s+", " ", koreanish).strip(" /")
     if diagonal_region_header_label(koreanish, cleaned):
         return "지역"
     koreanish = re.sub(r"^구분(?=\S)", "구분 / ", koreanish)
-    koreanish = re.sub(r"(\d{4})(?=[가-힣])", r"\1 ", koreanish)
     koreanish = koreanish.replace("()", "").strip(" /")
     koreanish = remove_unmatched_closing_parentheses(koreanish, preserve_numbered_markers=True)
     return koreanish or cleaned
 
 
 def english_label(text: str) -> str | None:
-    text = restore_hyphenated_line_breaks(text)
+    text = re.sub(r"\s+", " ", restore_hyphenated_line_breaks(text)).strip()
     if diagonal_region_header_label(clean_label_korean_only(text), text):
         return "Region"
     matches = ENGLISH_LABEL_SPAN_RE.findall(text)
@@ -1231,7 +1233,6 @@ def remove_unmatched_closing_parentheses(value: str, *, preserve_numbered_marker
 
 def clean_label_korean_only(text: str) -> str:
     cleaned = re.sub(r"\s+", " ", restore_hyphenated_line_breaks(text)).strip()
-    cleaned = re.sub(r"\([^가-힣)]*[A-Za-z][^)]*\)", "", cleaned)
     koreanish = ENGLISH_LABEL_SPAN_RE.sub("", cleaned)
     return re.sub(r"\s+", " ", koreanish).strip(" /")
 
@@ -1305,6 +1306,8 @@ def leading_label_column_indexes(matrix: list[list[str]], header_count: int) -> 
         if col_index == 0 and looks_like_year_label_column(matrix, header_count, col_index, values):
             label_indexes.append(col_index)
             continue
+        if label_indexes and is_year_measure_column_label(header_text):
+            break
         if label_indexes and is_schedule_descriptor_column_label(header_text):
             continue
         # A total measure can contain mostly '-' values (for example, a
@@ -1335,6 +1338,11 @@ def leading_label_column_indexes(matrix: list[list[str]], header_count: int) -> 
             return [0]
 
     return label_indexes or [0]
+
+
+def is_year_measure_column_label(header_text: str) -> bool:
+    normalized = re.sub(r"\s+", "", clean_label(header_text))
+    return bool(re.fullmatch(r"(?:19|20)\d{2}(?:년(?:도)?)?", normalized))
 
 
 def is_total_measure_column_label(header_text: str, values: list[str]) -> bool:
@@ -1377,6 +1385,42 @@ def independent_descriptor_label_columns(
         re.sub(r"\s+", "", header_text_for_column(matrix, header_count, col_index))
         for col_index in label_indexes
     ]
+    normalized_headers = [header.lower() for header in headers]
+
+    def contains(index: int, *hints: str) -> bool:
+        return index < len(normalized_headers) and any(
+            hint.lower() in normalized_headers[index] for hint in hints
+        )
+
+    # These are parallel source dimensions, not levels of one row label.
+    # Keep the rule semantic so the same layout works for newly added tables.
+    if len(headers) >= 2:
+        if (
+            contains(0, "연도", "year")
+            and contains(1, "구분", "분류", "classification")
+        ) or (
+            contains(1, "연도", "year")
+            and contains(0, "구분", "분류", "classification")
+        ):
+            return True
+        if contains(0, "구분", "분류", "classification") and contains(1, "단위", "unit"):
+            return True
+        if contains(0, "지역", "region") and contains(
+            1,
+            "시･군･구",
+            "시·군·구",
+            "시군구",
+            "cities",
+            "counties",
+            "districts",
+        ):
+            return True
+        if contains(0, "생산(이관)기관", "생산기관", "instruments of production") and contains(
+            1,
+            "기록물분야",
+            "record subjects",
+        ):
+            return True
     # A service name and its description are parallel text dimensions. They
     # must remain separate columns even though both happen to be non-numeric.
     if any("서비스내용" in header or "servicedescription" in header.lower() for header in headers[1:]):
@@ -1428,16 +1472,75 @@ def should_collapse_label_columns(label_column_indexes: list[int]) -> bool:
     return len(label_column_indexes) > 1 and label_column_indexes == list(range(len(label_column_indexes)))
 
 
-def display_source_columns(max_cols: int, label_column_indexes: list[int]) -> list[list[int]]:
-    if not should_collapse_label_columns(label_column_indexes):
-        return [[col_index] for col_index in range(max_cols)]
+def split_bilingual_descriptor_column_pairs(
+    matrix: list[list[str]],
+    header_count: int,
+) -> set[tuple[int, int]]:
+    """Find Korean/English columns produced from one merged HWPX header."""
 
-    hidden_label_columns = set(label_column_indexes[1:])
-    return [
-        label_column_indexes if col_index == label_column_indexes[0] else [col_index]
-        for col_index in range(max_cols)
-        if col_index not in hidden_label_columns
-    ]
+    max_cols = max((len(row) for row in matrix), default=0)
+    data_rows = [row for row in matrix[header_count:] if any(cell.strip() for cell in row)]
+    pairs: set[tuple[int, int]] = set()
+    for left_col in range(max_cols - 1):
+        right_col = left_col + 1
+        if not header_text_for_column(matrix, header_count, left_col).strip():
+            continue
+        if header_text_for_column(matrix, header_count, right_col).strip():
+            continue
+
+        paired_values = 0
+        bilingual_values = 0
+        for row in data_rows:
+            left = row[left_col].strip() if left_col < len(row) else ""
+            right = row[right_col].strip() if right_col < len(row) else ""
+            if not left or not right:
+                continue
+            paired_values += 1
+            if (
+                re.search(r"[가-힣]", left)
+                and re.search(r"[A-Za-z]", right)
+                and not re.search(r"[가-힣]", right)
+                and parse_numeric(right) is None
+            ):
+                bilingual_values += 1
+
+        if paired_values >= 3 and bilingual_values / paired_values >= 0.8:
+            pairs.add((left_col, right_col))
+    return pairs
+
+
+def display_source_columns(
+    matrix: list[list[str]],
+    header_count: int,
+    label_column_indexes: list[int],
+) -> list[list[int]]:
+    max_cols = max((len(row) for row in matrix), default=0)
+    if should_collapse_label_columns(label_column_indexes):
+        hidden_label_columns = set(label_column_indexes[1:])
+        groups = [
+            label_column_indexes if col_index == label_column_indexes[0] else [col_index]
+            for col_index in range(max_cols)
+            if col_index not in hidden_label_columns
+        ]
+    else:
+        groups = [[col_index] for col_index in range(max_cols)]
+
+    bilingual_pairs = split_bilingual_descriptor_column_pairs(matrix, header_count)
+    merged_groups: list[list[int]] = []
+    index = 0
+    while index < len(groups):
+        if (
+            index + 1 < len(groups)
+            and len(groups[index]) == 1
+            and len(groups[index + 1]) == 1
+            and (groups[index][0], groups[index + 1][0]) in bilingual_pairs
+        ):
+            merged_groups.append([groups[index][0], groups[index + 1][0]])
+            index += 2
+            continue
+        merged_groups.append(groups[index])
+        index += 1
+    return merged_groups
 
 
 def header_rows_for_labels(matrix: list[list[str]], header_count: int) -> list[list[str]]:
@@ -1464,15 +1567,14 @@ def build_columns(
     if not matrix:
         return []
 
-    max_cols = max((len(row) for row in matrix), default=0)
     header_rows = header_rows_for_labels(matrix, header_count) if header_count else []
     label_column_indexes = label_column_indexes or leading_label_column_indexes(matrix, header_count)
     columns: list[ColumnDefinition] = []
 
-    for source_col_indexes in display_source_columns(max_cols, label_column_indexes):
+    for source_col_indexes in display_source_columns(matrix, header_count, label_column_indexes):
         col_index = source_col_indexes[0]
         if (
-            col_index not in label_column_indexes
+            not any(source_col in label_column_indexes for source_col in source_col_indexes)
             and not has_display_data(matrix, header_count, col_index)
             and not has_display_header(header_rows, col_index)
         ):
@@ -1583,11 +1685,33 @@ def build_rows(
         ) or ""
         for column in columns:
             col_index = column.source_col_index if column.source_col_index is not None else int(column.key[1:])
-            is_collapsed_label_column = len(column.source_col_indexes) > 1
-            value = row["_row_label"] if is_collapsed_label_column else (source_row[col_index] if col_index < len(source_row) else "")
+            is_collapsed_label_column = (
+                len(column.source_col_indexes) > 1
+                and column.source_col_indexes == label_column_indexes
+            )
+            is_bilingual_descriptor_column = (
+                len(column.source_col_indexes) > 1 and not is_collapsed_label_column
+            )
+            combined_value = ""
+            if is_collapsed_label_column:
+                value = row["_row_label"]
+            elif is_bilingual_descriptor_column:
+                source_values = [
+                    source_row[source_col]
+                    for source_col in column.source_col_indexes
+                    if source_col < len(source_row) and source_row[source_col].strip()
+                ]
+                combined_value = "\n".join(source_values)
+                value = clean_label(combined_value) or (source_values[0] if source_values else "")
+            else:
+                value = source_row[col_index] if col_index < len(source_row) else ""
             row[column.key] = coerce_display_value(value)
             if is_collapsed_label_column and row["_row_label_en"]:
                 row[f"{column.key}_en"] = row["_row_label_en"]
+            elif is_bilingual_descriptor_column:
+                label_en = english_label(combined_value)
+                if label_en:
+                    row[f"{column.key}_en"] = label_en
             footnote = (
                 footnote_matrix[matrix_row_index][col_index]
                 if footnote_matrix and matrix_row_index < len(footnote_matrix) and col_index < len(footnote_matrix[matrix_row_index])
