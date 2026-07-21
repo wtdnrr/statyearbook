@@ -1,0 +1,12 @@
+{
+  "framework": "vite",
+  "installCommand": "if [ -d frontend ]; then npm --prefix frontend install; else npm install; fi",
+  "buildCommand": "if [ -d frontend ]; then npm --prefix frontend run build && rm -rf dist && cp -R frontend/dist dist; else npm run build; fi",
+  "outputDirectory": "dist",
+  "rewrites": [
+    {
+      "source": "/(.*)",
+      "destination": "/index.html"
+    }
+  ]
+}
