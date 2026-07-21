@@ -135,6 +135,48 @@ CREATE TABLE IF NOT EXISTS validation_issues (
 CREATE INDEX IF NOT EXISTS idx_validation_runs_report_latest
 ON validation_runs(report_id, completed_at DESC, id DESC);
 
+CREATE TABLE IF NOT EXISTS report_processing_jobs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    report_id INTEGER,
+    run_id INTEGER,
+    source_file_name TEXT NOT NULL,
+    source_file_path TEXT NOT NULL,
+    source_type TEXT NOT NULL,
+    report_year INTEGER NOT NULL,
+    report_title TEXT NOT NULL,
+    options_json TEXT NOT NULL DEFAULT '{}',
+    status TEXT NOT NULL DEFAULT 'queued',
+    current_stage TEXT NOT NULL DEFAULT 'queued',
+    error_message TEXT NOT NULL DEFAULT '',
+    result_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    started_at TEXT,
+    completed_at TEXT,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (report_id) REFERENCES annual_reports(id) ON DELETE SET NULL,
+    FOREIGN KEY (run_id) REFERENCES validation_runs(id) ON DELETE SET NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_report_processing_jobs_status
+ON report_processing_jobs(status, updated_at DESC, id DESC);
+
+CREATE TABLE IF NOT EXISTS report_processing_stages (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    job_id INTEGER NOT NULL,
+    stage_name TEXT NOT NULL,
+    attempt INTEGER NOT NULL DEFAULT 1,
+    status TEXT NOT NULL DEFAULT 'running',
+    result_json TEXT NOT NULL DEFAULT '{}',
+    error_message TEXT NOT NULL DEFAULT '',
+    started_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    completed_at TEXT,
+    FOREIGN KEY (job_id) REFERENCES report_processing_jobs(id) ON DELETE CASCADE,
+    UNIQUE (job_id, stage_name, attempt)
+);
+
+CREATE INDEX IF NOT EXISTS idx_report_processing_stages_job
+ON report_processing_stages(job_id, id);
+
 CREATE INDEX IF NOT EXISTS idx_validation_issues_run_table
 ON validation_issues(run_id, table_id);
 

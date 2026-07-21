@@ -16,7 +16,11 @@ import type {
 } from "../types";
 import {
   LINGUISTIC_CHECK_TYPES,
+  highlightCellKey,
+  relatedCellsForCheck,
   repeatedCalculationGroupKey,
+  sortChecksByCalculationHierarchy,
+  targetCellForCheck,
   validationDisplayGroupKey,
 } from "../utils/validationGrouping";
 import { firstFocusableCheck, resolveIssueLocation } from "../utils/validationLocation";
@@ -73,18 +77,6 @@ const tabs: Array<{ id: DetailTab; label: string }> = [
   { id: "visuals", label: "시각화" },
   { id: "metadata", label: "출처·메타정보" },
 ];
-
-const checkTypeOrder = new Map(
-  [
-    "합계 검수",
-    "비율 검수",
-    "오탈자 검수",
-    "번역 검수",
-    "메타정보 검수",
-    "이상치 검수",
-    "파란색 표기 확인",
-  ].map((type, index) => [type, index]),
-);
 
 function checksForFilter<T extends { status: string }>(
   filter: CheckFilter,
@@ -262,30 +254,6 @@ function cellDescription(part: StatTablePart, cell: ValidationHighlightCell) {
   };
 }
 
-function targetCellForCheck(check: ValidationIssue): ValidationHighlightCell | undefined {
-  return (
-    check.highlight_cells?.find((cell) => cell.role === "target") ??
-    (check.row_index !== undefined && check.col_index !== undefined
-      ? { row_index: check.row_index, col_index: check.col_index, role: "target" }
-      : undefined)
-  );
-}
-
-function relatedCellsForCheck(check: ValidationIssue) {
-  const target = targetCellForCheck(check);
-  const targetKey = target ? highlightCellKey(target) : "";
-  const seen = new Set<string>();
-
-  return (check.highlight_cells ?? []).filter((cell) => {
-    const key = highlightCellKey(cell);
-    if (cell.role !== "related" || key === targetKey || seen.has(key)) {
-      return false;
-    }
-    seen.add(key);
-    return true;
-  });
-}
-
 function uniqueHighlightLocations(locations: GridHighlightLocation[]) {
   const seen = new Set<string>();
 
@@ -297,10 +265,6 @@ function uniqueHighlightLocations(locations: GridHighlightLocation[]) {
     seen.add(key);
     return Boolean(location.rowText || location.columnText);
   });
-}
-
-function highlightCellKey(cell: ValidationHighlightCell) {
-  return `${cell.row_index}:${cell.col_index}`;
 }
 
 function highlightRowKey(row: ValidationHighlightRow) {
@@ -419,168 +383,6 @@ function highlightForCheck(_part: StatTablePart, check: DisplayCheck | undefined
     headerLocations,
     relatedLocations: [],
   };
-}
-
-type SumDirection = "row" | "column" | "mixed" | "other";
-
-function sourceCheckSumDirection(check: ValidationIssue): SumDirection {
-  const target = targetCellForCheck(check);
-  const related = relatedCellsForCheck(check);
-
-  if (target && related.length > 0) {
-    const sameRow = related.every((cell) => cell.row_index === target.row_index);
-    const sameColumn = related.every((cell) => cell.col_index === target.col_index);
-    if (sameRow && !sameColumn) {
-      return "row";
-    }
-    if (sameColumn && !sameRow) {
-      return "column";
-    }
-    if (!sameRow && !sameColumn) {
-      return "mixed";
-    }
-  }
-
-  const ruleContext = [check.rule_id, check.formula, check.detail]
-    .filter(Boolean)
-    .join(" ")
-    .toLowerCase();
-  if (/column[_ -]?(sum|total)|region[_ -]?total|열\s*(방향|기준)?\s*합계/.test(ruleContext)) {
-    return "column";
-  }
-  if (/row[_ -]?(sum|total)|행\s*(방향|기준)?\s*합계/.test(ruleContext)) {
-    return "row";
-  }
-  return "other";
-}
-
-function sumDirection(check: DisplayCheck): SumDirection {
-  if (check.type !== "합계 검수") {
-    return "other";
-  }
-
-  const directions = new Set(
-    check.checks
-      .map((sourceCheck) => sourceCheckSumDirection(sourceCheck))
-      .filter((direction) => direction !== "other"),
-  );
-  if (directions.size === 1) {
-    return directions.values().next().value ?? "other";
-  }
-  return directions.size > 1 ? "mixed" : "other";
-}
-
-function clusterSimilarSumChecks(checks: DisplayCheck[]) {
-  const originalPositions = new Map(checks.map((check, index) => [check.id, index]));
-  const firstDirectionPositions = new Map<SumDirection, number>();
-
-  checks.forEach((check, index) => {
-    if (check.type !== "합계 검수") {
-      return;
-    }
-    const direction = sumDirection(check);
-    if (!firstDirectionPositions.has(direction)) {
-      firstDirectionPositions.set(direction, index);
-    }
-  });
-
-  return [...checks].sort((left, right) => {
-    const typeOrder =
-      (checkTypeOrder.get(left.type) ?? 999) -
-      (checkTypeOrder.get(right.type) ?? 999);
-    if (typeOrder !== 0) {
-      return typeOrder;
-    }
-
-    if (left.type === "합계 검수") {
-      const directionOrder =
-        (firstDirectionPositions.get(sumDirection(left)) ?? 999) -
-        (firstDirectionPositions.get(sumDirection(right)) ?? 999);
-      if (directionOrder !== 0) {
-        return directionOrder;
-      }
-    }
-
-    return (originalPositions.get(left.id) ?? 999) - (originalPositions.get(right.id) ?? 999);
-  });
-}
-
-function sortChecksByCalculationHierarchy(checks: DisplayCheck[]) {
-  if (checks.length < 2) {
-    return checks;
-  }
-
-  const targetKeys = checks.map(
-    (check) =>
-      new Set(
-        check.highlight_cells
-          .filter((cell) => cell.role === "target")
-          .map((cell) => highlightCellKey(cell)),
-      ),
-  );
-  const relatedKeys = checks.map(
-    (check) =>
-      new Set(
-        check.highlight_cells
-          .filter((cell) => cell.role === "related")
-          .map((cell) => highlightCellKey(cell)),
-      ),
-  );
-  const children = checks.map(() => new Set<number>());
-  const indegree = checks.map(() => 0);
-
-  for (let parentIndex = 0; parentIndex < checks.length; parentIndex += 1) {
-    for (let childIndex = 0; childIndex < checks.length; childIndex += 1) {
-      if (parentIndex === childIndex || checks[parentIndex].type !== checks[childIndex].type) {
-        continue;
-      }
-      const childIsOperand = Array.from(targetKeys[childIndex]).some((key) => relatedKeys[parentIndex].has(key));
-      if (!childIsOperand || children[parentIndex].has(childIndex)) {
-        continue;
-      }
-      children[parentIndex].add(childIndex);
-      indegree[childIndex] += 1;
-    }
-  }
-
-  const ready = checks
-    .map((_, index) => index)
-    .filter((index) => indegree[index] === 0);
-  const ordered: DisplayCheck[] = [];
-  const compareCheckIndexes = (left: number, right: number) => {
-    const typeOrder =
-      (checkTypeOrder.get(checks[left].type) ?? 999) -
-      (checkTypeOrder.get(checks[right].type) ?? 999);
-    return typeOrder || left - right;
-  };
-  while (ready.length > 0) {
-    ready.sort(compareCheckIndexes);
-    const index = ready.shift();
-    if (index === undefined) {
-      break;
-    }
-    ordered.push(checks[index]);
-    for (const childIndex of children[index]) {
-      indegree[childIndex] -= 1;
-      if (indegree[childIndex] === 0) {
-        ready.push(childIndex);
-      }
-    }
-  }
-
-  if (ordered.length < checks.length) {
-    const orderedIds = new Set(ordered.map((check) => check.id));
-    const unresolved = checks
-      .map((_, index) => index)
-      .filter((index) => !orderedIds.has(checks[index].id))
-      .sort(compareCheckIndexes)
-      .map((index) => checks[index]);
-    ordered.push(...unresolved);
-  }
-
-  // Keep the hierarchy order inside each calculation direction, then place
-  // row-based and column-based sums in contiguous navigation groups.
-  return clusterSimilarSumChecks(ordered);
 }
 
 function groupChecksForDisplay(part: StatTablePart, sourceChecks: ValidationIssue[]): DisplayCheck[] {

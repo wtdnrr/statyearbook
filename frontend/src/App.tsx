@@ -5,6 +5,7 @@ import { DetailView } from "./components/DetailView";
 import { PressPage } from "./components/PressPage";
 import { ReportWorkspace } from "./components/ReportWorkspace";
 import { useReport } from "./hooks/useReport";
+import { uploadReport, waitForImport } from "./api/reportApi";
 import type { TableStatus } from "./types";
 import {
   DEFAULT_HIDDEN_VALIDATION_TYPES,
@@ -27,7 +28,9 @@ export default function App() {
   const [hiddenValidationTypes, setHiddenValidationTypes] = useState<Set<string>>(
     () => new Set(DEFAULT_HIDDEN_VALIDATION_TYPES),
   );
-  const report = useReport(selectedReportId || undefined);
+  const [reportRefreshKey, setReportRefreshKey] = useState(0);
+  const [uploadState, setUploadState] = useState<"idle" | "uploading" | "error">("idle");
+  const report = useReport(selectedReportId || undefined, reportRefreshKey);
 
   const rawTables = report.data?.tables ?? [];
   const validationTypes = useMemo(() => validationTypesForTables(rawTables), [rawTables]);
@@ -80,6 +83,22 @@ export default function App() {
     });
   }
 
+  async function handleUpload(file: File) {
+    setUploadState("uploading");
+    try {
+      const queued = await uploadReport(file);
+      const completed = await waitForImport(queued.id);
+      setSelectedReportId(completed.report_id ? String(completed.report_id) : "");
+      setSelectedTableId("");
+      setDetailTableId(null);
+      setReportRefreshKey((current) => current + 1);
+      setUploadState("idle");
+    } catch (error) {
+      setUploadState("error");
+      window.alert(error instanceof Error ? error.message : "연보 처리 중 오류가 발생했습니다.");
+    }
+  }
+
   if (report.status === "loading") {
     return <div className="state-page">데이터를 불러오는 중입니다.</div>;
   }
@@ -129,7 +148,12 @@ export default function App() {
 
   return (
     <main className="app-shell">
-      <AppHeader activeSection={activeSection} onSectionChange={setActiveSection} />
+      <AppHeader
+        activeSection={activeSection}
+        onSectionChange={setActiveSection}
+        onUpload={handleUpload}
+        uploadState={uploadState}
+      />
 
       {activeSection === "annual" || activeSection === "keyStats" ? reportWorkspace : null}
       {activeSection === "press" ? (

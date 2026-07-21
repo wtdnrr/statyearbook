@@ -29,6 +29,21 @@ class SQLiteValidationRepository:
                 """
             ).fetchone()
 
+    def report(self, report_id: int) -> sqlite3.Row | None:
+        """Load one report explicitly.
+
+        Automated imports must never validate whichever report happens to be
+        newest at execution time. Keeping this lookup in the repository makes
+        the report boundary explicit throughout the workflow.
+        """
+
+        with connect(self._db_path) as connection:
+            init_db(connection)
+            return connection.execute(
+                "SELECT * FROM annual_reports WHERE id = ?",
+                (report_id,),
+            ).fetchone()
+
     def load_tables(self, report_id: int) -> list[ValidationTable]:
         with connect(self._db_path) as connection:
             init_db(connection)

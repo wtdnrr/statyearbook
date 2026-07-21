@@ -12,7 +12,17 @@ import re
 import sqlite3
 import time
 from typing import Any
-from urllib import error, request
+from urllib import request
+
+from app.core.llm_client import (
+    LLMClientSettings,
+    ResponsesTransport,
+    env_value,
+    parse_json_text,
+    parse_responses_json,
+    retry_after_seconds,
+    resolve_llm_client_settings,
+)
 
 from app.db.schema import DB_PATH, connect, init_db
 from app.validation.blue_review import (
@@ -45,9 +55,6 @@ from app.validation.translation_glossary import (
 )
 
 
-OPENAI_RESPONSES_PATH = "/responses"
-DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1"
-DEFAULT_BIZROUTER_BASE_URL = "https://api.bizrouter.ai/v1"
 DEFAULT_TRANSLATION_MODEL = "gpt-5.4-mini"
 DEFAULT_BIZROUTER_MODEL = "openai/gpt-5-mini"
 LLM_TRANSLATION_RULE_ID = "llm.translation_review"
@@ -843,75 +850,30 @@ def preview_llm_table_reviews(
 
 
 def llm_review_settings() -> dict[str, Any]:
-    load_local_env_file()
-    provider = os.getenv("LLM_PROVIDER", "auto").strip().lower()
-    if provider not in {"auto", "openai", "bizrouter"}:
-        raise ValueError("LLM_PROVIDER must be auto, openai, or bizrouter")
-    bizrouter_key = os.getenv("BIZROUTER_API_KEY", "").strip()
-    openai_key = os.getenv("OPENAI_API_KEY", "").strip()
-    if provider == "auto":
-        provider = "bizrouter" if bizrouter_key else "openai"
-
-    enabled_value = env_value("LLM_REVIEW_ENABLED", "OPENAI_LLM_REVIEW_ENABLED", default="1")
+    settings = resolve_llm_client_settings(
+        openai_model=DEFAULT_TRANSLATION_MODEL,
+        bizrouter_model=DEFAULT_BIZROUTER_MODEL,
+    )
     limit_value = env_value("LLM_REVIEW_LIMIT", "OPENAI_LLM_REVIEW_LIMIT").strip()
-    if provider == "bizrouter":
-        api_key = bizrouter_key
-        api_key_env = "BIZROUTER_API_KEY"
-        model = (
-            os.getenv("BIZROUTER_MODEL", DEFAULT_BIZROUTER_MODEL).strip()
-            or DEFAULT_BIZROUTER_MODEL
-        )
-        base_url = os.getenv("BIZROUTER_BASE_URL", DEFAULT_BIZROUTER_BASE_URL).rstrip("/")
-    else:
-        api_key = openai_key
-        api_key_env = "OPENAI_API_KEY"
-        model = (
-            os.getenv("OPENAI_TRANSLATION_MODEL", DEFAULT_TRANSLATION_MODEL).strip()
-            or DEFAULT_TRANSLATION_MODEL
-        )
-        base_url = os.getenv("OPENAI_BASE_URL", DEFAULT_OPENAI_BASE_URL).rstrip("/")
-
     return {
-        "enabled": enabled_value not in {"0", "false", "no", "off"},
-        "provider": provider,
-        "api_key": api_key,
-        "api_key_env": api_key_env,
-        "model": model,
-        "base_url": base_url,
+        "enabled": settings.enabled,
+        "provider": settings.provider,
+        "api_key": settings.api_key,
+        "api_key_env": settings.api_key_env,
+        "model": settings.model,
+        "base_url": settings.base_url,
         "batch_size": max(
             int(env_value("LLM_REVIEW_BATCH_SIZE", "OPENAI_LLM_REVIEW_BATCH_SIZE", default="1")),
             1,
         ),
         "concurrency": max(int(os.getenv("LLM_REVIEW_CONCURRENCY", "1")), 1),
-        "timeout": max(
-            int(env_value("LLM_REVIEW_TIMEOUT", "OPENAI_LLM_REVIEW_TIMEOUT", default="90")),
-            10,
-        ),
+        "timeout": settings.timeout,
         "sleep_seconds": max(
             float(env_value("LLM_REVIEW_SLEEP", "OPENAI_LLM_REVIEW_SLEEP", default="0.2")),
             0.0,
         ),
         "limit": int(limit_value) if limit_value.isdigit() else None,
     }
-
-
-def env_value(primary: str, legacy: str, *, default: str = "") -> str:
-    return os.getenv(primary, os.getenv(legacy, default)).strip()
-
-
-def load_local_env_file() -> None:
-    env_path = Path(__file__).resolve().parents[3] / ".env"
-    if not env_path.exists():
-        return
-    for raw_line in env_path.read_text(encoding="utf-8").splitlines():
-        line = raw_line.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        key, value = line.split("=", 1)
-        key = key.strip()
-        value = value.strip().strip('"').strip("'")
-        if key and key not in os.environ:
-            os.environ[key] = value
 
 
 class ResponsesAPIClient:
@@ -929,6 +891,18 @@ class ResponsesAPIClient:
         self.base_url = base_url
         self.timeout = timeout
         self.provider = provider
+        self._transport = ResponsesTransport(
+            LLMClientSettings(
+                enabled=True,
+                provider=provider,
+                api_key=api_key,
+                api_key_env="",
+                model=model,
+                base_url=base_url,
+                timeout=timeout,
+            ),
+            opener=lambda api_request, timeout: request.urlopen(api_request, timeout=timeout),
+        )
 
     def review(
         self,
@@ -991,47 +965,7 @@ class ResponsesAPIClient:
         return raw_items if isinstance(raw_items, list) else []
 
     def _post(self, body: dict[str, Any]) -> dict[str, Any]:
-        payload = json.dumps(body, ensure_ascii=False).encode("utf-8")
-        req = request.Request(
-            f"{self.base_url}{OPENAI_RESPONSES_PATH}",
-            data=payload,
-            headers={
-                "Authorization": f"Bearer {self.api_key}",
-                "Content-Type": "application/json",
-            },
-            method="POST",
-        )
-        max_attempts = 6
-        for attempt in range(max_attempts):
-            try:
-                with request.urlopen(req, timeout=self.timeout) as response:
-                    return json.loads(response.read().decode("utf-8"))
-            except error.HTTPError as exc:
-                body_text = exc.read().decode("utf-8", errors="replace")
-                if exc.code not in {408, 409, 429, 500, 502, 503, 504} or attempt == max_attempts - 1:
-                    raise RuntimeError(
-                        f"{self.provider} Responses API error {exc.code}: {body_text[:800]}"
-                    ) from exc
-                retry_after = retry_after_seconds(body_text)
-            except (error.URLError, TimeoutError) as exc:
-                if attempt == max_attempts - 1:
-                    reason = getattr(exc, "reason", str(exc))
-                    raise RuntimeError(
-                        f"{self.provider} Responses API request failed: {reason}"
-                    ) from exc
-                retry_after = 0.0
-            delay = retry_after or min(2**attempt, 16)
-            time.sleep(delay + (attempt + 1) * 0.25)
-        raise RuntimeError(f"{self.provider} Responses API request failed after retries")
-
-
-def retry_after_seconds(body_text: str) -> float:
-    try:
-        payload = json.loads(body_text)
-        value = payload.get("error", {}).get("details", {}).get("retry_after", 0)
-        return max(float(value), 0.0)
-    except (AttributeError, TypeError, ValueError, json.JSONDecodeError):
-        return 0.0
+        return self._transport.create(body)
 
 
 # Backward-compatible import name for existing integrations.
@@ -1328,45 +1262,7 @@ REVIEW_RESPONSE_SCHEMA: dict[str, Any] = {
 
 
 def parse_response_json(response: dict[str, Any]) -> dict[str, Any]:
-    output_text = response.get("output_text")
-    if isinstance(output_text, str) and output_text.strip():
-        return parse_json_text(output_text)
-
-    parts: list[str] = []
-    for output in response.get("output", []):
-        if not isinstance(output, dict):
-            continue
-        for content in output.get("content", []):
-            if not isinstance(content, dict):
-                continue
-            if content.get("type") == "output_text" and isinstance(content.get("text"), str):
-                parts.append(content["text"])
-    if not parts:
-        status = str(response.get("status", "unknown"))
-        incomplete_details = response.get("incomplete_details")
-        usage = response.get("usage")
-        raise RuntimeError(
-            "LLM response did not contain structured output "
-            f"(status={status}, incomplete_details={incomplete_details!r}, usage={usage!r})"
-        )
-    return parse_json_text("\n".join(parts))
-
-
-def parse_json_text(text: str) -> dict[str, Any]:
-    stripped = text.strip()
-    if stripped.startswith("```"):
-        stripped = stripped.strip("`")
-        if stripped.lower().startswith("json"):
-            stripped = stripped[4:].strip()
-    try:
-        parsed = json.loads(stripped)
-    except json.JSONDecodeError:
-        start = stripped.find("{")
-        end = stripped.rfind("}")
-        if start == -1 or end == -1 or end <= start:
-            raise
-        parsed = json.loads(stripped[start : end + 1])
-    return parsed if isinstance(parsed, dict) else {"items": []}
+    return parse_responses_json(response)
 
 
 def load_source_review_items(
@@ -2450,12 +2346,12 @@ def normalize_decision(raw: dict[str, Any], item: SourceReviewItem) -> dict[str,
     if item.source_rule_id == BLUE_REVIEW_RULE_ID:
         reviewed_category = issue_type
         issue_type = BLUE_REVIEW_TYPE
-        if raw_issue_type == BLUE_REVIEW_TYPE:
-            pass
-        elif difference:
-            difference = f"{reviewed_category}: {difference}"
-        else:
-            difference = f"{reviewed_category} 결과"
+        if raw_issue_type != BLUE_REVIEW_TYPE:
+            difference = (
+                f"{reviewed_category}: {difference}"
+                if difference
+                else f"{reviewed_category} 결과"
+            )
 
     return {
         "status": status,

@@ -2,20 +2,18 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import dataclass, field
-from datetime import datetime
-import hashlib
 from pathlib import Path
 import re
-import sqlite3
 from typing import Iterable
 import xml.etree.ElementTree as ET
 from zipfile import ZipFile
 
 from app.core.contact_metadata import clean_source_text
-from app.db.schema import DB_PATH, connect, init_db
+from app.db.schema import DB_PATH
 from app.core.numeric_text import parse_numeric_value
 from app.ingest.anomaly import annotate_adjacent_duplicate_tables
 from app.ingest.cell_text import footnote_markers_from_texts, split_cell_text
+from app.ingest.repository import ImportedTable, ReportImportRepository
 from app.ingest.table_repairs import repair_region_split_rows
 from app.validation.models import restore_hyphenated_line_breaks
 
@@ -494,30 +492,6 @@ def guess_header_count(matrix: list[list[str]]) -> int:
     return 1 if matrix else 0
 
 
-def excel_column_name(index: int) -> str:
-    result = ""
-    current = index + 1
-    while current:
-        current, remainder = divmod(current - 1, 26)
-        result = chr(65 + remainder) + result
-    return result
-
-
-def cell_range(matrix: list[list[str]]) -> str:
-    if not matrix:
-        return ""
-    max_cols = max((len(row) for row in matrix), default=0)
-    return f"A1:{excel_column_name(max_cols - 1)}{len(matrix)}"
-
-
-def file_hash(source_path: Path) -> str:
-    digest = hashlib.sha256()
-    with source_path.open("rb") as source_file:
-        for chunk in iter(lambda: source_file.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
 def domain_from_code(code: str) -> str:
     chapter = code.split("-", 1)[0]
     return DOMAIN_BY_CHAPTER.get(chapter, "통계")
@@ -532,114 +506,69 @@ def import_hwpx(
     run_validation: bool = True,
 ) -> dict[str, int | str]:
     source_path = source_path.expanduser().resolve()
-    imported_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     parsed_tables = parse_hwpx(source_path)
-
-    connection = connect(db_path)
-    init_db(connection)
-
     report_title = title or f"{year} 행정안전통계연보"
-    source_hash = file_hash(source_path)
-
-    with connection:
-        connection.execute("DELETE FROM annual_reports WHERE file_hash = ?", (source_hash,))
-        cursor = connection.execute(
-            """
-            INSERT INTO annual_reports (
-                year, title, source_file_name, source_file_path, file_hash, imported_at
-            )
-            VALUES (?, ?, ?, ?, ?, ?)
-            """,
-            (year, report_title, source_path.name, str(source_path), source_hash, imported_at),
-        )
-        report_id = cursor.lastrowid
-
-        inserted_tables = 0
-        inserted_cells = 0
-        for table in annotate_adjacent_duplicate_tables(parsed_tables):
-            matrix, footnote_matrix = normalize_matrix_with_footnotes(
-                table.parts,
-                footnote_markers=footnote_markers_from_texts(table.notes),
-            )
-            if not matrix or max((len(row) for row in matrix), default=0) < 2:
-                continue
-
-            raw_text = " ".join(part.raw_text for part in table.parts)
-            unit, base_date = extract_unit_and_base_date(raw_text)
-            header_count = guess_header_count(matrix)
-            source = "\n".join(table.sources)
-            note = "\n".join(table.notes)
-
-            table_cursor = connection.execute(
-                """
-                INSERT INTO stat_tables (
-                    report_id, code, title, title_en, section_title, section_title_en,
-                    domain, unit, base_date, section_file, table_order, cell_range,
-                    note, source, extracted_at, raw_context
-                )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    report_id,
-                    table.code,
-                    table.title,
-                    table.title_en,
-                    table.section_title or table.title,
-                    table.section_title_en or table.title_en,
-                    domain_from_code(table.code),
-                    unit,
-                    base_date,
-                    table.section_file,
-                    table.table_order,
-                    cell_range(matrix),
-                    note,
-                    source,
-                    imported_at,
-                    raw_text[:5000],
-                ),
-            )
-            table_id = table_cursor.lastrowid
-            inserted_tables += 1
-
-            for row_index, row in enumerate(matrix):
-                for col_index, value in enumerate(row):
-                    stored_value = restore_hyphenated_line_breaks(value)
-                    connection.execute(
-                        """
-                        INSERT INTO stat_table_cells (
-                            table_id, row_index, col_index, text_value, numeric_value,
-                            is_header, footnote_marker
-                        )
-                        VALUES (?, ?, ?, ?, ?, ?, ?)
-                        """,
-                        (
-                            table_id,
-                            row_index,
-                            col_index,
-                            stored_value,
-                            numeric_value(stored_value),
-                            1 if row_index < header_count else 0,
-                            footnote_matrix[row_index][col_index],
-                        ),
-                    )
-                    inserted_cells += 1
-
-    connection.close()
+    imported_tables = prepare_hwpx_import_tables(parsed_tables)
+    result = ReportImportRepository(db_path).replace_report(
+        source_path=source_path,
+        year=year,
+        title=report_title,
+        tables=imported_tables,
+    )
 
     validation_issues = 0
     if run_validation:
         from app.validation.run_validations import run_validations
 
-        validation_result = run_validations(db_path)
+        validation_result = run_validations(db_path, report_id=result.report_id)
         validation_issues = int(validation_result["issues"])
 
     return {
         "db_path": str(db_path),
         "source_file": str(source_path),
-        "tables": inserted_tables,
-        "cells": inserted_cells,
+        "report_id": result.report_id,
+        "tables": result.table_count,
+        "cells": result.cell_count,
         "validation_issues": validation_issues,
     }
+
+
+def prepare_hwpx_import_tables(parsed_tables: list[LogicalTable]) -> list[ImportedTable]:
+    imported_tables: list[ImportedTable] = []
+    for table in annotate_adjacent_duplicate_tables(parsed_tables):
+        matrix, footnote_matrix = normalize_matrix_with_footnotes(
+            table.parts,
+            footnote_markers=footnote_markers_from_texts(table.notes),
+        )
+        if not matrix or max((len(row) for row in matrix), default=0) < 2:
+            continue
+        stored_matrix = [
+            [restore_hyphenated_line_breaks(value) for value in row]
+            for row in matrix
+        ]
+        raw_text = " ".join(part.raw_text for part in table.parts)
+        unit, base_date = extract_unit_and_base_date(raw_text)
+        imported_tables.append(
+            ImportedTable(
+                code=table.code,
+                title=table.title,
+                title_en=table.title_en,
+                section_title=table.section_title or table.title,
+                section_title_en=table.section_title_en or table.title_en,
+                domain=domain_from_code(table.code),
+                unit=unit,
+                base_date=base_date,
+                section_file=table.section_file,
+                table_order=table.table_order,
+                note="\n".join(table.notes),
+                source="\n".join(table.sources),
+                raw_context=raw_text,
+                matrix=stored_matrix,
+                header_count=guess_header_count(stored_matrix),
+                footnote_matrix=footnote_matrix,
+            )
+        )
+    return imported_tables
 
 
 def build_parser() -> argparse.ArgumentParser:

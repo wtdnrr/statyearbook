@@ -8,7 +8,7 @@ type LoadState =
   | { status: "success"; data: ReportPayload; error: null }
   | { status: "error"; data: null; error: string };
 
-export function useReport(reportId?: string) {
+export function useReport(reportId?: string, refreshKey = 0) {
   const [state, setState] = useState<LoadState>({
     status: "loading",
     data: null,
@@ -34,7 +34,7 @@ export function useReport(reportId?: string) {
     return () => {
       isMounted = false;
     };
-  }, [reportId]);
+  }, [refreshKey, reportId]);
 
   return state;
 }

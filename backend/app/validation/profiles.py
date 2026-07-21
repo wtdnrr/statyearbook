@@ -1,11 +1,13 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import hashlib
 from itertools import combinations
 import json
 import re
-from typing import Any, Protocol
+from typing import Any, Callable, Protocol
+
+from app.core.llm_client import ResponsesTransport, parse_responses_json, resolve_llm_client_settings
 
 from app.validation.catalog import rule_definition_payload, rule_spec
 from app.validation.curated_profiles import apply_curated_profile
@@ -25,6 +27,8 @@ from app.validation.rules import (
 
 
 PROFILE_VERSION = "validation-profile-v3"
+
+ProfileCheckGenerator = Callable[[ValidationTable], list[dict[str, Any]]]
 
 COMMON_RULE_IDS = [
     "sum",
@@ -93,11 +97,11 @@ class ProfileDraftProvider(Protocol):
         *,
         previous_profile: ValidationProfile | None = None,
     ) -> ProfileDraft:
-        raise NotImplementedError
+        ...
 
 
 class HeuristicProfileDraftProvider:
-    """Local stand-in for the future GPT-based profile drafter."""
+    """Deterministic first-pass profile drafter and LLM fallback."""
 
     source = "heuristic"
 
@@ -164,16 +168,17 @@ class HeuristicProfileDraftProvider:
 
 
 class GPTProfileDraftProvider:
-    """Future adapter point for GPT API based profile drafting.
-
-    The validation engine consumes the same ProfileDraft shape regardless of
-    whether this provider is backed by GPT, a rules UI, or local heuristics.
-    """
+    """Optional GPT second pass for new or structurally changed tables."""
 
     source = "llm"
 
-    def __init__(self, *, model: str = "gpt-5") -> None:
-        self.model = model
+    def __init__(self, *, model: str = "gpt-5-mini") -> None:
+        self._fallback = HeuristicProfileDraftProvider()
+        self._settings = resolve_llm_client_settings(
+            openai_model=model,
+            bizrouter_model=f"openai/{model}",
+        )
+        self.model = self._settings.model
 
     def draft(
         self,
@@ -181,7 +186,48 @@ class GPTProfileDraftProvider:
         *,
         previous_profile: ValidationProfile | None = None,
     ) -> ProfileDraft:
-        raise NotImplementedError("GPT API 연결 시 이 provider에서 표 구조를 해석해 ProfileDraft를 반환합니다.")
+        baseline = self._fallback.draft(table, previous_profile=previous_profile)
+        if not self._settings.enabled or not self._settings.api_key:
+            return baseline
+
+        body = profile_review_request(table, baseline, previous_profile, model=self.model)
+        try:
+            response = ResponsesTransport(self._settings).create(body)
+            decision = parse_responses_json(response)
+            checks = parse_llm_profile_checks(table, decision.get("checks_json"))
+        except Exception as error:
+            return replace(
+                baseline,
+                notes=f"{baseline.notes} LLM 프로파일 보강 실패로 휴리스틱 초안을 사용했습니다: {str(error)[:200]}",
+            )
+        if not checks:
+            return baseline
+
+        preserved_common = [
+            check
+            for check in baseline.rules.get("checks", [])
+            if isinstance(check, dict) and check.get("category") == "common"
+        ]
+        merged_checks = dedupe_check_specs([*preserved_common, *checks])
+        rules = {
+            **baseline.rules,
+            "checks": merged_checks,
+            "table_rules": [
+                check for check in merged_checks if check.get("category") in {"template", "table"}
+            ],
+            "requires_llm_review": False,
+        }
+        return ProfileDraft(
+            table_code=table.code,
+            table_title=table.title,
+            structure_signature=structure_signature(table),
+            table_type=baseline.table_type,
+            status=profile_status(merged_checks, needs_llm_review=False),
+            source=self.source,
+            rules=rules,
+            notes=str(decision.get("notes") or "LLM이 휴리스틱 산식 후보를 재검토한 프로파일입니다."),
+            llm_model=self.model,
+        )
 
 
 def structure_signature(table: ValidationTable) -> str:
@@ -192,8 +238,13 @@ def structure_signature(table: ValidationTable) -> str:
     payload = {
         "header_count": table.header_count,
         "column_count": column_count(table),
+        "row_count": len(table.matrix),
         "label_columns": leading_label_columns(table),
         "headers": headers,
+        "row_labels": [
+            normalize_text(combined_row_label(table, row) or table.row_label(row))
+            for _, row in table.data_rows()
+        ],
     }
     serialized = json.dumps(payload, ensure_ascii=False, sort_keys=True)
     return hashlib.sha256(serialized.encode("utf-8")).hexdigest()[:20]
@@ -710,25 +761,16 @@ def infer_profile_checks(
     templates: list[str],
 ) -> list[dict[str, Any]]:
     checks: list[dict[str, Any]] = []
-    checks.extend(common_check_specs(table))
-    if "regional_table" in templates:
-        checks.extend(region_total_check_specs(table))
-
-    checks.extend(infer_gender_total_rules(table))
-    checks.extend(infer_header_formula_rules(table))
-    checks.extend(infer_same_row_ratio_rules(table))
-    checks.extend(infer_following_component_ratio_rules(table))
-    checks.extend(infer_column_share_ratio_rules(table))
-    checks.extend(infer_growth_rate_rules(table))
-    checks.extend(infer_year_rows_change_rate_rules(table))
-    checks.extend(infer_named_row_ratio_rules(table))
-    checks.extend(infer_per_unit_ratio_rules(table))
-    checks.extend(infer_row_based_ratio_rules(table))
-    checks.extend(infer_row_based_growth_rate_rules(table))
-    checks.extend(infer_wrapped_total_cell_rules(table))
-    checks.extend(infer_total_column_rules(table))
-    checks.extend(infer_total_row_rules(table))
-    checks.extend(outlier_check_specs(table))
+    for generator in SHARED_PROFILE_GENERATORS:
+        checks.extend(generator(table))
+    for template in templates:
+        generator = TEMPLATE_PROFILE_GENERATORS.get(template)
+        if generator is not None:
+            checks.extend(generator(table))
+    for generator in TABLE_PROFILE_GENERATORS:
+        checks.extend(generator(table))
+    for generator in FINAL_PROFILE_GENERATORS:
+        checks.extend(generator(table))
 
     for check in checks:
         if check.get("check_group") == "ratio":
@@ -3065,3 +3107,210 @@ def find_column(table: ValidationTable, predicate: Any) -> int | None:
         if predicate(normalized, raw):
             return col_index
     return None
+
+
+# Profile compilation is deliberately ordered. Shared checks describe every
+# table, templates add broad structural behavior, table generators infer the
+# concrete formulas, and final checks analyze the resulting numeric series.
+SHARED_PROFILE_GENERATORS: tuple[ProfileCheckGenerator, ...] = (
+    common_check_specs,
+)
+
+TEMPLATE_PROFILE_GENERATORS: dict[str, ProfileCheckGenerator] = {
+    "regional_table": region_total_check_specs,
+}
+
+TABLE_PROFILE_GENERATORS: tuple[ProfileCheckGenerator, ...] = (
+    infer_gender_total_rules,
+    infer_header_formula_rules,
+    infer_same_row_ratio_rules,
+    infer_following_component_ratio_rules,
+    infer_column_share_ratio_rules,
+    infer_growth_rate_rules,
+    infer_year_rows_change_rate_rules,
+    infer_named_row_ratio_rules,
+    infer_per_unit_ratio_rules,
+    infer_row_based_ratio_rules,
+    infer_row_based_growth_rate_rules,
+    infer_wrapped_total_cell_rules,
+    infer_total_column_rules,
+    infer_total_row_rules,
+)
+
+FINAL_PROFILE_GENERATORS: tuple[ProfileCheckGenerator, ...] = (
+    outlier_check_specs,
+)
+
+
+LLM_PROFILE_RULE_TYPES = {
+    "region_total",
+    "column_sum",
+    "cell_sum",
+    "cell_relation_sum",
+    "row_sum",
+    "row_arithmetic",
+    "row_ratio",
+    "column_share_ratio",
+    "row_ratio_by_rows",
+    "weighted_average",
+    "growth_rate_scan",
+    "row_growth_rate",
+    "row_year_over_year_rate",
+    "row_year_over_year_change_amount",
+    "year_rows_change_rate",
+    "year_rows_change_amount",
+}
+
+PROFILE_REVIEW_RESPONSE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "checks_json": {"type": "string"},
+        "notes": {"type": "string"},
+    },
+    "required": ["checks_json", "notes"],
+    "additionalProperties": False,
+}
+
+
+def profile_review_request(
+    table: ValidationTable,
+    baseline: ProfileDraft,
+    previous_profile: ValidationProfile | None,
+    *,
+    model: str,
+) -> dict[str, Any]:
+    matrix = [
+        [clean_display_text(cell.text_value if cell else "") for cell in row[:40]]
+        for row in table.matrix[:200]
+    ]
+    payload = {
+        "table": {
+            "code": table.code,
+            "title": table.title,
+            "unit": table.unit,
+            "base_date": table.base_date,
+            "header_count": table.header_count,
+            "matrix": matrix,
+        },
+        "allowed_rule_types": sorted(LLM_PROFILE_RULE_TYPES),
+        "heuristic_checks": baseline.rules.get("checks", []),
+        "previous_checks": previous_profile.check_specs if previous_profile else [],
+        "instructions": (
+            "Return the complete executable calculation-check list as a JSON array encoded in checks_json. "
+            "Keep valid heuristic checks, remove unsupported formulas, and add only formulas directly evidenced "
+            "by totals, subtotals, ratios, averages, changes, header equations, and table hierarchy. Use zero-based "
+            "row and column indexes. A grand total must use its nearest subtotals rather than every leaf. Percent "
+            "totals must be recalculated from aggregate numerator and denominator. Do not add spelling, translation, "
+            "metadata, or outlier checks. Never invent a relationship that the labels or values do not support."
+        ),
+    }
+    return {
+        "model": model,
+        "reasoning": {"effort": "low"},
+        "input": [
+            {
+                "role": "system",
+                "content": [
+                    {
+                        "type": "input_text",
+                        "text": "You create deterministic validation profiles for Korean government statistical tables. Return only the requested structured result.",
+                    }
+                ],
+            },
+            {
+                "role": "user",
+                "content": [{"type": "input_text", "text": json.dumps(payload, ensure_ascii=False)}],
+            },
+        ],
+        "text": {
+            "format": {
+                "type": "json_schema",
+                "name": "validation_profile_review",
+                "strict": True,
+                "schema": PROFILE_REVIEW_RESPONSE_SCHEMA,
+            }
+        },
+        "max_output_tokens": 12000,
+    }
+
+
+def parse_llm_profile_checks(table: ValidationTable, raw_checks: Any) -> list[dict[str, Any]]:
+    if not isinstance(raw_checks, str):
+        return []
+    try:
+        parsed = json.loads(raw_checks)
+    except json.JSONDecodeError:
+        return []
+    if not isinstance(parsed, list):
+        return []
+
+    checks: list[dict[str, Any]] = []
+    for index, raw_check in enumerate(parsed):
+        if not isinstance(raw_check, dict):
+            continue
+        rule_type = str(raw_check.get("type") or "")
+        if rule_type not in LLM_PROFILE_RULE_TYPES:
+            continue
+        if not profile_coordinates_are_valid(table, raw_check):
+            continue
+        try:
+            confidence = float(raw_check.get("confidence", 0.7))
+        except (TypeError, ValueError):
+            confidence = 0.7
+        group = profile_group_for_type(rule_type)
+        check = {
+            **raw_check,
+            "id": str(raw_check.get("id") or f"profile.{table.code}.llm.{index + 1}"),
+            "type": rule_type,
+            "category": "table",
+            "label": str(raw_check.get("label") or rule_type),
+            "confidence": min(max(confidence, 0.0), 1.0),
+        }
+        checks.append(rule_spec(group, check))
+    return checks
+
+
+def profile_group_for_type(rule_type: str) -> str:
+    if rule_type in {
+        "row_ratio",
+        "column_share_ratio",
+        "row_ratio_by_rows",
+        "weighted_average",
+    }:
+        return "ratio"
+    if rule_type in {
+        "growth_rate_scan",
+        "row_growth_rate",
+        "row_year_over_year_rate",
+        "year_rows_change_rate",
+    }:
+        return "growth_rate"
+    return "sum"
+
+
+def profile_coordinates_are_valid(table: ValidationTable, spec: dict[str, Any]) -> bool:
+    row_limit = len(table.matrix)
+    column_limit = column_count(table)
+
+    def valid(value: Any, *, limit: int) -> bool:
+        return not isinstance(value, int) or 0 <= value < limit
+
+    for key, value in spec.items():
+        if key.endswith("_row") and not valid(value, limit=row_limit):
+            return False
+        if key.endswith("_column") and not valid(value, limit=column_limit):
+            return False
+        if key.endswith("_rows") and isinstance(value, list):
+            if any(not valid(item, limit=row_limit) for item in value):
+                return False
+        if key.endswith("_columns") and isinstance(value, list):
+            if any(not valid(item, limit=column_limit) for item in value):
+                return False
+        if key in {"operand_cells", "comparisons", "row_pairs", "terms"} and isinstance(value, list):
+            if any(isinstance(item, dict) and not profile_coordinates_are_valid(table, item) for item in value):
+                return False
+        if key == "row" and not valid(value, limit=row_limit):
+            return False
+        if key == "column" and not valid(value, limit=column_limit):
+            return False
+    return True

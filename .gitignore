@@ -24,6 +24,7 @@ htmlcov/
 # FastAPI / local database artifacts
 backend/app/db/*.sqlite
 backend/app/db/*.sqlite-*
+backend/uploads/
 *.db
 *.sqlite
 *.sqlite3

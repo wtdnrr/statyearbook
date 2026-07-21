@@ -485,49 +485,53 @@ def extract_blue_review_candidates(hwpx_path: Path) -> list[BlueReviewCandidate]
                     continue
                 table_depth = 0
                 current_code = ""
-                for event, element in ET.iterparse(archive.open(name), events=("start", "end")):
-                    tag_name = local_name(element.tag)
-                    if event == "start" and tag_name == "tbl":
-                        table_depth += 1
-                        continue
+                with archive.open(name) as section_stream:
+                    for event, element in ET.iterparse(
+                        section_stream,
+                        events=("start", "end"),
+                    ):
+                        tag_name = local_name(element.tag)
+                        if event == "start" and tag_name == "tbl":
+                            table_depth += 1
+                            continue
 
-                    if event == "end" and tag_name == "tbl":
-                        has_nested_table = any(
-                            local_name(descendant.tag) == "tbl"
-                            for descendant in element.iter()
-                            if descendant is not element
-                        )
-                        if not has_nested_table:
-                            table_text = normalize_review_text("".join(element.itertext()))
-                            code = table_code_from_title_container(element, table_text)
-                            if code:
-                                current_code = code
-                            append_blue_table_candidates(
+                        if event == "end" and tag_name == "tbl":
+                            has_nested_table = any(
+                                local_name(descendant.tag) == "tbl"
+                                for descendant in element.iter()
+                                if descendant is not element
+                            )
+                            if not has_nested_table:
+                                table_text = normalize_review_text("".join(element.itertext()))
+                                code = table_code_from_title_container(element, table_text)
+                                if code:
+                                    current_code = code
+                                append_blue_table_candidates(
+                                    candidates,
+                                    seen,
+                                    element,
+                                    blue_char_ids,
+                                    table_code=current_code,
+                                    context_kind="title" if code else "cell",
+                                )
+                            table_depth -= 1
+                            element.clear()
+                            continue
+
+                        if event == "end" and tag_name == "p" and table_depth == 0:
+                            append_blue_runs(
                                 candidates,
                                 seen,
                                 element,
                                 blue_char_ids,
                                 table_code=current_code,
-                                context_kind="title" if code else "cell",
+                                cell_text=normalize_review_text("".join(element.itertext())),
+                                row_text="",
+                                source_row_index=None,
+                                source_col_index=None,
+                                context_kind="paragraph",
                             )
-                        table_depth -= 1
-                        element.clear()
-                        continue
-
-                    if event == "end" and tag_name == "p" and table_depth == 0:
-                        append_blue_runs(
-                            candidates,
-                            seen,
-                            element,
-                            blue_char_ids,
-                            table_code=current_code,
-                            cell_text=normalize_review_text("".join(element.itertext())),
-                            row_text="",
-                            source_row_index=None,
-                            source_col_index=None,
-                            context_kind="paragraph",
-                        )
-                        element.clear()
+                            element.clear()
             return candidates
     except (ET.ParseError, OSError, zipfile.BadZipFile):
         return []

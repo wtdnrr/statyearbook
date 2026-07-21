@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import datetime
 import json
 from pathlib import Path
@@ -343,24 +344,13 @@ def build_validation_issues(
     if check_rows:
         specs_by_rule_id = load_rule_specs_by_id(connection, check_rows)
         return [
-            ValidationIssue(
-                id=f"check-{row['id']}",
-                rule_id=row["rule_id"],
-                type=display_check_type(row["check_type"]),
-                location=row["location"],
-                row_index=row["row_index"],
-                col_index=row["col_index"],
-                current_value=row["current_value"],
-                expected_value=row["expected_value"],
-                difference=row["difference"],
-                status=row["status"],
-                severity=row["severity"],
-                detail=row["detail"],
-                formula=row["formula"],
-                highlight_scope=highlight_scope_for(row, specs_by_rule_id.get(row["rule_id"]), header_count),
-                highlight_cells=highlight_cells_for(row, specs_by_rule_id.get(row["rule_id"]), matrix),
-                highlight_rows=highlight_rows_for(row, specs_by_rule_id.get(row["rule_id"])),
-                focus_cell=focus_cell_for(row, specs_by_rule_id.get(row["rule_id"]), matrix),
+            validation_issue_from_row(
+                row,
+                issue_id=f"check-{row['id']}",
+                check_type=row["check_type"],
+                header_count=header_count,
+                matrix=matrix,
+                spec=specs_by_rule_id.get(row["rule_id"]),
             )
             for row in check_rows
         ]
@@ -385,27 +375,72 @@ def build_validation_issues(
     ).fetchall()
 
     return [
-        ValidationIssue(
-            id=f"issue-{row['id']}",
-            rule_id=row["rule_id"],
-            type=display_check_type(row["issue_type"]),
-            location=row["location"],
-            row_index=row["row_index"],
-            col_index=row["col_index"],
-            current_value=row["current_value"],
-            expected_value=row["expected_value"],
-            difference=row["difference"],
-            status=row["status"],
-            severity=row["severity"],
-            detail=row["detail"],
-            formula=row["formula"],
-            highlight_scope=fallback_highlight_scope(row, header_count),
-            highlight_cells=fallback_highlight_cells(row),
-            highlight_rows=fallback_highlight_rows(row),
-            focus_cell=fallback_focus_cell(row),
+        validation_issue_from_row(
+            row,
+            issue_id=f"issue-{row['id']}",
+            check_type=row["issue_type"],
+            header_count=header_count,
+            matrix=matrix,
+            spec=None,
         )
         for row in rows
     ]
+
+
+@dataclass(frozen=True)
+class ResolvedHighlights:
+    scope: str
+    cells: list[ValidationHighlightCell]
+    rows: list[ValidationHighlightRow]
+    focus_cell: ValidationHighlightCell | None
+
+
+def validation_issue_from_row(
+    row: sqlite3.Row,
+    *,
+    issue_id: str,
+    check_type: str,
+    header_count: int,
+    matrix: list[list[Any]] | None,
+    spec: dict[str, Any] | None,
+) -> ValidationIssue:
+    highlights = resolve_highlights(row, spec=spec, header_count=header_count, matrix=matrix)
+    return ValidationIssue(
+        id=issue_id,
+        rule_id=row["rule_id"],
+        type=display_check_type(check_type),
+        location=row["location"],
+        row_index=row["row_index"],
+        col_index=row["col_index"],
+        current_value=row["current_value"],
+        expected_value=row["expected_value"],
+        difference=row["difference"],
+        status=row["status"],
+        severity=row["severity"],
+        detail=row["detail"],
+        formula=row["formula"],
+        highlight_scope=highlights.scope,
+        highlight_cells=highlights.cells,
+        highlight_rows=highlights.rows,
+        focus_cell=highlights.focus_cell,
+    )
+
+
+def resolve_highlights(
+    row: sqlite3.Row,
+    *,
+    spec: dict[str, Any] | None,
+    header_count: int,
+    matrix: list[list[Any]] | None,
+) -> ResolvedHighlights:
+    cells = highlight_cells_for(row, spec, matrix)
+    focus = next((cell for cell in cells if cell.role == "target"), None)
+    return ResolvedHighlights(
+        scope=highlight_scope_for(row, spec, header_count),
+        cells=cells,
+        rows=highlight_rows_for(row, spec),
+        focus_cell=focus or next(iter(cells), None),
+    )
 
 
 def load_rule_specs_by_id(
@@ -863,16 +898,6 @@ def highlight_rows_for(row: sqlite3.Row, spec: dict[str, Any] | None) -> list[Va
     return []
 
 
-def focus_cell_for(
-    row: sqlite3.Row,
-    spec: dict[str, Any] | None,
-    matrix: list[list[Any]] | None = None,
-) -> ValidationHighlightCell | None:
-    cells = highlight_cells_for(row, spec, matrix)
-    target = next((cell for cell in cells if cell.role == "target"), None)
-    return target or next(iter(cells), None)
-
-
 def highlight_scope_for(row: sqlite3.Row, spec: dict[str, Any] | None, header_count: int) -> str:
     row_index = int_or_none(row["row_index"])
     if spec is None:
@@ -916,11 +941,6 @@ def fallback_highlight_rows(row: sqlite3.Row) -> list[ValidationHighlightRow]:
         return []
     row_highlight = highlight_row(int_or_none(row["row_index"]), "target")
     return [row_highlight] if row_highlight else []
-
-
-def fallback_focus_cell(row: sqlite3.Row) -> ValidationHighlightCell | None:
-    cells = fallback_highlight_cells(row)
-    return cells[0] if cells else None
 
 
 def fallback_highlight_scope(row: sqlite3.Row, header_count: int) -> str:

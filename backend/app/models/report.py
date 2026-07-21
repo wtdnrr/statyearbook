@@ -210,3 +210,28 @@ class ValidationRunResult(BaseModel):
     report_id: int
     tables: int
     issues: int
+    language_candidates: int = 0
+    language_pending: int = 0
+    language_reused: int = 0
+    language_status: str = "대기"
+
+
+class ReportProcessingJob(BaseModel):
+    id: int
+    report_id: int | None = None
+    run_id: int | None = None
+    source_file_name: str
+    source_file_path: str
+    source_type: str
+    report_year: int
+    report_title: str
+    options_json: str
+    status: str
+    current_stage: str
+    error_message: str = ""
+    result_json: str = "{}"
+    created_at: str
+    started_at: str | None = None
+    completed_at: str | None = None
+    updated_at: str
+    stages: list[dict] = Field(default_factory=list)
