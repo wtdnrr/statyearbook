@@ -421,6 +421,90 @@ function highlightForCheck(_part: StatTablePart, check: DisplayCheck | undefined
   };
 }
 
+type SumDirection = "row" | "column" | "mixed" | "other";
+
+function sourceCheckSumDirection(check: ValidationIssue): SumDirection {
+  const target = targetCellForCheck(check);
+  const related = relatedCellsForCheck(check);
+
+  if (target && related.length > 0) {
+    const sameRow = related.every((cell) => cell.row_index === target.row_index);
+    const sameColumn = related.every((cell) => cell.col_index === target.col_index);
+    if (sameRow && !sameColumn) {
+      return "row";
+    }
+    if (sameColumn && !sameRow) {
+      return "column";
+    }
+    if (!sameRow && !sameColumn) {
+      return "mixed";
+    }
+  }
+
+  const ruleContext = [check.rule_id, check.formula, check.detail]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+  if (/column[_ -]?(sum|total)|region[_ -]?total|열\s*(방향|기준)?\s*합계/.test(ruleContext)) {
+    return "column";
+  }
+  if (/row[_ -]?(sum|total)|행\s*(방향|기준)?\s*합계/.test(ruleContext)) {
+    return "row";
+  }
+  return "other";
+}
+
+function sumDirection(check: DisplayCheck): SumDirection {
+  if (check.type !== "합계 검수") {
+    return "other";
+  }
+
+  const directions = new Set(
+    check.checks
+      .map((sourceCheck) => sourceCheckSumDirection(sourceCheck))
+      .filter((direction) => direction !== "other"),
+  );
+  if (directions.size === 1) {
+    return directions.values().next().value ?? "other";
+  }
+  return directions.size > 1 ? "mixed" : "other";
+}
+
+function clusterSimilarSumChecks(checks: DisplayCheck[]) {
+  const originalPositions = new Map(checks.map((check, index) => [check.id, index]));
+  const firstDirectionPositions = new Map<SumDirection, number>();
+
+  checks.forEach((check, index) => {
+    if (check.type !== "합계 검수") {
+      return;
+    }
+    const direction = sumDirection(check);
+    if (!firstDirectionPositions.has(direction)) {
+      firstDirectionPositions.set(direction, index);
+    }
+  });
+
+  return [...checks].sort((left, right) => {
+    const typeOrder =
+      (checkTypeOrder.get(left.type) ?? 999) -
+      (checkTypeOrder.get(right.type) ?? 999);
+    if (typeOrder !== 0) {
+      return typeOrder;
+    }
+
+    if (left.type === "합계 검수") {
+      const directionOrder =
+        (firstDirectionPositions.get(sumDirection(left)) ?? 999) -
+        (firstDirectionPositions.get(sumDirection(right)) ?? 999);
+      if (directionOrder !== 0) {
+        return directionOrder;
+      }
+    }
+
+    return (originalPositions.get(left.id) ?? 999) - (originalPositions.get(right.id) ?? 999);
+  });
+}
+
 function sortChecksByCalculationHierarchy(checks: DisplayCheck[]) {
   if (checks.length < 2) {
     return checks;
@@ -494,14 +578,9 @@ function sortChecksByCalculationHierarchy(checks: DisplayCheck[]) {
     ordered.push(...unresolved);
   }
 
-  // A calculation hierarchy can contain a cycle when several checks reuse the
-  // same aggregate cell. Keep the hierarchy order within each check type, but
-  // always enforce the product-level type order as the final presentation key.
-  return ordered.sort(
-    (left, right) =>
-      (checkTypeOrder.get(left.type) ?? 999) -
-      (checkTypeOrder.get(right.type) ?? 999),
-  );
+  // Keep the hierarchy order inside each calculation direction, then place
+  // row-based and column-based sums in contiguous navigation groups.
+  return clusterSimilarSumChecks(ordered);
 }
 
 function groupChecksForDisplay(part: StatTablePart, sourceChecks: ValidationIssue[]): DisplayCheck[] {
