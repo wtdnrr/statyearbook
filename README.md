@@ -136,8 +136,9 @@ AUTO_IMPORT_INCLUDE_LLM=1
 
 ### Vercel 프론트엔드
 
-Vercel에서 같은 GitHub 저장소를 연결하고 Project Root를 `frontend`로 설정합니다.
-`frontend/vercel.json`은 Vite 빌드 결과인 `dist`를 배포합니다.
+Vercel에서 같은 GitHub 저장소를 연결합니다. Project Root를 `frontend`로 설정해도
+되고, 설정을 건드리지 않고 저장소 루트로 두어도 됩니다. 루트 `vercel.json`은
+`frontend` 앱을 빌드해 `frontend/dist`를 배포하도록 지정합니다.
 
 필수 환경 변수:
 
