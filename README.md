@@ -99,6 +99,55 @@ PROFILE_LLM_MODEL=gpt-5-mini
 제외되어 있습니다. 메타정보는 존재 여부만 계산 규칙으로 확인하며, 주석·출처
 본문을 언어 검수 대상으로 보내지 않습니다.
 
+## 배포
+
+현재 배포 기준은 `Vercel 프론트엔드 + Railway 백엔드 + Railway Postgres`입니다.
+로컬 개발은 계속 SQLite를 사용하고, Railway 환경에 `DATABASE_URL`이 있으면
+백엔드는 자동으로 Postgres를 사용합니다.
+
+### Railway 백엔드
+
+Railway에서 GitHub 저장소를 연결한 뒤 백엔드 서비스를 만듭니다. 저장소 루트의
+`railway.json`은 루트 `Dockerfile`로 FastAPI 서버를 빌드합니다.
+
+필수 환경 변수:
+
+```dotenv
+DATABASE_URL=${{Postgres.DATABASE_URL}}
+UPLOAD_DIR=/data/uploads
+ALLOWED_ORIGINS=https://your-vercel-project.vercel.app
+AUTO_IMPORT_INCLUDE_LLM=0
+PROFILE_LLM_ENABLED=0
+```
+
+LLM 검수를 운영에서 자동 실행하려면 아래처럼 명시적으로 켭니다.
+
+```dotenv
+LLM_PROVIDER=bizrouter
+LLM_REVIEW_ENABLED=1
+BIZROUTER_API_KEY=발급받은_키
+BIZROUTER_MODEL=openai/gpt-5-mini
+AUTO_IMPORT_INCLUDE_LLM=1
+```
+
+업로드 원본 파일을 재검수에도 보존하려면 Railway Volume을 `/data`에 연결합니다.
+볼륨이 없어도 업로드 직후 DB 저장과 검수는 가능하지만, 재배포 뒤 원본 파일 경로는
+유지되지 않을 수 있습니다.
+
+### Vercel 프론트엔드
+
+Vercel에서 같은 GitHub 저장소를 연결하고 Project Root를 `frontend`로 설정합니다.
+`frontend/vercel.json`은 Vite 빌드 결과인 `dist`를 배포합니다.
+
+필수 환경 변수:
+
+```dotenv
+VITE_API_BASE_URL=https://your-railway-backend.up.railway.app
+```
+
+Vercel 배포 URL이 확정되면 Railway의 `ALLOWED_ORIGINS` 값을 그 URL로 갱신한 뒤
+백엔드 서비스를 재배포합니다.
+
 ## 구조
 
 ```text

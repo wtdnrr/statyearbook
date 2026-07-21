@@ -4,6 +4,8 @@ import re
 import sqlite3
 from typing import Callable
 
+from app.core.env import env_value, load_local_env_file
+from app.db.postgres import PostgresConnection
 from app.validation.catalog import REQUIRED_RULE_DEFINITIONS
 
 
@@ -321,7 +323,12 @@ ON linguistic_review_cache(review_type, prompt_version, reviewed_model);
 """
 
 
-def connect(db_path: Path | None = None) -> sqlite3.Connection:
+def connect(db_path: Path | None = None) -> sqlite3.Connection | PostgresConnection:
+    load_local_env_file()
+    database_url = env_value("DATABASE_URL")
+    if database_url and (db_path is None or Path(db_path) == DB_PATH):
+        return PostgresConnection(database_url)
+
     resolved_path = db_path or DB_PATH
     resolved_path.parent.mkdir(parents=True, exist_ok=True)
     connection = sqlite3.connect(resolved_path)
@@ -330,7 +337,7 @@ def connect(db_path: Path | None = None) -> sqlite3.Connection:
     return connection
 
 
-def init_db(connection: sqlite3.Connection) -> None:
+def init_db(connection: sqlite3.Connection | PostgresConnection) -> None:
     connection.executescript(SCHEMA_SQL)
     ensure_column(connection, "stat_table_cells", "footnote_marker", "TEXT NOT NULL DEFAULT ''")
     ensure_column(connection, "translation_glossary", "subcategory", "TEXT NOT NULL DEFAULT ''")
@@ -375,15 +382,32 @@ def init_db(connection: sqlite3.Connection) -> None:
 
 
 def ensure_column(
-    connection: sqlite3.Connection,
+    connection: sqlite3.Connection | PostgresConnection,
     table_name: str,
     column_name: str,
     column_definition: str,
 ) -> None:
-    columns = {row["name"] for row in connection.execute(f"PRAGMA table_info({table_name})")}
+    if is_postgres_connection(connection):
+        columns = {
+            row["name"]
+            for row in connection.execute(
+                """
+                SELECT column_name AS name
+                FROM information_schema.columns
+                WHERE table_schema = 'public' AND table_name = ?
+                """,
+                (table_name,),
+            )
+        }
+    else:
+        columns = {row["name"] for row in connection.execute(f"PRAGMA table_info({table_name})")}
     if column_name in columns:
         return
     connection.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_definition}")
+
+
+def is_postgres_connection(connection: object) -> bool:
+    return bool(getattr(connection, "is_postgres", False))
 
 
 def apply_data_migration(

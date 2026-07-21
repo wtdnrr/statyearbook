@@ -58,16 +58,15 @@ def rebuild_linguistic_review_scope(
                 report_id=report_id,
                 run_id=run_id,
             )
-            blue_candidates = int(
-                connection.execute(
-                    """
-                    SELECT COUNT(*)
-                    FROM linguistic_review_candidates
-                    WHERE run_id = ? AND candidate_kind LIKE 'blue_text%'
-                    """,
-                    (run_id,),
-                ).fetchone()[0]
-            )
+            blue_row = connection.execute(
+                """
+                SELECT COUNT(*) AS candidate_count
+                FROM linguistic_review_candidates
+                WHERE run_id = ? AND candidate_kind LIKE 'blue_text%'
+                """,
+                (run_id,),
+            ).fetchone()
+            blue_candidates = int(blue_row["candidate_count"] if blue_row else 0)
 
     # A legacy run may not have blue candidates yet. Populate them once, but do
     # not recreate existing reviewed candidates when only language scope changes.

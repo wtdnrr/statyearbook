@@ -1,0 +1,12 @@
+.git
+.venv
+__pycache__
+.pytest_cache
+.mypy_cache
+.DS_Store
+backend/app/db/*.sqlite
+backend/uploads
+exports
+frontend/node_modules
+frontend/dist
+*.log
