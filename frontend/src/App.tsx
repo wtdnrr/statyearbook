@@ -5,8 +5,8 @@ import { DetailView } from "./components/DetailView";
 import { PressPage } from "./components/PressPage";
 import { ReportWorkspace } from "./components/ReportWorkspace";
 import { useReport } from "./hooks/useReport";
-import { uploadLegacyOverlay, uploadReport, waitForImport } from "./api/reportApi";
-import type { TableStatus } from "./types";
+import { fetchTable, uploadLegacyOverlay, uploadReport, waitForImport } from "./api/reportApi";
+import type { StatTable, TableStatus } from "./types";
 import {
   DEFAULT_HIDDEN_VALIDATION_TYPES,
   summaryWithValidationVisibility,
@@ -21,6 +21,8 @@ export default function App() {
   const [activeSection, setActiveSection] = useState<AppSection>("annual");
   const [selectedTableId, setSelectedTableId] = useState<string>("");
   const [detailTableId, setDetailTableId] = useState<string | null>(null);
+  const [detailTable, setDetailTable] = useState<StatTable | null>(null);
+  const [detailStatus, setDetailStatus] = useState<"idle" | "loading" | "error">("idle");
   const [selectedReportId, setSelectedReportId] = useState("");
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState<FilterValue>("all");
@@ -46,15 +48,24 @@ export default function App() {
         : undefined,
     [report.data, tables],
   );
-  const detailTable = tables.find((table) => table.id === detailTableId);
-
   function handleSelect(tableId: string) {
     setSelectedTableId(tableId);
   }
 
-  function handleOpen(tableId: string) {
+  async function handleOpen(tableId: string) {
     setSelectedTableId(tableId);
     setDetailTableId(tableId);
+    setDetailStatus("loading");
+    setDetailTable(null);
+    try {
+      const table = await fetchTable(tableId, selectedReportId || undefined);
+      setDetailTable(table);
+      setDetailStatus("idle");
+    } catch (error) {
+      setDetailStatus("error");
+      setDetailTableId(null);
+      window.alert(error instanceof Error ? error.message : "통계표 상세 데이터를 불러오지 못했습니다.");
+    }
   }
 
   function handlePressTableOpen(tableId: string) {
@@ -67,6 +78,8 @@ export default function App() {
     setSelectedReportId(reportId);
     setSelectedTableId("");
     setDetailTableId(null);
+    setDetailTable(null);
+    setDetailStatus("idle");
     setFilter("all");
     setQuery("");
     setTableListScrollTop(0);
@@ -92,6 +105,8 @@ export default function App() {
       setSelectedReportId(completed.report_id ? String(completed.report_id) : "");
       setSelectedTableId("");
       setDetailTableId(null);
+      setDetailTable(null);
+      setDetailStatus("idle");
       setReportRefreshKey((current) => current + 1);
       setUploadState("idle");
     } catch (error) {
@@ -118,6 +133,8 @@ export default function App() {
       setSelectedReportId(completed.report_id ? String(completed.report_id) : "");
       setSelectedTableId("");
       setDetailTableId(null);
+      setDetailTable(null);
+      setDetailStatus("idle");
       setReportRefreshKey((current) => current + 1);
       setLegacyUploadState("idle");
     } catch (error) {
@@ -134,6 +151,10 @@ export default function App() {
     return <div className="state-page state-page--error">{report.error}</div>;
   }
 
+  if (detailTableId && detailStatus === "loading") {
+    return <div className="state-page">상세 데이터를 불러오는 중입니다.</div>;
+  }
+
   if (detailTable) {
     return (
       <DetailView
@@ -143,7 +164,11 @@ export default function App() {
         onValidationTypeVisibilityChange={handleValidationTypeVisibility}
         onShowAllValidationTypes={() => setHiddenValidationTypes(new Set())}
         onHideAllValidationTypes={() => setHiddenValidationTypes(new Set(validationTypes))}
-        onBack={() => setDetailTableId(null)}
+        onBack={() => {
+          setDetailTableId(null);
+          setDetailTable(null);
+          setDetailStatus("idle");
+        }}
       />
     );
   }

@@ -10,6 +10,7 @@ from typing import Any
 from urllib.parse import unquote
 
 from app.core.contact_metadata import parse_contact_metadata
+from app.core.env import env_value, load_local_env_file
 from app.db.schema import DB_PATH, connect, init_db
 from app.models.report import (
     ChangeItem,
@@ -47,36 +48,53 @@ class SQLiteReportService:
         self._db_path = db_path
 
     def is_available(self) -> bool:
-        if not self._db_path.exists():
+        load_local_env_file()
+        has_database_url = bool(env_value("DATABASE_URL"))
+        if not has_database_url and not self._db_path.exists():
             return False
 
         try:
             with connect(self._db_path) as connection:
                 init_db(connection)
                 row = connection.execute("SELECT COUNT(*) AS count FROM stat_tables").fetchone()
-        except sqlite3.DatabaseError:
+        except Exception:
             return False
 
         return bool(row and row["count"] > 0)
 
     def get_payload(self) -> ReportPayload:
-        return ReportPayload(
-            summary=self.get_summary(),
-            tables=self.list_tables(),
-            press_insights=self.get_press_insights(),
-            available_reports=self.list_reports(),
-        )
+        return self.get_payload_for_report()
 
     def get_payload_for_report(self, report_id: int | None = None) -> ReportPayload:
+        report = self._resolve_report(report_id)
+        tables = self.list_tables(
+            report_id,
+            include_highlights=False,
+            include_passing_checks=False,
+        )
         return ReportPayload(
-            summary=self.get_summary(report_id),
-            tables=self.list_tables(report_id),
-            press_insights=self.get_press_insights(report_id),
+            summary=self._summary_from_tables(report, tables),
+            tables=tables,
+            press_insights=self._press_insights_from_tables(tables),
             available_reports=self.list_reports(),
         )
 
     def get_summary(self, report_id: int | None = None) -> ReportSummary:
         report = self._resolve_report(report_id)
+        return self._summary_from_tables(
+            report,
+            self.list_tables(
+                report_id,
+                include_highlights=False,
+                include_passing_checks=False,
+            ),
+        )
+
+    def _summary_from_tables(
+        self,
+        report: sqlite3.Row | None,
+        tables: list[StatTable],
+    ) -> ReportSummary:
         if report is None:
             return ReportSummary(
                 report_id=None,
@@ -89,7 +107,6 @@ class SQLiteReportService:
                 issue_counts={},
             )
 
-        tables = self.list_tables(report_id)
         issue_counts: dict[str, int] = {}
         for table in tables:
             for check in table.checks:
@@ -108,7 +125,13 @@ class SQLiteReportService:
             issue_counts=issue_counts,
         )
 
-    def list_tables(self, report_id: int | None = None) -> list[StatTable]:
+    def list_tables(
+        self,
+        report_id: int | None = None,
+        *,
+        include_highlights: bool = True,
+        include_passing_checks: bool = True,
+    ) -> list[StatTable]:
         report = self._resolve_report(report_id)
         if report is None:
             return []
@@ -125,15 +148,140 @@ class SQLiteReportService:
                 (report["id"],),
             ).fetchall()
             run_id = self._latest_run_id(connection, report["id"])
+            cells_by_table = load_cells_by_table(connection, [int(row["id"]) for row in rows])
+            checks_by_table: dict[int, list[sqlite3.Row]] = {}
+            issue_rows_by_table: dict[int, list[sqlite3.Row]] = {}
+            specs_by_rule_id: dict[str, dict[str, Any]] = {}
+            if run_id is not None:
+                check_rows = load_checks_for_tables(
+                    connection,
+                    run_id,
+                    [int(row["id"]) for row in rows],
+                    include_passing=include_passing_checks,
+                )
+                checks_by_table = group_rows_by_int(check_rows, "table_id")
+                specs_by_rule_id = load_rule_specs_by_id(connection, check_rows)
+                issue_rows_by_table = group_rows_by_int(
+                    load_issue_rows_for_tables(
+                        connection,
+                        run_id,
+                        [
+                            int(row["id"])
+                            for row in rows
+                            if not checks_by_table.get(int(row["id"]))
+                        ],
+                    ),
+                    "table_id",
+                )
 
-            physical_tables = [self._row_to_table(connection, report, row, run_id) for row in rows]
+            physical_tables = [
+                self._row_to_table(
+                    connection,
+                    report,
+                    row,
+                    run_id,
+                    cells=cells_by_table.get(int(row["id"]), []),
+                    check_rows=checks_by_table.get(int(row["id"]), []),
+                    issue_rows=issue_rows_by_table.get(int(row["id"]), []),
+                    specs_by_rule_id=specs_by_rule_id,
+                    include_highlights=include_highlights,
+                )
+                for row in rows
+            ]
             return group_table_parts(physical_tables)
 
     def get_table(self, table_id: str, report_id: int | None = None) -> StatTable | None:
-        return next((table for table in self.list_tables(report_id) if table.id == table_id), None)
+        report = self._resolve_report(report_id)
+        if report is None:
+            return None
+
+        with connect(self._db_path) as connection:
+            init_db(connection)
+            table_rows = self._table_rows_for_detail(connection, report, table_id)
+            if not table_rows:
+                return None
+
+            run_id = self._latest_run_id(connection, report["id"])
+            table_ids = [int(row["id"]) for row in table_rows]
+            cells_by_table = load_cells_by_table(connection, table_ids)
+            check_rows = load_checks_for_tables(connection, run_id, table_ids) if run_id is not None else []
+            checks_by_table = group_rows_by_int(check_rows, "table_id")
+            specs_by_rule_id = load_rule_specs_by_id(connection, check_rows)
+            issue_rows_by_table = (
+                group_rows_by_int(
+                    load_issue_rows_for_tables(
+                        connection,
+                        run_id,
+                        [
+                            int(row["id"])
+                            for row in table_rows
+                            if not checks_by_table.get(int(row["id"]))
+                        ],
+                    ),
+                    "table_id",
+                )
+                if run_id is not None
+                else {}
+            )
+
+            physical_tables = [
+                self._row_to_table(
+                    connection,
+                    report,
+                    row,
+                    run_id,
+                    cells=cells_by_table.get(int(row["id"]), []),
+                    check_rows=checks_by_table.get(int(row["id"]), []),
+                    issue_rows=issue_rows_by_table.get(int(row["id"]), []),
+                    specs_by_rule_id=specs_by_rule_id,
+                    include_highlights=True,
+                )
+                for row in table_rows
+            ]
+            grouped = group_table_parts(physical_tables)
+            return grouped[0] if grouped else None
+
+    def _table_rows_for_detail(
+        self,
+        connection: sqlite3.Connection,
+        report: sqlite3.Row,
+        table_id: str,
+    ) -> list[sqlite3.Row]:
+        if table_id.startswith("db-"):
+            raw_id = table_id.removeprefix("db-")
+            if not raw_id.isdigit():
+                return []
+            return connection.execute(
+                """
+                SELECT *
+                FROM stat_tables
+                WHERE report_id = ? AND id = ?
+                ORDER BY table_order, id
+                """,
+                (report["id"], int(raw_id)),
+            ).fetchall()
+
+        base_code = table_id.removeprefix("group-")
+        return connection.execute(
+            """
+            SELECT *
+            FROM stat_tables
+            WHERE report_id = ?
+              AND (code = ? OR code LIKE ?)
+            ORDER BY table_order, id
+            """,
+            (report["id"], base_code, f"{base_code} 표%"),
+        ).fetchall()
 
     def get_press_insights(self, report_id: int | None = None) -> list[PressInsight]:
-        tables = self.list_tables(report_id)
+        tables = self.list_tables(
+            report_id,
+            include_highlights=False,
+            include_passing_checks=False,
+        )
+        return self._press_insights_from_tables(tables)
+
+    def _press_insights_from_tables(self, tables: list[StatTable]) -> list[PressInsight]:
         insights: list[PressInsight] = []
 
         for table in tables:
@@ -217,16 +365,23 @@ class SQLiteReportService:
         report: sqlite3.Row,
         table_row: sqlite3.Row,
         run_id: int | None,
+        *,
+        cells: list[sqlite3.Row] | None = None,
+        check_rows: list[sqlite3.Row] | None = None,
+        issue_rows: list[sqlite3.Row] | None = None,
+        specs_by_rule_id: dict[str, dict[str, Any]] | None = None,
+        include_highlights: bool = True,
     ) -> StatTable:
-        cells = connection.execute(
-            """
-            SELECT row_index, col_index, text_value, numeric_value, is_header, footnote_marker
-            FROM stat_table_cells
-            WHERE table_id = ?
-            ORDER BY row_index, col_index
-            """,
-            (table_row["id"],),
-        ).fetchall()
+        if cells is None:
+            cells = connection.execute(
+                """
+                SELECT row_index, col_index, text_value, numeric_value, is_header, footnote_marker
+                FROM stat_table_cells
+                WHERE table_id = ?
+                ORDER BY row_index, col_index
+                """,
+                (table_row["id"],),
+            ).fetchall()
 
         matrix = matrix_from_cells(cells)
         footnote_matrix = footnote_matrix_from_cells(cells)
@@ -240,7 +395,17 @@ class SQLiteReportService:
         )
         rows = build_rows(matrix, columns, header_count, footnote_matrix, label_column_indexes)
         table_id = f"db-{table_row['id']}"
-        checks = build_validation_issues(connection, run_id, table_row["id"], header_count, matrix)
+        checks = build_validation_issues(
+            connection,
+            run_id,
+            table_row["id"],
+            header_count,
+            matrix,
+            check_rows=check_rows,
+            issue_rows=issue_rows,
+            specs_by_rule_id=specs_by_rule_id,
+            include_highlights=include_highlights,
+        )
         status, status_label = status_from_checks(checks)
         contact = parse_contact_metadata(table_row["source"] or "")
 
@@ -308,43 +473,155 @@ class SQLiteReportService:
         return int(row["id"]) if row else None
 
 
+def chunks(values: list[int], size: int = 800) -> list[list[int]]:
+    return [values[index : index + size] for index in range(0, len(values), size)]
+
+
+def group_rows_by_int(rows: list[sqlite3.Row], key: str) -> dict[int, list[sqlite3.Row]]:
+    grouped: dict[int, list[sqlite3.Row]] = {}
+    for row in rows:
+        grouped.setdefault(int(row[key]), []).append(row)
+    return grouped
+
+
+def load_cells_by_table(
+    connection: sqlite3.Connection,
+    table_ids: list[int],
+) -> dict[int, list[sqlite3.Row]]:
+    rows: list[sqlite3.Row] = []
+    for chunk in chunks(table_ids):
+        placeholders = ", ".join("?" for _ in chunk)
+        rows.extend(
+            connection.execute(
+                f"""
+                SELECT table_id, row_index, col_index, text_value, numeric_value, is_header, footnote_marker
+                FROM stat_table_cells
+                WHERE table_id IN ({placeholders})
+                ORDER BY table_id, row_index, col_index
+                """,
+                chunk,
+            ).fetchall()
+        )
+    return group_rows_by_int(rows, "table_id")
+
+
+def load_checks_for_tables(
+    connection: sqlite3.Connection,
+    run_id: int,
+    table_ids: list[int],
+    *,
+    include_passing: bool = True,
+) -> list[sqlite3.Row]:
+    rows: list[sqlite3.Row] = []
+    status_filter = "" if include_passing else "AND status <> '정상'"
+    for chunk in chunks(table_ids):
+        placeholders = ", ".join("?" for _ in chunk)
+        rows.extend(
+            connection.execute(
+                f"""
+                SELECT *
+                FROM validation_checks
+                WHERE run_id = ? AND table_id IN ({placeholders})
+                {status_filter}
+                ORDER BY
+                    table_id,
+                    CASE status
+                        WHEN '오류 의심' THEN 0
+                        WHEN '확인 필요' THEN 1
+                        WHEN '정상' THEN 2
+                        ELSE 3
+                    END,
+                    CASE severity
+                        WHEN 'critical' THEN 0
+                        WHEN 'warning' THEN 1
+                        ELSE 2
+                    END,
+                    row_index IS NULL,
+                    row_index,
+                    col_index,
+                    id
+                """,
+                [run_id, *chunk],
+            ).fetchall()
+        )
+    return rows
+
+
+def load_issue_rows_for_tables(
+    connection: sqlite3.Connection,
+    run_id: int,
+    table_ids: list[int],
+) -> list[sqlite3.Row]:
+    rows: list[sqlite3.Row] = []
+    for chunk in chunks(table_ids):
+        placeholders = ", ".join("?" for _ in chunk)
+        rows.extend(
+            connection.execute(
+                f"""
+                SELECT *
+                FROM validation_issues
+                WHERE run_id = ? AND table_id IN ({placeholders})
+                ORDER BY
+                    table_id,
+                    CASE severity
+                        WHEN 'critical' THEN 0
+                        WHEN 'warning' THEN 1
+                        ELSE 2
+                    END,
+                    row_index IS NULL,
+                    row_index,
+                    col_index,
+                    id
+                """,
+                [run_id, *chunk],
+            ).fetchall()
+        )
+    return rows
+
+
 def build_validation_issues(
     connection: sqlite3.Connection,
     run_id: int | None,
     table_id: int,
     header_count: int,
     matrix: list[list[Any]] | None = None,
+    *,
+    check_rows: list[sqlite3.Row] | None = None,
+    issue_rows: list[sqlite3.Row] | None = None,
+    specs_by_rule_id: dict[str, dict[str, Any]] | None = None,
+    include_highlights: bool = True,
 ) -> list[ValidationIssue]:
     if run_id is None:
         return []
 
-    check_rows = connection.execute(
-        """
-        SELECT *
-        FROM validation_checks
-        WHERE run_id = ? AND table_id = ?
-        ORDER BY
-            CASE status
-                WHEN '오류 의심' THEN 0
-                WHEN '확인 필요' THEN 1
-                WHEN '정상' THEN 2
-                ELSE 3
-            END,
-            CASE severity
-                WHEN 'critical' THEN 0
-                WHEN 'warning' THEN 1
-                ELSE 2
-            END,
-            row_index IS NULL,
-            row_index,
-            col_index,
-            id
-        """,
-        (run_id, table_id),
-    ).fetchall()
+    if check_rows is None:
+        check_rows = connection.execute(
+            """
+            SELECT *
+            FROM validation_checks
+            WHERE run_id = ? AND table_id = ?
+            ORDER BY
+                CASE status
+                    WHEN '오류 의심' THEN 0
+                    WHEN '확인 필요' THEN 1
+                    WHEN '정상' THEN 2
+                    ELSE 3
+                END,
+                CASE severity
+                    WHEN 'critical' THEN 0
+                    WHEN 'warning' THEN 1
+                    ELSE 2
+                END,
+                row_index IS NULL,
+                row_index,
+                col_index,
+                id
+            """,
+            (run_id, table_id),
+        ).fetchall()
 
     if check_rows:
-        specs_by_rule_id = load_rule_specs_by_id(connection, check_rows)
+        specs_by_rule_id = specs_by_rule_id or load_rule_specs_by_id(connection, check_rows)
         return [
             validation_issue_from_row(
                 row,
@@ -353,28 +630,30 @@ def build_validation_issues(
                 header_count=header_count,
                 matrix=matrix,
                 spec=specs_by_rule_id.get(row["rule_id"]),
+                include_highlights=include_highlights,
             )
             for row in check_rows
         ]
 
-    rows = connection.execute(
-        """
-        SELECT *
-        FROM validation_issues
-        WHERE run_id = ? AND table_id = ?
-        ORDER BY
-            CASE severity
-                WHEN 'critical' THEN 0
-                WHEN 'warning' THEN 1
-                ELSE 2
-            END,
-            row_index IS NULL,
-            row_index,
-            col_index,
-            id
-        """,
-        (run_id, table_id),
-    ).fetchall()
+    if issue_rows is None:
+        issue_rows = connection.execute(
+            """
+            SELECT *
+            FROM validation_issues
+            WHERE run_id = ? AND table_id = ?
+            ORDER BY
+                CASE severity
+                    WHEN 'critical' THEN 0
+                    WHEN 'warning' THEN 1
+                    ELSE 2
+                END,
+                row_index IS NULL,
+                row_index,
+                col_index,
+                id
+            """,
+            (run_id, table_id),
+        ).fetchall()
 
     return [
         validation_issue_from_row(
@@ -384,8 +663,9 @@ def build_validation_issues(
             header_count=header_count,
             matrix=matrix,
             spec=None,
+            include_highlights=include_highlights,
         )
-        for row in rows
+        for row in issue_rows
     ]
 
 
@@ -405,8 +685,13 @@ def validation_issue_from_row(
     header_count: int,
     matrix: list[list[Any]] | None,
     spec: dict[str, Any] | None,
+    include_highlights: bool = True,
 ) -> ValidationIssue:
-    highlights = resolve_highlights(row, spec=spec, header_count=header_count, matrix=matrix)
+    highlights = (
+        resolve_highlights(row, spec=spec, header_count=header_count, matrix=matrix)
+        if include_highlights
+        else ResolvedHighlights(scope="none", cells=[], rows=[], focus_cell=None)
+    )
     return ValidationIssue(
         id=issue_id,
         rule_id=row["rule_id"],

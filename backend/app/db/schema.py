@@ -10,6 +10,7 @@ from app.validation.catalog import REQUIRED_RULE_DEFINITIONS
 
 
 DB_PATH = Path(__file__).with_name("annual_statistics.sqlite")
+INITIALIZED_POSTGRES_URLS: set[str] = set()
 
 
 SCHEMA_SQL = """
@@ -345,6 +346,10 @@ def connect(db_path: Path | None = None) -> sqlite3.Connection | PostgresConnect
 
 
 def init_db(connection: sqlite3.Connection | PostgresConnection) -> None:
+    postgres_key = postgres_connection_key(connection)
+    if postgres_key and postgres_key in INITIALIZED_POSTGRES_URLS:
+        return
+
     connection.executescript(SCHEMA_SQL)
     ensure_column(connection, "stat_table_cells", "footnote_marker", "TEXT NOT NULL DEFAULT ''")
     ensure_column(connection, "annual_reports", "is_archived", "INTEGER NOT NULL DEFAULT 0")
@@ -387,6 +392,8 @@ def init_db(connection: sqlite3.Connection | PostgresConnection) -> None:
     )
     seed_validation_rule_definitions(connection)
     connection.commit()
+    if postgres_key:
+        INITIALIZED_POSTGRES_URLS.add(postgres_key)
 
 
 def ensure_column(
@@ -416,6 +423,12 @@ def ensure_column(
 
 def is_postgres_connection(connection: object) -> bool:
     return bool(getattr(connection, "is_postgres", False))
+
+
+def postgres_connection_key(connection: object) -> str | None:
+    if not is_postgres_connection(connection):
+        return None
+    return str(getattr(connection, "database_url", "postgres"))
 
 
 def apply_data_migration(

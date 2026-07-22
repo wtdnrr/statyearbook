@@ -59,6 +59,7 @@ class PostgresConnection:
         import psycopg
         from psycopg.rows import dict_row
 
+        self.database_url = database_url
         self._connection = psycopg.connect(database_url, row_factory=dict_row)
         self._context_depth = 0
 
