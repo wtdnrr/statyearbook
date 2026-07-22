@@ -9,6 +9,7 @@ from typing import Callable
 from app.db.schema import DB_PATH, connect, init_db
 from app.ingest.excel_importer import import_excel
 from app.ingest.hwpx_importer import import_hwpx
+from app.ingest.legacy_system_importer import import_legacy_system_overlay
 from app.ingest.markdown_importer import import_markdown
 from app.validation.calculation_workflow import CalculationValidationWorkflow
 from app.validation.language_workflow import LanguageValidationWorkflow
@@ -16,7 +17,12 @@ from app.validation.sqlite_repository import SQLiteValidationRepository
 from app.validation.workflow import validation_issue_count
 
 
-SUPPORTED_SOURCE_TYPES = {".xlsx": "xlsx", ".hwpx": "hwpx", ".md": "markdown"}
+SUPPORTED_SOURCE_TYPES = {
+    ".xlsx": "xlsx",
+    ".hwpx": "hwpx",
+    ".md": "markdown",
+}
+SPECIAL_SOURCE_TYPES = {"legacy_overlay"}
 
 
 @dataclass(frozen=True)
@@ -45,9 +51,13 @@ class ReportProcessingWorkflow:
         year: int,
         title: str,
         options: ReportProcessingOptions | None = None,
+        source_type: str | None = None,
     ) -> int:
-        source_type = SUPPORTED_SOURCE_TYPES.get(source_path.suffix.lower())
-        if source_type is None:
+        selected_source_type = source_type or SUPPORTED_SOURCE_TYPES.get(source_path.suffix.lower())
+        if selected_source_type is None or selected_source_type not in {
+            *SUPPORTED_SOURCE_TYPES.values(),
+            *SPECIAL_SOURCE_TYPES,
+        }:
             supported = ", ".join(sorted(SUPPORTED_SOURCE_TYPES))
             raise ValueError(f"지원하지 않는 파일 형식입니다. 지원 형식: {supported}")
         payload = options or ReportProcessingOptions()
@@ -63,7 +73,7 @@ class ReportProcessingWorkflow:
                 (
                     source_path.name,
                     str(source_path),
-                    source_type,
+                    selected_source_type,
                     year,
                     title,
                     json.dumps(payload.__dict__, ensure_ascii=False),
@@ -209,6 +219,8 @@ class ReportProcessingWorkflow:
             return import_hwpx(source_path, **common)
         if source_type == "markdown":
             return import_markdown(source_path, **common)
+        if source_type == "legacy_overlay":
+            return import_legacy_system_overlay(source_path, **common)
         raise ValueError(f"등록되지 않은 가져오기 형식입니다: {source_type}")
 
     def _run_language_validation(

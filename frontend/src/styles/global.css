@@ -144,7 +144,27 @@ button {
   white-space: nowrap;
 }
 
-.report-upload-button:disabled {
+.legacy-upload-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 52px;
+  padding: 0 14px;
+  color: #315f8d;
+  background: var(--surface);
+  border: 1px solid #a9c7e6;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.legacy-upload-button:hover {
+  background: #eef6fd;
+  border-color: #315f8d;
+}
+
+.report-upload-button:disabled,
+.legacy-upload-button:disabled {
   cursor: wait;
   opacity: 0.72;
 }

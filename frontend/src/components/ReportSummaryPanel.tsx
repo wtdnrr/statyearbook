@@ -71,7 +71,7 @@ export function ReportSummaryPanel({
           <select value={selectedReportId} onChange={(event) => onReportChange(event.target.value)}>
             {reportOptions.map((report) => (
               <option key={report.id} value={report.id}>
-                {report.year} {datasetLabel} · {report.table_count}개 표
+                {report.title} · {report.table_count}개 표
               </option>
             ))}
           </select>

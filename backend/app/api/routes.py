@@ -1,9 +1,10 @@
+import json
 from pathlib import Path
 from datetime import datetime
 import re
 from uuid import uuid4
 
-from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, Request, status
+from fastapi import APIRouter, BackgroundTasks, File, HTTPException, Query, Request, UploadFile, status
 
 from app.models.report import (
     ReportPayload,
@@ -15,6 +16,12 @@ from app.models.report import (
 )
 from app.services.report_service import get_report_service
 from app.core.config import get_settings
+from app.ingest.legacy_system_importer import (
+    LegacySystemImportError,
+    build_manifest_payload,
+    classify_legacy_records,
+    read_xls_records,
+)
 from app.validation.profile_repository import SQLiteValidationProfileRepository
 from app.validation.profiles import ValidationProfile
 from app.validation.run_validations import run_validations
@@ -112,6 +119,81 @@ async def create_report_import(
     except ValueError as error:
         source_path.unlink(missing_ok=True)
         raise HTTPException(status_code=415, detail=str(error)) from error
+    background_tasks.add_task(run_processing_job, job_id)
+    return ReportProcessingJob(**(workflow.get_job(job_id) or {}))
+
+
+@router.post(
+    "/imports/legacy-overlay",
+    response_model=ReportProcessingJob,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def create_legacy_overlay_import(
+    background_tasks: BackgroundTasks,
+    files: list[UploadFile] = File(...),
+    base_report_id: int = Query(ge=1),
+) -> ReportProcessingJob:
+    """Queue a 2026 test report from three current-system XLS exports."""
+
+    if len(files) != 3:
+        raise HTTPException(
+            status_code=400,
+            detail="표정보·표항목·표데이터 .xls 파일 3개를 모두 선택해 주세요.",
+        )
+
+    settings = get_settings()
+    upload_dir = settings.upload_dir / f"legacy-overlay-{uuid4().hex}"
+    upload_dir.mkdir(parents=True, exist_ok=False)
+    saved_files: dict[str, Path] = {}
+    total_size = 0
+    try:
+        for index, upload in enumerate(files):
+            safe_name = Path(upload.filename or f"source-{index + 1}.xls").name
+            if Path(safe_name).suffix.lower() != ".xls":
+                raise HTTPException(
+                    status_code=415,
+                    detail="현행 시스템 테스트 데이터는 .xls 파일 3개여야 합니다.",
+                )
+            content = await upload.read()
+            total_size += len(content)
+            if total_size > settings.max_upload_bytes:
+                raise HTTPException(status_code=413, detail="업로드 가능한 파일 크기를 초과했습니다.")
+            path = upload_dir / f"source-{index + 1}.xls"
+            path.write_bytes(content)
+            saved_files[str(index)] = path
+
+        records_by_file = {key: read_xls_records(path) for key, path in saved_files.items()}
+        classified = classify_legacy_records(records_by_file)
+        role_to_path = {
+            role: next(
+                path
+                for key, path in saved_files.items()
+                if records_by_file[key] is records
+            )
+            for role, records in classified.items()
+        }
+        manifest_path = upload_dir / "legacy-overlay.legacy-overlay.json"
+        manifest_path.write_text(
+            json.dumps(
+                build_manifest_payload(base_report_id=base_report_id, files=role_to_path),
+                ensure_ascii=False,
+                sort_keys=True,
+            ),
+            encoding="utf-8",
+        )
+    except HTTPException:
+        raise
+    except LegacySystemImportError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+
+    workflow = ReportProcessingWorkflow()
+    job_id = workflow.create_job(
+        source_path=manifest_path,
+        source_type="legacy_overlay",
+        year=2026,
+        title="2026 테스트 통계",
+        options=ReportProcessingOptions(include_llm=False, refresh_profiles=False),
+    )
     background_tasks.add_task(run_processing_job, job_id)
     return ReportProcessingJob(**(workflow.get_job(job_id) or {}))
 

@@ -24,10 +24,12 @@ htmlcov/
 # FastAPI / local database artifacts
 backend/app/db/*.sqlite
 backend/app/db/*.sqlite-*
+backend/app/db/*.sqlite.backup*
 backend/uploads/
 *.db
 *.sqlite
 *.sqlite3
+*.sqlite.backup*
 
 # Node / Vite
 node_modules/

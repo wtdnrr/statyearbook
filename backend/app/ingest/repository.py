@@ -4,9 +4,11 @@ from dataclasses import dataclass, field
 from datetime import datetime
 import hashlib
 from pathlib import Path
+from sqlite3 import Connection as SQLiteConnection
 
 from app.core.numeric_text import parse_numeric_value
 from app.db.schema import DB_PATH, connect, init_db
+from app.db.postgres import PostgresConnection
 
 
 @dataclass(frozen=True)
@@ -46,9 +48,11 @@ class ReportImportRepository:
         self,
         *,
         source_path: Path,
+        source_file_name: str | None = None,
         year: int,
         title: str,
         tables: list[ImportedTable],
+        archive_previous_same_title: bool = False,
     ) -> ImportResult:
         valid_tables = [
             table
@@ -66,17 +70,44 @@ class ReportImportRepository:
         with connect(self._db_path) as connection:
             init_db(connection)
             with connection:
-                connection.execute(
-                    "DELETE FROM annual_reports WHERE file_hash = ?",
+                existing_report = connection.execute(
+                    "SELECT id FROM annual_reports WHERE file_hash = ?",
                     (source_hash,),
-                )
+                ).fetchone()
+                if existing_report is not None:
+                    # Exact input is idempotent. Reuse the prior report rather
+                    # than deleting its tables and forcing SQLite to inspect
+                    # every historical validation record that references them.
+                    report_id = int(existing_report["id"])
+                    connection.execute(
+                        "UPDATE annual_reports SET is_archived = 0 WHERE id = ?",
+                        (report_id,),
+                    )
+                    return ImportResult(
+                        report_id=report_id,
+                        table_count=table_count_for_report(connection, report_id),
+                        cell_count=cell_count_for_report(connection, report_id),
+                    )
+
+                if archive_previous_same_title:
+                    connection.execute(
+                        "UPDATE annual_reports SET is_archived = 1 WHERE year = ? AND title = ?",
+                        (year, title),
+                    )
                 cursor = connection.execute(
                     """
                     INSERT INTO annual_reports (
                         year, title, source_file_name, source_file_path, file_hash, imported_at
                     ) VALUES (?, ?, ?, ?, ?, ?)
                     """,
-                    (year, title, source_path.name, str(source_path), source_hash, imported_at),
+                    (
+                        year,
+                        title,
+                        source_file_name or source_path.name,
+                        str(source_path),
+                        source_hash,
+                        imported_at,
+                    ),
                 )
                 report_id = int(cursor.lastrowid)
 
@@ -149,6 +180,27 @@ def file_digest(source_path: Path) -> str:
         for chunk in iter(lambda: source_file.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def table_count_for_report(connection: SQLiteConnection | PostgresConnection, report_id: int) -> int:
+    row = connection.execute(
+        "SELECT COUNT(*) AS count FROM stat_tables WHERE report_id = ?",
+        (report_id,),
+    ).fetchone()
+    return int(row["count"])
+
+
+def cell_count_for_report(connection: SQLiteConnection | PostgresConnection, report_id: int) -> int:
+    row = connection.execute(
+        """
+        SELECT COUNT(*) AS count
+        FROM stat_table_cells cells
+        JOIN stat_tables tables ON tables.id = cells.table_id
+        WHERE tables.report_id = ?
+        """,
+        (report_id,),
+    ).fetchone()
+    return int(row["count"])
 
 
 def excel_range(width: int, height: int) -> str:

@@ -41,6 +41,23 @@ export async function uploadReport(file: File): Promise<ReportImportJob> {
   return response.json();
 }
 
+export async function uploadLegacyOverlay(
+  files: File[],
+  baseReportId: number,
+): Promise<ReportImportJob> {
+  const formData = new FormData();
+  files.forEach((file) => formData.append("files", file));
+  const response = await fetch(
+    `${API_BASE_URL}/api/imports/legacy-overlay?base_report_id=${baseReportId}`,
+    { method: "POST", body: formData },
+  );
+  if (!response.ok) {
+    const payload = (await response.json().catch(() => null)) as { detail?: string } | null;
+    throw new Error(payload?.detail ?? "2026 테스트 데이터를 업로드하지 못했습니다.");
+  }
+  return response.json();
+}
+
 export async function fetchImportJob(jobId: number): Promise<ReportImportJob> {
   const response = await fetch(`${API_BASE_URL}/api/imports/${jobId}`);
   if (!response.ok) {

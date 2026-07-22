@@ -161,6 +161,7 @@ class SQLiteReportService:
                 """
                 SELECT r.id, r.year, r.title, r.source_file_name, r.imported_at
                 FROM annual_reports r
+                WHERE COALESCE(r.is_archived, 0) = 0
                 GROUP BY r.id
                 ORDER BY r.year DESC, r.imported_at DESC, r.id DESC
                 """
@@ -183,6 +184,7 @@ class SQLiteReportService:
                 """
                 SELECT *
                 FROM annual_reports
+                WHERE COALESCE(is_archived, 0) = 0
                 ORDER BY imported_at DESC, id DESC
                 LIMIT 1
                 """

@@ -166,6 +166,7 @@ def replace_qmark_placeholders(sql: str) -> str:
     in_single = False
     in_double = False
     index = 0
+    placeholder_token = "\0PG_PARAM\0"
     while index < len(sql):
         char = sql[index]
         if char == "'" and not in_double:
@@ -179,11 +180,13 @@ def replace_qmark_placeholders(sql: str) -> str:
             output.append(char)
             in_double = not in_double
         elif char == "?" and not in_single and not in_double:
-            output.append("%s")
+            output.append(placeholder_token)
         else:
             output.append(char)
         index += 1
-    return "".join(output)
+    # psycopg treats every percent sign as part of its param style, even inside
+    # quoted LIKE patterns. Escape literal percent signs after qmark parsing.
+    return "".join(output).replace("%", "%%").replace(placeholder_token, "%s")
 
 
 def split_sql_script(script: str) -> list[str]:

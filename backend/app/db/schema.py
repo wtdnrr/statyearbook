@@ -27,7 +27,8 @@ CREATE TABLE IF NOT EXISTS annual_reports (
     source_file_name TEXT NOT NULL,
     source_file_path TEXT NOT NULL,
     file_hash TEXT NOT NULL UNIQUE,
-    imported_at TEXT NOT NULL
+    imported_at TEXT NOT NULL,
+    is_archived INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS stat_tables (
@@ -104,6 +105,9 @@ CREATE TABLE IF NOT EXISTS validation_profiles (
 CREATE INDEX IF NOT EXISTS idx_validation_profiles_code_latest
 ON validation_profiles(table_code, updated_at DESC, id DESC);
 
+CREATE INDEX IF NOT EXISTS idx_validation_profiles_source_report
+ON validation_profiles(source_report_id);
+
 CREATE TABLE IF NOT EXISTS validation_runs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     report_id INTEGER NOT NULL,
@@ -161,6 +165,9 @@ CREATE TABLE IF NOT EXISTS report_processing_jobs (
 
 CREATE INDEX IF NOT EXISTS idx_report_processing_jobs_status
 ON report_processing_jobs(status, updated_at DESC, id DESC);
+
+CREATE INDEX IF NOT EXISTS idx_report_processing_jobs_report
+ON report_processing_jobs(report_id);
 
 CREATE TABLE IF NOT EXISTS report_processing_stages (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -340,6 +347,7 @@ def connect(db_path: Path | None = None) -> sqlite3.Connection | PostgresConnect
 def init_db(connection: sqlite3.Connection | PostgresConnection) -> None:
     connection.executescript(SCHEMA_SQL)
     ensure_column(connection, "stat_table_cells", "footnote_marker", "TEXT NOT NULL DEFAULT ''")
+    ensure_column(connection, "annual_reports", "is_archived", "INTEGER NOT NULL DEFAULT 0")
     ensure_column(connection, "translation_glossary", "subcategory", "TEXT NOT NULL DEFAULT ''")
     ensure_column(connection, "translation_glossary", "source_url", "TEXT NOT NULL DEFAULT ''")
     ensure_column(connection, "translation_glossary", "source_title", "TEXT NOT NULL DEFAULT ''")
