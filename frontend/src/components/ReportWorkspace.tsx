@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useEffect, useMemo } from "react";
 
 import type { ReportOption, ReportSummary, StatTable, TableStatus } from "../types";
 import { ReportSummaryPanel } from "./ReportSummaryPanel";
@@ -30,6 +30,7 @@ interface ReportWorkspaceProps {
   tables: StatTable[];
   selectedTableId: string;
   selectedReportId: string;
+  selectedTableDetail?: StatTable | null;
   query: string;
   filter: FilterValue;
   validationTypes: string[];
@@ -53,6 +54,7 @@ export function ReportWorkspace({
   tables,
   selectedTableId,
   selectedReportId,
+  selectedTableDetail,
   query,
   filter,
   validationTypes,
@@ -75,7 +77,16 @@ export function ReportWorkspace({
   const activeId = filteredTables.some((table) => table.id === selectedTableId)
     ? selectedTableId
     : filteredTables[0]?.id ?? "";
-  const selectedTable = tables.find((table) => table.id === activeId);
+  const selectedTable =
+    selectedTableDetail?.id === activeId
+      ? selectedTableDetail
+      : tables.find((table) => table.id === activeId);
+
+  useEffect(() => {
+    if (activeId && selectedTableId !== activeId) {
+      onSelect(activeId);
+    }
+  }, [activeId, onSelect, selectedTableId]);
 
   function handleSummaryFilterChange(nextFilter: FilterValue) {
     onFilterChange(nextFilter);

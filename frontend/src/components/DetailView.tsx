@@ -690,7 +690,10 @@ export function DetailView({
   const [selectedCheckId, setSelectedCheckId] = useState<string | undefined>(activePart?.checks[0]?.id);
   const [tableScrollSignal, setTableScrollSignal] = useState(0);
   const [isTableHeaderSticky, setIsTableHeaderSticky] = useState(true);
-  const allRawChecks = activePart.checks;
+  const allRawChecks = useMemo(
+    () => activePart.checks.filter((check) => !hiddenValidationTypes.has(check.type)),
+    [activePart.checks, hiddenValidationTypes],
+  );
   const passedRawChecks = useMemo(() => allRawChecks.filter((check) => check.status === "정상"), [allRawChecks]);
   const reviewRawChecks = useMemo(() => allRawChecks.filter((check) => check.status === "확인 필요"), [allRawChecks]);
   const errorRawChecks = useMemo(() => allRawChecks.filter((check) => check.status === "오류 의심"), [allRawChecks]);

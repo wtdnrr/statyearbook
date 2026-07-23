@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 
 import { AppHeader, type AppSection } from "./components/AppHeader";
 import { DetailView } from "./components/DetailView";
@@ -23,6 +23,8 @@ export default function App() {
   const [detailTableId, setDetailTableId] = useState<string | null>(null);
   const [detailTable, setDetailTable] = useState<StatTable | null>(null);
   const [detailStatus, setDetailStatus] = useState<"idle" | "loading" | "error">("idle");
+  const [selectedTableDetail, setSelectedTableDetail] = useState<StatTable | null>(null);
+  const selectedTableRequestRef = useRef("");
   const [selectedReportId, setSelectedReportId] = useState("");
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState<FilterValue>("all");
@@ -36,10 +38,25 @@ export default function App() {
   const report = useReport(selectedReportId || undefined, reportRefreshKey);
 
   const rawTables = report.data?.tables ?? [];
-  const validationTypes = useMemo(() => validationTypesForTables(rawTables), [rawTables]);
+  const validationTypes = useMemo(
+    () =>
+      validationTypesForTables([
+        ...rawTables,
+        ...(selectedTableDetail ? [selectedTableDetail] : []),
+        ...(detailTable ? [detailTable] : []),
+      ]),
+    [detailTable, rawTables, selectedTableDetail],
+  );
   const tables = useMemo(
     () => tablesWithValidationVisibility(rawTables, hiddenValidationTypes),
     [hiddenValidationTypes, rawTables],
+  );
+  const visibleSelectedTableDetail = useMemo(
+    () =>
+      selectedTableDetail
+        ? tablesWithValidationVisibility([selectedTableDetail], hiddenValidationTypes)[0]
+        : null,
+    [hiddenValidationTypes, selectedTableDetail],
   );
   const visibleSummary = useMemo(
     () =>
@@ -48,17 +65,38 @@ export default function App() {
         : undefined,
     [report.data, tables],
   );
+  async function loadSelectedTableDetail(tableId: string) {
+    const requestKey = `${selectedReportId || ""}:${tableId}`;
+    selectedTableRequestRef.current = requestKey;
+    setSelectedTableDetail(null);
+
+    try {
+      const table = await fetchTable(tableId, selectedReportId || undefined);
+      if (selectedTableRequestRef.current === requestKey) {
+        setSelectedTableDetail(table);
+      }
+    } catch {
+      if (selectedTableRequestRef.current === requestKey) {
+        setSelectedTableDetail(null);
+      }
+    }
+  }
+
   function handleSelect(tableId: string) {
     setSelectedTableId(tableId);
+    void loadSelectedTableDetail(tableId);
   }
 
   async function handleOpen(tableId: string) {
     setSelectedTableId(tableId);
     setDetailTableId(tableId);
     setDetailStatus("loading");
-    setDetailTable(null);
+    setDetailTable(selectedTableDetail?.id === tableId ? selectedTableDetail : null);
     try {
-      const table = await fetchTable(tableId, selectedReportId || undefined);
+      const table =
+        selectedTableDetail?.id === tableId
+          ? selectedTableDetail
+          : await fetchTable(tableId, selectedReportId || undefined);
       setDetailTable(table);
       setDetailStatus("idle");
     } catch (error) {
@@ -70,6 +108,7 @@ export default function App() {
 
   function handlePressTableOpen(tableId: string) {
     setSelectedTableId(tableId);
+    void loadSelectedTableDetail(tableId);
     setActiveSection("annual");
     setDetailTableId(null);
   }
@@ -79,6 +118,8 @@ export default function App() {
     setSelectedTableId("");
     setDetailTableId(null);
     setDetailTable(null);
+    setSelectedTableDetail(null);
+    selectedTableRequestRef.current = "";
     setDetailStatus("idle");
     setFilter("all");
     setQuery("");
@@ -106,6 +147,8 @@ export default function App() {
       setSelectedTableId("");
       setDetailTableId(null);
       setDetailTable(null);
+      setSelectedTableDetail(null);
+      selectedTableRequestRef.current = "";
       setDetailStatus("idle");
       setReportRefreshKey((current) => current + 1);
       setUploadState("idle");
@@ -134,6 +177,8 @@ export default function App() {
       setSelectedTableId("");
       setDetailTableId(null);
       setDetailTable(null);
+      setSelectedTableDetail(null);
+      selectedTableRequestRef.current = "";
       setDetailStatus("idle");
       setReportRefreshKey((current) => current + 1);
       setLegacyUploadState("idle");
@@ -181,6 +226,7 @@ export default function App() {
       tables={tables}
       selectedTableId={selectedTableId}
       selectedReportId={selectedReportId}
+      selectedTableDetail={visibleSelectedTableDetail}
       query={query}
       filter={filter}
       validationTypes={validationTypes}
