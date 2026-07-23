@@ -5,7 +5,7 @@ import { DetailView } from "./components/DetailView";
 import { PressPage } from "./components/PressPage";
 import { ReportWorkspace } from "./components/ReportWorkspace";
 import { useReport } from "./hooks/useReport";
-import { fetchTable, uploadLegacyOverlay, uploadReport, waitForImport } from "./api/reportApi";
+import { fetchTable, uploadReport, waitForImport } from "./api/reportApi";
 import type { StatTable, TableStatus } from "./types";
 import {
   DEFAULT_HIDDEN_VALIDATION_TYPES,
@@ -34,7 +34,6 @@ export default function App() {
   );
   const [reportRefreshKey, setReportRefreshKey] = useState(0);
   const [uploadState, setUploadState] = useState<"idle" | "uploading" | "error">("idle");
-  const [legacyUploadState, setLegacyUploadState] = useState<"idle" | "uploading" | "error">("idle");
   const report = useReport(selectedReportId || undefined, reportRefreshKey);
 
   const rawTables = report.data?.tables ?? [];
@@ -158,36 +157,6 @@ export default function App() {
     }
   }
 
-  async function handleLegacyOverlayUpload(files: File[]) {
-    if (files.length !== 3) {
-      window.alert("표정보, 표항목, 표데이터 .xls 파일 3개를 함께 선택해 주세요.");
-      return;
-    }
-    const baseReport = report.data?.available_reports.find((item) => item.year === 2025);
-    if (!baseReport) {
-      window.alert("2026 테스트 데이터의 기준이 될 2025 연보를 먼저 업로드해 주세요.");
-      return;
-    }
-
-    setLegacyUploadState("uploading");
-    try {
-      const queued = await uploadLegacyOverlay(files, baseReport.id);
-      const completed = await waitForImport(queued.id);
-      setSelectedReportId(completed.report_id ? String(completed.report_id) : "");
-      setSelectedTableId("");
-      setDetailTableId(null);
-      setDetailTable(null);
-      setSelectedTableDetail(null);
-      selectedTableRequestRef.current = "";
-      setDetailStatus("idle");
-      setReportRefreshKey((current) => current + 1);
-      setLegacyUploadState("idle");
-    } catch (error) {
-      setLegacyUploadState("error");
-      window.alert(error instanceof Error ? error.message : "2026 테스트 데이터 처리 중 오류가 발생했습니다.");
-    }
-  }
-
   if (report.status === "loading") {
     return <div className="state-page">데이터를 불러오는 중입니다.</div>;
   }
@@ -250,9 +219,7 @@ export default function App() {
         activeSection={activeSection}
         onSectionChange={setActiveSection}
         onUpload={handleUpload}
-        onLegacyOverlayUpload={handleLegacyOverlayUpload}
         uploadState={uploadState}
-        legacyUploadState={legacyUploadState}
       />
 
       {activeSection === "annual" || activeSection === "keyStats" ? reportWorkspace : null}

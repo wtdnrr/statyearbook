@@ -2,6 +2,4 @@ fastapi==0.116.1
 uvicorn[standard]==0.35.0
 pydantic==2.11.7
 openpyxl==3.1.5
-xlrd==2.0.2
 psycopg[binary]>=3.2,<4
-python-multipart>=0.0.20,<1
