@@ -908,6 +908,23 @@ export function DetailView({
                 })}
               </div>
 
+              {filteredChecks.length > 0 ? (
+                <div className="check-result-list" aria-label="검수 목록">
+                  {filteredChecks.map((check, index) => (
+                    <button
+                      className={selectedIssue?.id === check.id ? "is-active" : ""}
+                      key={check.id}
+                      type="button"
+                      onClick={() => selectIssue(check.id)}
+                    >
+                      <span>{index + 1}</span>
+                      <strong>{checkDisplayTitle(check)}</strong>
+                      <em>{check.status}</em>
+                    </button>
+                  ))}
+                </div>
+              ) : null}
+
               {selectedIssue ? (
                 <article className={`check-card check-card--${selectedIssue.severity}`}>
                   <div className="check-card__headline">
