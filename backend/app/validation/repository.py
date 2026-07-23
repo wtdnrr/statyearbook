@@ -2,9 +2,9 @@ from __future__ import annotations
 
 from datetime import datetime
 from pathlib import Path
-import sqlite3
 
-from app.db.schema import DB_PATH, connect, init_db
+from app.db.connection import DB_PATH, DatabaseConnection, DatabaseRow, connect
+from app.db.schema import init_db
 from app.validation.models import (
     ValidationCell,
     ValidationCheckRecord,
@@ -13,11 +13,11 @@ from app.validation.models import (
 )
 
 
-class SQLiteValidationRepository:
+class ValidationRepository:
     def __init__(self, db_path: Path = DB_PATH) -> None:
         self._db_path = db_path
 
-    def latest_report(self) -> sqlite3.Row | None:
+    def latest_report(self) -> DatabaseRow | None:
         with connect(self._db_path) as connection:
             init_db(connection)
             return connection.execute(
@@ -29,7 +29,7 @@ class SQLiteValidationRepository:
                 """
             ).fetchone()
 
-    def report(self, report_id: int) -> sqlite3.Row | None:
+    def report(self, report_id: int) -> DatabaseRow | None:
         """Load one report explicitly.
 
         Automated imports must never validate whichever report happens to be
@@ -151,8 +151,8 @@ class SQLiteValidationRepository:
 
     def _load_table(
         self,
-        connection: sqlite3.Connection,
-        table_row: sqlite3.Row,
+        connection: DatabaseConnection,
+        table_row: DatabaseRow,
     ) -> ValidationTable:
         cells = connection.execute(
             """

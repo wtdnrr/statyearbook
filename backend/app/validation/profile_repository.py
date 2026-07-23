@@ -4,10 +4,10 @@ from datetime import datetime
 import json
 import os
 from pathlib import Path
-import sqlite3
 
 from app.core.env import load_local_env_file
-from app.db.schema import DB_PATH, connect, init_db
+from app.db.connection import DB_PATH, DatabaseConnection, DatabaseRow, connect
+from app.db.schema import init_db
 from app.validation.models import ValidationTable
 from app.validation.profiles import (
     COMMON_RULE_IDS,
@@ -24,7 +24,7 @@ from app.validation.profiles import (
 from app.validation.catalog import rule_definition_payload
 
 
-class SQLiteValidationProfileRepository:
+class ValidationProfileRepository:
     def __init__(self, db_path: Path = DB_PATH) -> None:
         self._db_path = db_path
 
@@ -116,7 +116,7 @@ class SQLiteValidationProfileRepository:
 
     def _profile_by_code_signature(
         self,
-        connection: sqlite3.Connection,
+        connection: DatabaseConnection,
         table_code: str,
         signature: str,
     ) -> ValidationProfile | None:
@@ -134,7 +134,7 @@ class SQLiteValidationProfileRepository:
 
     def _latest_profile_by_code(
         self,
-        connection: sqlite3.Connection,
+        connection: DatabaseConnection,
         table_code: str,
     ) -> ValidationProfile | None:
         row = connection.execute(
@@ -151,7 +151,7 @@ class SQLiteValidationProfileRepository:
 
     def _latest_profile_by_title(
         self,
-        connection: sqlite3.Connection,
+        connection: DatabaseConnection,
         table_title: str,
     ) -> ValidationProfile | None:
         row = connection.execute(
@@ -168,7 +168,7 @@ class SQLiteValidationProfileRepository:
 
     def _profile_by_title_signature(
         self,
-        connection: sqlite3.Connection,
+        connection: DatabaseConnection,
         table_title: str,
         signature: str,
     ) -> ValidationProfile | None:
@@ -189,7 +189,7 @@ class SQLiteValidationProfileRepository:
 
     def _profile_by_id(
         self,
-        connection: sqlite3.Connection,
+        connection: DatabaseConnection,
         profile_id: int,
     ) -> ValidationProfile | None:
         row = connection.execute(
@@ -200,7 +200,7 @@ class SQLiteValidationProfileRepository:
 
     def _insert_profile(
         self,
-        connection: sqlite3.Connection,
+        connection: DatabaseConnection,
         *,
         report_id: int,
         draft: ProfileDraft,
@@ -234,7 +234,7 @@ class SQLiteValidationProfileRepository:
 
     def _update_profile(
         self,
-        connection: sqlite3.Connection,
+        connection: DatabaseConnection,
         *,
         profile_id: int,
         report_id: int,
@@ -274,7 +274,7 @@ class SQLiteValidationProfileRepository:
         )
 
 
-def row_to_profile(row: sqlite3.Row) -> ValidationProfile:
+def row_to_profile(row: DatabaseRow) -> ValidationProfile:
     rules_json = row["rules_json"] or "{}"
     try:
         rules = json.loads(rules_json)

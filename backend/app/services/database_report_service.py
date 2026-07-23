@@ -1,19 +1,15 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 from datetime import datetime
-import json
 from pathlib import Path
 import re
-import sqlite3
 from typing import Any
 from urllib.parse import unquote
 
 from app.core.contact_metadata import parse_contact_metadata
-from app.core.env import env_value, load_local_env_file
-from app.db.schema import DB_PATH, connect, init_db
+from app.db.connection import DB_PATH, DatabaseConnection, DatabaseRow, connect
+from app.db.schema import init_db
 from app.models.report import (
-    ChangeItem,
     ColumnDefinition,
     Metric,
     PressInsight,
@@ -23,47 +19,18 @@ from app.models.report import (
     StatTablePart,
     TableMetadata,
     TableHierarchyItem,
-    ValidationHighlightCell,
-    ValidationHighlightRow,
     ValidationIssue,
     Visualization,
     VisualizationSeries,
 )
 from app.validation.models import restore_hyphenated_line_breaks
+from app.validation.presentation import validation_issue_from_row
+from app.validation.spec_repository import load_rule_specs_by_id
 
 
-DISPLAY_CHECK_TYPE_MAP = {
-    "증감액 검수": "합계 검수",
-    "증감률 검수": "비율 검수",
-    "평균 검수": "비율 검수",
-}
-
-
-def display_check_type(check_type: str) -> str:
-    return DISPLAY_CHECK_TYPE_MAP.get(check_type, check_type)
-
-
-class SQLiteReportService:
+class DatabaseReportService:
     def __init__(self, db_path: Path = DB_PATH) -> None:
         self._db_path = db_path
-
-    def is_available(self) -> bool:
-        load_local_env_file()
-        has_database_url = bool(env_value("DATABASE_URL"))
-        if not has_database_url and not self._db_path.exists():
-            return False
-
-        try:
-            with connect(self._db_path) as connection:
-                init_db(connection)
-                row = connection.execute("SELECT COUNT(*) AS count FROM stat_tables").fetchone()
-        except Exception:
-            return False
-
-        return bool(row and row["count"] > 0)
-
-    def get_payload(self) -> ReportPayload:
-        return self.get_payload_for_report()
 
     def get_payload_for_report(self, report_id: int | None = None) -> ReportPayload:
         report = self._resolve_report(report_id)
@@ -79,20 +46,9 @@ class SQLiteReportService:
             available_reports=self.list_reports(),
         )
 
-    def get_summary(self, report_id: int | None = None) -> ReportSummary:
-        report = self._resolve_report(report_id)
-        return self._summary_from_tables(
-            report,
-            self.list_tables(
-                report_id,
-                include_highlights=False,
-                include_passing_checks=False,
-            ),
-        )
-
     def _summary_from_tables(
         self,
-        report: sqlite3.Row | None,
+        report: DatabaseRow | None,
         tables: list[StatTable],
     ) -> ReportSummary:
         if report is None:
@@ -149,8 +105,8 @@ class SQLiteReportService:
             ).fetchall()
             run_id = self._latest_run_id(connection, report["id"])
             cells_by_table = load_cells_by_table(connection, [int(row["id"]) for row in rows])
-            checks_by_table: dict[int, list[sqlite3.Row]] = {}
-            issue_rows_by_table: dict[int, list[sqlite3.Row]] = {}
+            checks_by_table: dict[int, list[DatabaseRow]] = {}
+            issue_rows_by_table: dict[int, list[DatabaseRow]] = {}
             specs_by_rule_id: dict[str, dict[str, Any]] = {}
             if run_id is not None:
                 check_rows = load_checks_for_tables(
@@ -243,10 +199,10 @@ class SQLiteReportService:
 
     def _table_rows_for_detail(
         self,
-        connection: sqlite3.Connection,
-        report: sqlite3.Row,
+        connection: DatabaseConnection,
+        report: DatabaseRow,
         table_id: str,
-    ) -> list[sqlite3.Row]:
+    ) -> list[DatabaseRow]:
         if table_id.startswith("db-"):
             raw_id = table_id.removeprefix("db-")
             if not raw_id.isdigit():
@@ -272,14 +228,6 @@ class SQLiteReportService:
             """,
             (report["id"], base_code, f"{base_code} 표%"),
         ).fetchall()
-
-    def get_press_insights(self, report_id: int | None = None) -> list[PressInsight]:
-        tables = self.list_tables(
-            report_id,
-            include_highlights=False,
-            include_passing_checks=False,
-        )
-        return self._press_insights_from_tables(tables)
 
     def _press_insights_from_tables(self, tables: list[StatTable]) -> list[PressInsight]:
         insights: list[PressInsight] = []
@@ -326,8 +274,9 @@ class SQLiteReportService:
                 for row in rows
             ]
 
-    def _latest_report(self) -> sqlite3.Row | None:
+    def _latest_report(self) -> DatabaseRow | None:
         with connect(self._db_path) as connection:
+            init_db(connection)
             return connection.execute(
                 """
                 SELECT *
@@ -338,21 +287,22 @@ class SQLiteReportService:
                 """
             ).fetchone()
 
-    def _report_by_id(self, report_id: int) -> sqlite3.Row | None:
+    def _report_by_id(self, report_id: int) -> DatabaseRow | None:
         with connect(self._db_path) as connection:
+            init_db(connection)
             return connection.execute(
                 "SELECT * FROM annual_reports WHERE id = ?",
                 (report_id,),
             ).fetchone()
 
-    def _resolve_report(self, report_id: int | None = None) -> sqlite3.Row | None:
+    def _resolve_report(self, report_id: int | None = None) -> DatabaseRow | None:
         if report_id is not None:
             report = self._report_by_id(report_id)
             if report is not None:
                 return report
         return self._latest_report()
 
-    def _logical_table_count(self, connection: sqlite3.Connection, report_id: int) -> int:
+    def _logical_table_count(self, connection: DatabaseConnection, report_id: int) -> int:
         rows = connection.execute(
             "SELECT code FROM stat_tables WHERE report_id = ?",
             (report_id,),
@@ -361,14 +311,14 @@ class SQLiteReportService:
 
     def _row_to_table(
         self,
-        connection: sqlite3.Connection,
-        report: sqlite3.Row,
-        table_row: sqlite3.Row,
+        connection: DatabaseConnection,
+        report: DatabaseRow,
+        table_row: DatabaseRow,
         run_id: int | None,
         *,
-        cells: list[sqlite3.Row] | None = None,
-        check_rows: list[sqlite3.Row] | None = None,
-        issue_rows: list[sqlite3.Row] | None = None,
+        cells: list[DatabaseRow] | None = None,
+        check_rows: list[DatabaseRow] | None = None,
+        issue_rows: list[DatabaseRow] | None = None,
         specs_by_rule_id: dict[str, dict[str, Any]] | None = None,
         include_highlights: bool = True,
     ) -> StatTable:
@@ -431,16 +381,7 @@ class SQLiteReportService:
             summary=build_summary(table_row, rows, columns),
             key_figures=build_key_figures(table_row, rows, columns),
             checks=checks,
-            changes=[
-                ChangeItem(
-                    id=f"{table_id}-import",
-                    category="구조화",
-                    item="원천 데이터 표",
-                    previous="더미 데이터",
-                    current="SQLite DB 적재",
-                    status="정상",
-                )
-            ],
+            changes=[],
             visualizations=build_visualizations(table_id, table_row, rows, columns),
             metadata=TableMetadata(
                 original_file=decode_display_text(report["source_file_name"]),
@@ -459,7 +400,7 @@ class SQLiteReportService:
             ),
         )
 
-    def _latest_run_id(self, connection: sqlite3.Connection, report_id: int) -> int | None:
+    def _latest_run_id(self, connection: DatabaseConnection, report_id: int) -> int | None:
         row = connection.execute(
             """
             SELECT id
@@ -477,18 +418,18 @@ def chunks(values: list[int], size: int = 800) -> list[list[int]]:
     return [values[index : index + size] for index in range(0, len(values), size)]
 
 
-def group_rows_by_int(rows: list[sqlite3.Row], key: str) -> dict[int, list[sqlite3.Row]]:
-    grouped: dict[int, list[sqlite3.Row]] = {}
+def group_rows_by_int(rows: list[DatabaseRow], key: str) -> dict[int, list[DatabaseRow]]:
+    grouped: dict[int, list[DatabaseRow]] = {}
     for row in rows:
         grouped.setdefault(int(row[key]), []).append(row)
     return grouped
 
 
 def load_cells_by_table(
-    connection: sqlite3.Connection,
+    connection: DatabaseConnection,
     table_ids: list[int],
-) -> dict[int, list[sqlite3.Row]]:
-    rows: list[sqlite3.Row] = []
+) -> dict[int, list[DatabaseRow]]:
+    rows: list[DatabaseRow] = []
     for chunk in chunks(table_ids):
         placeholders = ", ".join("?" for _ in chunk)
         rows.extend(
@@ -506,13 +447,13 @@ def load_cells_by_table(
 
 
 def load_checks_for_tables(
-    connection: sqlite3.Connection,
+    connection: DatabaseConnection,
     run_id: int,
     table_ids: list[int],
     *,
     include_passing: bool = True,
-) -> list[sqlite3.Row]:
-    rows: list[sqlite3.Row] = []
+) -> list[DatabaseRow]:
+    rows: list[DatabaseRow] = []
     status_filter = "" if include_passing else "AND status <> '정상'"
     for chunk in chunks(table_ids):
         placeholders = ", ".join("?" for _ in chunk)
@@ -548,11 +489,11 @@ def load_checks_for_tables(
 
 
 def load_issue_rows_for_tables(
-    connection: sqlite3.Connection,
+    connection: DatabaseConnection,
     run_id: int,
     table_ids: list[int],
-) -> list[sqlite3.Row]:
-    rows: list[sqlite3.Row] = []
+) -> list[DatabaseRow]:
+    rows: list[DatabaseRow] = []
     for chunk in chunks(table_ids):
         placeholders = ", ".join("?" for _ in chunk)
         rows.extend(
@@ -580,14 +521,14 @@ def load_issue_rows_for_tables(
 
 
 def build_validation_issues(
-    connection: sqlite3.Connection,
+    connection: DatabaseConnection,
     run_id: int | None,
     table_id: int,
     header_count: int,
     matrix: list[list[Any]] | None = None,
     *,
-    check_rows: list[sqlite3.Row] | None = None,
-    issue_rows: list[sqlite3.Row] | None = None,
+    check_rows: list[DatabaseRow] | None = None,
+    issue_rows: list[DatabaseRow] | None = None,
     specs_by_rule_id: dict[str, dict[str, Any]] | None = None,
     include_highlights: bool = True,
 ) -> list[ValidationIssue]:
@@ -669,577 +610,6 @@ def build_validation_issues(
     ]
 
 
-@dataclass(frozen=True)
-class ResolvedHighlights:
-    scope: str
-    cells: list[ValidationHighlightCell]
-    rows: list[ValidationHighlightRow]
-    focus_cell: ValidationHighlightCell | None
-
-
-def validation_issue_from_row(
-    row: sqlite3.Row,
-    *,
-    issue_id: str,
-    check_type: str,
-    header_count: int,
-    matrix: list[list[Any]] | None,
-    spec: dict[str, Any] | None,
-    include_highlights: bool = True,
-) -> ValidationIssue:
-    highlights = (
-        resolve_highlights(row, spec=spec, header_count=header_count, matrix=matrix)
-        if include_highlights
-        else ResolvedHighlights(scope="none", cells=[], rows=[], focus_cell=None)
-    )
-    return ValidationIssue(
-        id=issue_id,
-        rule_id=row["rule_id"],
-        type=display_check_type(check_type),
-        location=row["location"],
-        row_index=row["row_index"],
-        col_index=row["col_index"],
-        current_value=row["current_value"],
-        expected_value=row["expected_value"],
-        difference=row["difference"],
-        status=row["status"],
-        severity=row["severity"],
-        detail=row["detail"],
-        formula=row["formula"],
-        highlight_scope=highlights.scope,
-        highlight_cells=highlights.cells,
-        highlight_rows=highlights.rows,
-        focus_cell=highlights.focus_cell,
-    )
-
-
-def resolve_highlights(
-    row: sqlite3.Row,
-    *,
-    spec: dict[str, Any] | None,
-    header_count: int,
-    matrix: list[list[Any]] | None,
-) -> ResolvedHighlights:
-    cells = highlight_cells_for(row, spec, matrix)
-    focus = next((cell for cell in cells if cell.role == "target"), None)
-    return ResolvedHighlights(
-        scope=highlight_scope_for(row, spec, header_count),
-        cells=cells,
-        rows=highlight_rows_for(row, spec),
-        focus_cell=focus or next(iter(cells), None),
-    )
-
-
-def load_rule_specs_by_id(
-    connection: sqlite3.Connection,
-    check_rows: list[sqlite3.Row],
-) -> dict[str, dict[str, Any]]:
-    specs: dict[str, dict[str, Any]] = {}
-    profile_ids = sorted(
-        {
-            int(row["profile_id"])
-            for row in check_rows
-            if row["profile_id"] is not None
-        }
-    )
-
-    if profile_ids:
-        placeholders = ", ".join("?" for _ in profile_ids)
-        profile_rows = connection.execute(
-            f"""
-            SELECT id, rules_json
-            FROM validation_profiles
-            WHERE id IN ({placeholders})
-            """,
-            profile_ids,
-        ).fetchall()
-
-        for profile_row in profile_rows:
-            try:
-                rules = json.loads(profile_row["rules_json"] or "{}")
-            except json.JSONDecodeError:
-                continue
-            checks = rules.get("checks", [])
-            if not isinstance(checks, list):
-                continue
-            for spec in checks:
-                if not isinstance(spec, dict) or not spec.get("id"):
-                    continue
-                specs[str(spec["id"])] = spec
-
-    for row in check_rows:
-        rule_id = str(row["rule_id"])
-        spec = cross_split_part_row_total_spec(rule_id)
-        if spec is None:
-            spec = cross_profile_row_sum_operand_spec(rule_id)
-        if spec is not None:
-            specs[rule_id] = spec
-    return specs
-
-
-def cross_split_part_row_total_spec(rule_id: str) -> dict[str, Any] | None:
-    if not rule_id.startswith("cross.split_part_row_total:"):
-        return None
-
-    values: dict[str, str] = {}
-    for chunk in rule_id.split(":")[1:]:
-        if "=" not in chunk:
-            continue
-        key, value = chunk.split("=", 1)
-        values[key] = value
-
-    target = int_or_none(values.get("target"))
-    related = [
-        int(value)
-        for value in values.get("related", "").split(",")
-        if value.strip().isdigit()
-    ]
-    role = values.get("role", "target")
-    if target is None:
-        return None
-
-    if role == "operand":
-        return {
-            "id": rule_id,
-            "type": "cross_split_operand_row",
-            "operand_columns": related,
-        }
-
-    return {
-        "id": rule_id,
-        "type": "row_sum",
-        "target_column": target,
-        "operand_columns": related,
-    }
-
-
-def cross_profile_row_sum_operand_spec(rule_id: str) -> dict[str, Any] | None:
-    if not rule_id.startswith("cross.profile_row_sum_operand:"):
-        return None
-
-    related_chunk = next(
-        (chunk for chunk in rule_id.split(":") if chunk.startswith("related=")),
-        "",
-    )
-    related = [
-        int(value)
-        for value in related_chunk.removeprefix("related=").split(",")
-        if value.strip().isdigit()
-    ]
-    if not related:
-        return None
-    return {
-        "id": rule_id,
-        "type": "cross_split_operand_row",
-        "operand_columns": related,
-    }
-
-
-def int_or_none(value: Any) -> int | None:
-    return int(value) if value is not None else None
-
-
-def highlight_cell(row_index: int | None, col_index: int | None, role: str) -> ValidationHighlightCell | None:
-    if row_index is None or col_index is None or row_index < 0 or col_index < 0:
-        return None
-    return ValidationHighlightCell(row_index=row_index, col_index=col_index, role=role)
-
-
-def highlight_row(row_index: int | None, role: str) -> ValidationHighlightRow | None:
-    if row_index is None or row_index < 0:
-        return None
-    return ValidationHighlightRow(row_index=row_index, role=role)
-
-
-def unique_highlight_cells(cells: list[ValidationHighlightCell | None]) -> list[ValidationHighlightCell]:
-    merged: dict[tuple[int, int], ValidationHighlightCell] = {}
-    for cell in cells:
-        if cell is None:
-            continue
-        key = (cell.row_index, cell.col_index)
-        current = merged.get(key)
-        if current is None or cell.role == "target":
-            merged[key] = cell
-    return list(merged.values())
-
-
-def spec_columns(spec: dict[str, Any] | None, key: str) -> list[int]:
-    if not spec:
-        return []
-    return [int(value) for value in spec.get(key, []) if value is not None]
-
-
-def spec_rows(spec: dict[str, Any] | None, key: str) -> list[int]:
-    if not spec:
-        return []
-    return [int(value) for value in spec.get(key, []) if value is not None]
-
-
-def relation_cell_for_view(
-    descriptor: Any,
-    matrix: list[list[Any]] | None,
-) -> tuple[int, int] | None:
-    """Resolve a profile relation cell for exact table-cell highlighting."""
-
-    if not isinstance(descriptor, dict):
-        return None
-    column = int(descriptor.get("column", -1))
-    if column < 0:
-        return None
-
-    if descriptor.get("row") is not None:
-        row = int(descriptor.get("row", -1))
-        return (row, column) if row >= 0 else None
-    if not matrix:
-        return None
-
-    selector = str(descriptor.get("row_selector") or "")
-    if selector == "latest_year":
-        candidates: list[tuple[int, int]] = []
-        for row_index, cells in enumerate(matrix):
-            label = matrix_row_label(cells)
-            match = re.fullmatch(r"(?:19|20)(\d{2})", label)
-            if match:
-                candidates.append((int(match.group(0)), row_index))
-        if candidates:
-            return max(candidates)[1], column
-
-    if selector == "cumulative_total":
-        for row_index, cells in enumerate(matrix):
-            label = normalize_lookup_text(matrix_row_label(cells))
-            if "누적계" in label or "cumulativetotal" in label:
-                return row_index, column
-
-    return None
-
-
-def matrix_row_label(cells: list[Any]) -> str:
-    if not cells or cells[0] is None:
-        return ""
-    return clean_table_cell_text(cells[0])
-
-
-def clean_table_cell_text(cell: Any) -> str:
-    if isinstance(cell, str):
-        value = cell
-    elif isinstance(cell, sqlite3.Row):
-        value = cell["text_value"]
-    elif isinstance(cell, dict):
-        value = cell.get("text_value", "")
-    else:
-        value = str(cell or "")
-    return re.sub(r"\s+", " ", str(value or "")).strip()
-
-
-def normalize_lookup_text(value: str) -> str:
-    return re.sub(r"[\s·,._\-()/%]+", "", value).lower()
-
-
-def formula_previous_column(spec: dict[str, Any] | None, current_col: int | None) -> int | None:
-    if spec is None or current_col is None:
-        return None
-    ordered_columns = sorted(spec_columns(spec, "columns"))
-    previous_columns = [col_index for col_index in ordered_columns if col_index < current_col]
-    return previous_columns[-1] if previous_columns else None
-
-
-def highlight_cells_for(
-    row: sqlite3.Row,
-    spec: dict[str, Any] | None,
-    matrix: list[list[Any]] | None = None,
-) -> list[ValidationHighlightCell]:
-    row_index = int_or_none(row["row_index"])
-    col_index = int_or_none(row["col_index"])
-    if spec is None:
-        return fallback_highlight_cells(row)
-
-    rule_type = str(spec.get("type") or "")
-    cells: list[ValidationHighlightCell | None] = []
-
-    if rule_type == "row_sum":
-        target_col = int(spec.get("target_column", col_index if col_index is not None else -1))
-        cells.append(highlight_cell(row_index, target_col, "target"))
-        cells.extend(highlight_cell(row_index, col, "related") for col in spec_columns(spec, "operand_columns"))
-    elif rule_type == "cross_table_row_sum":
-        target_col = int(spec.get("target_column", col_index if col_index is not None else -1))
-        cells.append(highlight_cell(row_index, target_col, "target"))
-        # The paired-table operand is rendered on its own tab. Highlight the
-        # same-table subtotal here, which is the directly visible input.
-        cells.extend(highlight_cell(row_index, col, "related") for col in spec_columns(spec, "operand_columns"))
-    elif rule_type == "cross_table_weighted_average":
-        target_row = int(spec.get("target_row", row_index if row_index is not None else -1))
-        target_col = int(spec.get("target_column", col_index if col_index is not None else -1))
-        value_col = int(spec.get("value_column", target_col))
-        cells.append(highlight_cell(target_row, target_col, "target"))
-        for pair in spec.get("row_pairs", []):
-            if isinstance(pair, dict):
-                cells.append(highlight_cell(int(pair.get("value_row", -1)), value_col, "related"))
-    elif rule_type == "cross_table_cell_match":
-        # The source cell belongs to a different table. Only the visible target
-        # value is highlighted in this table's original-table panel.
-        cells.append(highlight_cell(row_index, col_index, "target"))
-    elif rule_type == "cell_sum":
-        target_row = int(spec.get("target_row", row_index if row_index is not None else -1))
-        target_col = int(spec.get("target_column", col_index if col_index is not None else -1))
-        cells.append(highlight_cell(target_row, target_col, "target"))
-        for operand in spec.get("operand_cells", []):
-            if isinstance(operand, dict):
-                cells.append(
-                    highlight_cell(
-                        int(operand.get("row", -1)),
-                        int(operand.get("column", -1)),
-                        "related",
-                    )
-                )
-    elif rule_type == "cell_relation_sum":
-        for comparison in spec.get("comparisons", []):
-            if not isinstance(comparison, dict):
-                continue
-            target = relation_cell_for_view(comparison.get("target"), matrix)
-            if target is None:
-                continue
-            target_row, target_col = target
-            if target_row != row_index or target_col != col_index:
-                continue
-            cells.append(highlight_cell(target_row, target_col, "target"))
-            for operand in comparison.get("operand_cells", []):
-                resolved_operand = relation_cell_for_view(operand, matrix)
-                if resolved_operand is not None:
-                    cells.append(highlight_cell(*resolved_operand, "related"))
-            break
-    elif rule_type == "row_arithmetic":
-        target_col = int(spec.get("target_column", col_index if col_index is not None else -1))
-        cells.append(highlight_cell(row_index, target_col, "target"))
-        term_columns = [
-            int(term.get("column", -1))
-            for term in spec.get("terms", [])
-            if isinstance(term, dict) and term.get("column") is not None
-        ]
-        cells.extend(highlight_cell(row_index, col, "related") for col in term_columns)
-    elif rule_type == "row_ratio":
-        target_col = int(spec.get("target_column", col_index if col_index is not None else -1))
-        numerator_col = int(spec.get("numerator_column", -1))
-        denominator_columns = spec_columns(spec, "denominator_columns")
-        denominator_col = int(spec.get("denominator_column", -1))
-        if not denominator_columns and denominator_col >= 0:
-            denominator_columns = [denominator_col]
-        cells.extend(
-            [
-                highlight_cell(row_index, target_col, "target"),
-                highlight_cell(row_index, numerator_col, "related"),
-            ]
-        )
-        cells.extend(highlight_cell(row_index, denominator_col, "related") for denominator_col in denominator_columns)
-    elif rule_type == "column_share_ratio":
-        target_col = int(spec.get("target_column", col_index if col_index is not None else -1))
-        numerator_col = int(spec.get("numerator_column", -1))
-        denominator_row = int(spec.get("denominator_row", -1))
-        denominator_col = int(spec.get("denominator_column", numerator_col))
-        cells.extend(
-            [
-                highlight_cell(row_index, target_col, "target"),
-                highlight_cell(row_index, numerator_col, "related"),
-                highlight_cell(denominator_row, denominator_col, "related"),
-            ]
-        )
-    elif rule_type == "row_growth_rate":
-        target_col = int(spec.get("target_column", col_index if col_index is not None else -1))
-        current_col = int(spec.get("current_column", -1))
-        previous_col = int(spec.get("previous_column", -1))
-        cells.extend(
-            [
-                highlight_cell(row_index, target_col, "target"),
-                highlight_cell(row_index, current_col, "related"),
-                highlight_cell(row_index, previous_col, "related"),
-            ]
-        )
-    elif rule_type in {"column_sum", "region_total"}:
-        target_row = int(spec.get("target_row", row_index if row_index is not None else -1))
-        rule_columns = spec_columns(spec, "columns")
-        current_col = col_index if col_index is not None else (rule_columns[0] if rule_columns else -1)
-        cells.append(highlight_cell(target_row, current_col, "target"))
-        operand_rows = spec_rows(spec, "operand_rows")
-        for operand_row in operand_rows:
-            cells.append(highlight_cell(operand_row, current_col, "related"))
-    elif rule_type == "row_ratio_by_rows":
-        target_row = int(spec.get("target_row", row_index if row_index is not None else -1))
-        numerator_row = int(spec.get("numerator_row", -1))
-        cells.extend([highlight_cell(target_row, col_index, "target"), highlight_cell(numerator_row, col_index, "related")])
-        denominator_rows = spec_rows(spec, "denominator_rows")
-        if not denominator_rows:
-            denominator_rows = [int(spec.get("denominator_row", -1))]
-        cells.extend(highlight_cell(denominator_row, col_index, "related") for denominator_row in denominator_rows)
-    elif rule_type == "weighted_average":
-        target_row = int(spec.get("target_row", row_index if row_index is not None else -1))
-        target_col = int(spec.get("target_column", col_index if col_index is not None else -1))
-        value_col = int(spec.get("value_column", -1))
-        weight_col = int(spec.get("weight_column", -1))
-        cells.append(highlight_cell(target_row, target_col, "target"))
-        for operand_row in spec_rows(spec, "operand_rows"):
-            cells.append(highlight_cell(operand_row, value_col, "related"))
-            cells.append(highlight_cell(operand_row, weight_col, "related"))
-    elif rule_type == "row_year_over_year_rate":
-        target_row = row_index if row_index is not None else int(spec.get("target_row", -1))
-        source_row = next(
-            (
-                int(pair.get("source_row", -1))
-                for pair in spec.get("row_pairs", [])
-                if isinstance(pair, dict) and int(pair.get("target_row", -1)) == target_row
-            ),
-            int(spec.get("source_row", -1)),
-        )
-        previous_col = formula_previous_column(spec, col_index)
-        cells.extend(
-            [
-                highlight_cell(target_row, col_index, "target"),
-                highlight_cell(source_row, col_index, "related"),
-                highlight_cell(source_row, previous_col, "related"),
-            ]
-        )
-    elif rule_type == "row_year_over_year_change_amount":
-        target_row = int(spec.get("target_row", row_index if row_index is not None else -1))
-        source_row = int(spec.get("source_row", -1))
-        previous_col = formula_previous_column(spec, col_index)
-        cells.extend(
-            [
-                highlight_cell(target_row, col_index, "target"),
-                highlight_cell(source_row, col_index, "related"),
-                highlight_cell(source_row, previous_col, "related"),
-            ]
-        )
-    elif rule_type == "year_rows_change_rate":
-        value_col = int(spec.get("value_column", -1))
-        change_col = spec.get("change_column")
-        change_col_value = int(change_col) if change_col is not None else None
-        rate_col = int(spec.get("rate_column", -1))
-        row_indices = sorted(spec_rows(spec, "row_indices"))
-        previous_rows = [candidate for candidate in row_indices if row_index is not None and candidate < row_index]
-        previous_row = previous_rows[-1] if previous_rows else None
-        if change_col_value is not None and col_index == change_col_value:
-            cells.append(highlight_cell(row_index, change_col_value, "target"))
-        elif col_index == rate_col:
-            cells.append(highlight_cell(row_index, rate_col, "target"))
-        else:
-            cells.append(highlight_cell(row_index, col_index, "target"))
-        cells.extend(
-            [
-                highlight_cell(row_index, value_col, "related"),
-                highlight_cell(previous_row, value_col, "related"),
-            ]
-        )
-    elif rule_type == "year_rows_change_amount":
-        value_col = int(spec.get("value_column", -1))
-        change_col = int(spec.get("change_column", col_index if col_index is not None else -1))
-        row_indices = sorted(spec_rows(spec, "row_indices"))
-        previous_rows = [candidate for candidate in row_indices if row_index is not None and candidate < row_index]
-        previous_row = previous_rows[-1] if previous_rows else None
-        cells.extend(
-            [
-                highlight_cell(row_index, change_col, "target"),
-                highlight_cell(row_index, value_col, "related"),
-                highlight_cell(previous_row, value_col, "related"),
-            ]
-        )
-    elif rule_type == "cross_split_operand_row":
-        cells.extend(highlight_cell(row_index, col, "related") for col in spec_columns(spec, "operand_columns"))
-    elif rule_type in {
-        "spelling_static",
-        "translation_static",
-        "growth_rate_scan",
-    }:
-        cells.append(highlight_cell(row_index, col_index, "target"))
-    else:
-        cells.append(highlight_cell(row_index, col_index, "target"))
-
-    return unique_highlight_cells(cells)
-
-
-def highlight_rows_for(row: sqlite3.Row, spec: dict[str, Any] | None) -> list[ValidationHighlightRow]:
-    if spec is None:
-        return fallback_highlight_rows(row)
-
-    rule_type = str(spec.get("type") or "")
-    if rule_type in {
-        "row_sum",
-        "cell_sum",
-        "cell_relation_sum",
-        "row_arithmetic",
-        "row_ratio",
-        "column_share_ratio",
-        "row_growth_rate",
-        "column_sum",
-        "region_total",
-        "row_ratio_by_rows",
-        "weighted_average",
-        "row_year_over_year_rate",
-        "row_year_over_year_change_amount",
-        "year_rows_change_rate",
-        "year_rows_change_amount",
-        "cross_split_operand_row",
-        "cross_table_row_sum",
-        "cross_table_weighted_average",
-        "cross_table_cell_match",
-    }:
-        return []
-
-    return []
-
-
-def highlight_scope_for(row: sqlite3.Row, spec: dict[str, Any] | None, header_count: int) -> str:
-    row_index = int_or_none(row["row_index"])
-    if spec is None:
-        return fallback_highlight_scope(row, header_count)
-
-    rule_type = str(spec.get("type") or "")
-    if rule_type in {"unit_required", "metadata_required"}:
-        return "metadata"
-    if row_index is not None and row_index < header_count:
-        return "header"
-    if rule_type in {
-        "row_sum",
-        "cell_sum",
-        "cell_relation_sum",
-        "row_arithmetic",
-        "row_ratio",
-        "column_share_ratio",
-        "row_growth_rate",
-        "row_year_over_year_change_amount",
-        "year_rows_change_amount",
-        "cross_split_operand_row",
-        "cross_table_row_sum",
-    }:
-        return "row"
-    if rule_type in {"column_sum", "region_total", "row_ratio_by_rows", "cross_table_weighted_average"}:
-        return "column"
-    if rule_type == "weighted_average":
-        return "column"
-    if rule_type in {"spelling_static", "translation_static"}:
-        return "header" if row_index is not None and row_index < header_count else "cell"
-    return "cell" if row_index is not None and row["col_index"] is not None else "none"
-
-
-def fallback_highlight_cells(row: sqlite3.Row) -> list[ValidationHighlightCell]:
-    cell = highlight_cell(int_or_none(row["row_index"]), int_or_none(row["col_index"]), "target")
-    return [cell] if cell else []
-
-
-def fallback_highlight_rows(row: sqlite3.Row) -> list[ValidationHighlightRow]:
-    if int_or_none(row["col_index"]) is not None:
-        return []
-    row_highlight = highlight_row(int_or_none(row["row_index"]), "target")
-    return [row_highlight] if row_highlight else []
-
-
-def fallback_highlight_scope(row: sqlite3.Row, header_count: int) -> str:
-    row_index = int_or_none(row["row_index"])
-    col_index = int_or_none(row["col_index"])
-    if row_index is None or col_index is None:
-        return "none"
-    if row_index < header_count:
-        return "header"
-    return "cell"
-
-
 def decode_display_text(value: str) -> str:
     decoded = unquote(value)
     return decoded or value
@@ -1277,7 +647,7 @@ def part_caption_from_raw_context(raw_context: str) -> tuple[str, str | None]:
     return title or caption, title_en
 
 
-def part_label_from_table_row(table_row: sqlite3.Row) -> str | None:
+def part_label_from_table_row(table_row: DatabaseRow) -> str | None:
     base_label = part_label_from_code(table_row["code"])
     if not base_label:
         return None
@@ -1285,7 +655,7 @@ def part_label_from_table_row(table_row: sqlite3.Row) -> str | None:
     return f"{base_label} · {caption}" if caption else base_label
 
 
-def part_title_en_from_table_row(table_row: sqlite3.Row) -> str:
+def part_title_en_from_table_row(table_row: DatabaseRow) -> str:
     _, title_en = part_caption_from_raw_context(table_row["raw_context"] or "")
     return title_en or table_row["title_en"]
 
@@ -1310,7 +680,7 @@ def parent_code_for(code: str) -> str:
     return "-".join(parts[:-1]) if len(parts) > 1 else ""
 
 
-def build_hierarchy(table_row: sqlite3.Row) -> list[TableHierarchyItem]:
+def build_hierarchy(table_row: DatabaseRow) -> list[TableHierarchyItem]:
     base_code = base_table_code(table_row["code"])
     base_title = strip_part_suffix(table_row["title"])
     base_title_en = table_row["title_en"]
@@ -1414,7 +784,7 @@ def group_table_parts(tables: list[StatTable]) -> list[StatTable]:
     return grouped_tables
 
 
-def matrix_from_cells(cells: list[sqlite3.Row]) -> list[list[str]]:
+def matrix_from_cells(cells: list[DatabaseRow]) -> list[list[str]]:
     if not cells:
         return []
 
@@ -1428,7 +798,7 @@ def matrix_from_cells(cells: list[sqlite3.Row]) -> list[list[str]]:
     return matrix
 
 
-def footnote_matrix_from_cells(cells: list[sqlite3.Row]) -> list[list[str]]:
+def footnote_matrix_from_cells(cells: list[DatabaseRow]) -> list[list[str]]:
     if not cells:
         return []
 
@@ -1442,7 +812,7 @@ def footnote_matrix_from_cells(cells: list[sqlite3.Row]) -> list[list[str]]:
     return matrix
 
 
-def header_count_from_cells(cells: list[sqlite3.Row], matrix: list[list[str]]) -> int:
+def header_count_from_cells(cells: list[DatabaseRow], matrix: list[list[str]]) -> int:
     header_rows = {cell["row_index"] for cell in cells if cell["is_header"]}
     if header_rows:
         return display_header_count_from_matrix(matrix, max(header_rows) + 1)
@@ -2061,7 +1431,7 @@ def formatted_value(value: Any, unit: str) -> str:
     return f"{body}{unit}" if unit and unit not in {"-", "%"} and isinstance(value, (int, float)) else body
 
 
-def metadata_base_date_display(table_row: sqlite3.Row, report_year: int) -> str:
+def metadata_base_date_display(table_row: DatabaseRow, report_year: int) -> str:
     fallback = table_row["base_date"] or f"{report_year} 기준"
     raw_context = re.sub(r"\s+", " ", table_row["raw_context"] or "")
     match = re.search(r"\(\s*([^()]*?기준)\s*\)\s*\(\s*(As of [^)]+)\s*\)", raw_context)
@@ -2071,7 +1441,7 @@ def metadata_base_date_display(table_row: sqlite3.Row, report_year: int) -> str:
     return f"{korean.strip()}({english.strip()})"
 
 
-def metadata_unit_display(table_row: sqlite3.Row) -> str:
+def metadata_unit_display(table_row: DatabaseRow) -> str:
     fallback = table_row["unit"] or "-"
     raw_context = re.sub(r"\s+", " ", table_row["raw_context"] or "")
     match = re.search(r"\(\s*단위\s*:\s*([^)]+?)\s*\)\s*\(\s*(Unit\s*:\s*[^)]+)\s*\)", raw_context)
@@ -2082,7 +1452,7 @@ def metadata_unit_display(table_row: sqlite3.Row) -> str:
 
 
 def build_summary(
-    table_row: sqlite3.Row,
+    table_row: DatabaseRow,
     rows: list[dict[str, Any]],
     columns: list[ColumnDefinition],
 ) -> list[str]:
@@ -2107,7 +1477,7 @@ def build_summary(
 
 
 def build_key_figures(
-    table_row: sqlite3.Row,
+    table_row: DatabaseRow,
     rows: list[dict[str, Any]],
     columns: list[ColumnDefinition],
 ) -> list[Metric]:
@@ -2151,7 +1521,7 @@ def numeric_values(
 
 def build_visualizations(
     table_id: str,
-    table_row: sqlite3.Row,
+    table_row: DatabaseRow,
     rows: list[dict[str, Any]],
     columns: list[ColumnDefinition],
 ) -> list[Visualization]:

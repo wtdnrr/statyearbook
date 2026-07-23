@@ -12,7 +12,7 @@ class PostgresAdapterTest(unittest.TestCase):
         )
         self.assertEqual(
             translated,
-            ("SELECT * FROM stat_tables WHERE code = %s AND title LIKE '%?%'", False),
+            ("SELECT * FROM stat_tables WHERE code = %s AND title LIKE '%%?%%'", False),
         )
 
     def test_returns_insert_id_for_tables_that_used_lastrowid(self) -> None:

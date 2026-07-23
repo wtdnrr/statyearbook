@@ -21,6 +21,11 @@ from app.validation.rules import (
     is_total_like,
     leading_label_columns,
 )
+from app.validation.catalog import (
+    CALCULATION_RULE_TYPES,
+    PROFILE_SPEC_EXECUTORS,
+    SUPPORTED_PROFILE_SPEC_TYPES,
+)
 
 
 def median(values: list[float]) -> float:
@@ -43,43 +48,6 @@ def contains_korean_term(text: str, term: str) -> bool:
 
 KNOWN_SPELLING_TYPOS = ("Claasification", "Claasifi-cation", "Ele7ction", "Nuber")
 SUM_RATIO_MIN_TOLERANCE = 1.0
-SUM_RATIO_RULE_TYPES = {
-    "region_total",
-    "column_sum",
-    "cell_sum",
-    "row_sum",
-    "row_arithmetic",
-    "row_ratio",
-    "column_share_ratio",
-    "row_ratio_by_rows",
-    "cell_relation_sum",
-    "cross_table_cell_match",
-    "cross_table_weighted_average",
-}
-SUPPORTED_PROFILE_SPEC_TYPES = {
-    "unit_required",
-    "metadata_required",
-    "region_total",
-    "column_sum",
-    "cell_sum",
-    "cell_relation_sum",
-    "cross_table_weighted_average",
-    "row_sum",
-    "row_arithmetic",
-    "row_ratio",
-    "column_share_ratio",
-    "row_ratio_by_rows",
-    "weighted_average",
-    "growth_rate_scan",
-    "row_growth_rate",
-    "row_year_over_year_rate",
-    "row_year_over_year_change_amount",
-    "year_rows_change_rate",
-    "year_rows_change_amount",
-    "outlier_columns",
-}
-
-
 def contains_known_spelling_typo(text: str) -> bool:
     return any(term in text for term in KNOWN_SPELLING_TYPOS)
 
@@ -112,7 +80,7 @@ def displayed_ratio_tolerance(
 
 
 def is_sum_or_ratio_spec(spec: dict[str, Any]) -> bool:
-    return spec.get("check_group") in {"sum", "ratio"} or str(spec.get("type") or "") in SUM_RATIO_RULE_TYPES
+    return spec.get("check_group") in {"sum", "ratio"} or str(spec.get("type") or "") in CALCULATION_RULE_TYPES
 
 
 def sum_ratio_tolerance(spec: dict[str, Any], default: float) -> float:
@@ -228,45 +196,11 @@ class ProfileSpecRule(ValidationRule):
         for spec in self._check_specs_with_merged_metadata(table, profile.check_specs):
             if not self._should_execute(spec):
                 continue
-            rule_type = spec.get("type")
-            if rule_type == "metadata_required":
-                spec_issues, spec_checks = self._validate_metadata(table, profile, spec)
-            elif rule_type == "region_total":
-                spec_issues, spec_checks = self._validate_column_sum(table, profile, spec)
-            elif rule_type == "column_sum":
-                spec_issues, spec_checks = self._validate_column_sum(table, profile, spec)
-            elif rule_type == "cell_sum":
-                spec_issues, spec_checks = self._validate_cell_sum(table, profile, spec)
-            elif rule_type == "cell_relation_sum":
-                spec_issues, spec_checks = self._validate_cell_relation_sum(table, profile, spec)
-            elif rule_type == "row_sum":
-                spec_issues, spec_checks = self._validate_row_sum(table, profile, spec)
-            elif rule_type == "row_arithmetic":
-                spec_issues, spec_checks = self._validate_row_arithmetic(table, profile, spec)
-            elif rule_type == "row_ratio":
-                spec_issues, spec_checks = self._validate_row_ratio(table, profile, spec)
-            elif rule_type == "column_share_ratio":
-                spec_issues, spec_checks = self._validate_column_share_ratio(table, profile, spec)
-            elif rule_type == "row_ratio_by_rows":
-                spec_issues, spec_checks = self._validate_row_ratio_by_rows(table, profile, spec)
-            elif rule_type == "weighted_average":
-                spec_issues, spec_checks = self._validate_weighted_average(table, profile, spec)
-            elif rule_type == "growth_rate_scan":
-                spec_issues, spec_checks = self._validate_growth_rate_scan(table, profile, spec)
-            elif rule_type == "row_growth_rate":
-                spec_issues, spec_checks = self._validate_row_growth_rate(table, profile, spec)
-            elif rule_type == "row_year_over_year_rate":
-                spec_issues, spec_checks = self._validate_row_year_over_year_rate(table, profile, spec)
-            elif rule_type == "row_year_over_year_change_amount":
-                spec_issues, spec_checks = self._validate_row_year_over_year_change_amount(table, profile, spec)
-            elif rule_type == "year_rows_change_rate":
-                spec_issues, spec_checks = self._validate_year_rows_change_rate(table, profile, spec)
-            elif rule_type == "year_rows_change_amount":
-                spec_issues, spec_checks = self._validate_year_rows_change_amount(table, profile, spec)
-            elif rule_type == "outlier_columns":
-                spec_issues, spec_checks = self._validate_outliers(table, profile, spec)
-            else:
-                spec_issues, spec_checks = [], []
+            executor_name = PROFILE_SPEC_EXECUTORS.get(str(spec.get("type") or ""))
+            if executor_name is None:
+                continue
+            executor = getattr(self, executor_name)
+            spec_issues, spec_checks = executor(table, profile, spec)
 
             issues.extend(spec_issues)
             checks.extend(spec_checks)

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from app.services.sqlite_report_service import fallback_highlight_rows, highlight_cells_for
+from app.validation.highlights import fallback_highlight_rows, highlight_cells_for
 
 
 class ValidationHighlightTest(unittest.TestCase):

@@ -6,7 +6,8 @@ import re
 import sqlite3
 
 from app.core.numeric_text import numeric_text_anomaly
-from app.db.schema import connect, init_db
+from app.db.connection import connect
+from app.db.schema import init_db
 from app.validation.blue_review import normalize_review_text
 
 

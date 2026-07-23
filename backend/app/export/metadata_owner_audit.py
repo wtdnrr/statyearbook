@@ -17,7 +17,7 @@ from openpyxl.utils import get_column_letter
 import xlrd
 
 from app.core.contact_metadata import parse_contact_metadata
-from app.db.schema import DB_PATH, connect
+from app.db.connection import DB_PATH, connect
 from app.export.validation_workbooks import base_table_code
 
 

@@ -9,7 +9,8 @@ import sqlite3
 import time
 from typing import Any
 
-from app.db.schema import DB_PATH, connect, init_db
+from app.db.connection import DB_PATH, connect
+from app.db.schema import init_db
 from app.validation.blue_review import normalize_review_text
 from app.validation.linguistic_policy import (
     SPELLING_CHECK_TYPE,

@@ -8,7 +8,8 @@ from typing import Any, TypeVar
 
 from app.core.env import env_value, load_local_env_file
 from app.db.postgres import PostgresConnection
-from app.db.schema import DB_PATH, init_db
+from app.db.connection import DB_PATH
+from app.db.schema import init_db
 
 
 COPY_TABLES = (

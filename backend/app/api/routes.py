@@ -15,7 +15,7 @@ from app.models.report import (
 )
 from app.services.report_service import get_report_service
 from app.core.config import get_settings
-from app.validation.profile_repository import SQLiteValidationProfileRepository
+from app.validation.profile_repository import ValidationProfileRepository
 from app.validation.profiles import ValidationProfile
 from app.validation.run_validations import run_validations
 from app.workflows.report_processing import (
@@ -29,20 +29,17 @@ router = APIRouter()
 
 @router.get("/report", response_model=ReportPayload)
 def get_report(report_id: int | None = Query(default=None)) -> ReportPayload:
-    service = get_report_service()
-    if hasattr(service, "get_payload_for_report"):
-        return service.get_payload_for_report(report_id)  # type: ignore[attr-defined]
-    return service.get_payload()
+    return get_report_service().get_payload_for_report(report_id)
 
 
 @router.get("/tables", response_model=list[StatTable])
 def list_tables(report_id: int | None = Query(default=None)) -> list[StatTable]:
-    return get_report_service().list_tables(report_id)  # type: ignore[arg-type]
+    return get_report_service().list_tables(report_id)
 
 
 @router.get("/tables/{table_id}", response_model=StatTable)
 def get_table(table_id: str, report_id: int | None = Query(default=None)) -> StatTable:
-    table = get_report_service().get_table(table_id, report_id)  # type: ignore[arg-type]
+    table = get_report_service().get_table(table_id, report_id)
     if table is None:
         raise HTTPException(status_code=404, detail="Table not found")
     return table
@@ -154,7 +151,7 @@ def run_processing_job(job_id: int, retry: bool = False) -> None:
 
 @router.get("/validation/profiles", response_model=list[ValidationProfileSummary])
 def list_validation_profiles() -> list[ValidationProfileSummary]:
-    repository = SQLiteValidationProfileRepository()
+    repository = ValidationProfileRepository()
     return [profile_to_summary(profile) for profile in repository.list_profiles()]
 
 
@@ -163,7 +160,7 @@ def approve_validation_profile(
     profile_id: int,
     payload: ValidationProfileApprovalRequest,
 ) -> ValidationProfileSummary:
-    repository = SQLiteValidationProfileRepository()
+    repository = ValidationProfileRepository()
     profile = repository.approve_profile(profile_id, approved_by=payload.approved_by)
     if profile is None:
         raise HTTPException(status_code=404, detail="Validation profile not found")

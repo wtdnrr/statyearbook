@@ -14,11 +14,13 @@ from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 
 from app.core.contact_metadata import ContactMetadata, parse_contact_metadata
-from app.db.schema import DB_PATH, connect, init_db
-from app.services.sqlite_report_service import highlight_cells_for, load_rule_specs_by_id
+from app.db.connection import DB_PATH, connect
+from app.db.schema import init_db
+from app.validation.highlights import highlight_cells_for
+from app.validation.spec_repository import load_rule_specs_by_id
 from app.validation.models import ValidationTable, restore_hyphenated_line_breaks
 from app.validation.rules import combined_row_label
-from app.validation.sqlite_repository import SQLiteValidationRepository
+from app.validation.repository import ValidationRepository
 
 
 EXCLUDED_CHECK_TYPES = {"이상치 검수"}
@@ -529,7 +531,7 @@ def write_validation_index_workbook(
 
 
 def validation_table_map(db_path: Path, report_id: int) -> dict[int, ValidationTable]:
-    repository = SQLiteValidationRepository(db_path)
+    repository = ValidationRepository(db_path)
     return {table.id: table for table in repository.load_tables(report_id)}
 
 

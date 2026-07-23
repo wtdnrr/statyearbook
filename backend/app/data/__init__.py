@@ -1,1 +1,1 @@
-"""In-memory dummy data for the PoC."""
+"""Versioned reference dictionaries used by parsing and validation."""

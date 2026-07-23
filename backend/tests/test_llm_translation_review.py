@@ -6,7 +6,8 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from app.db.schema import connect, init_db, repair_misaligned_linguistic_reviews
+from app.db.connection import connect
+from app.db.schema import init_db, repair_misaligned_linguistic_reviews
 from app.validation.blue_review import insert_blue_review
 from app.validation.linguistic_review import prepare_linguistic_reviews
 from app.validation.llm_translation_review import (

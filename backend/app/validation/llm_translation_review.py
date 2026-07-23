@@ -24,7 +24,8 @@ from app.core.llm_client import (
     resolve_llm_client_settings,
 )
 
-from app.db.schema import DB_PATH, connect, init_db
+from app.db.connection import DB_PATH, connect
+from app.db.schema import init_db
 from app.validation.blue_review import (
     BLUE_LLM_RULE_ID,
     BLUE_REVIEW_RULE_ID,

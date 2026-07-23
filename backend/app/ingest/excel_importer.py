@@ -10,7 +10,7 @@ from openpyxl import load_workbook
 from openpyxl.cell.cell import Cell
 from openpyxl.worksheet.worksheet import Worksheet
 
-from app.db.schema import DB_PATH
+from app.db.connection import DB_PATH
 from app.ingest.hwpx_importer import (
     TABLE_CODE_RE,
     domain_from_code,

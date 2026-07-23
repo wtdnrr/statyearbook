@@ -9,7 +9,12 @@ from typing import Any, Callable, Protocol
 
 from app.core.llm_client import ResponsesTransport, parse_responses_json, resolve_llm_client_settings
 
-from app.validation.catalog import rule_definition_payload, rule_spec
+from app.validation.catalog import (
+    LLM_PROFILE_RULE_TYPES,
+    check_group_for_rule_type,
+    rule_definition_payload,
+    rule_spec,
+)
 from app.validation.curated_profiles import apply_curated_profile
 from app.validation.models import ValidationTable, clean_display_text, normalize_text
 from app.validation.rules import (
@@ -3142,25 +3147,6 @@ FINAL_PROFILE_GENERATORS: tuple[ProfileCheckGenerator, ...] = (
 )
 
 
-LLM_PROFILE_RULE_TYPES = {
-    "region_total",
-    "column_sum",
-    "cell_sum",
-    "cell_relation_sum",
-    "row_sum",
-    "row_arithmetic",
-    "row_ratio",
-    "column_share_ratio",
-    "row_ratio_by_rows",
-    "weighted_average",
-    "growth_rate_scan",
-    "row_growth_rate",
-    "row_year_over_year_rate",
-    "row_year_over_year_change_amount",
-    "year_rows_change_rate",
-    "year_rows_change_amount",
-}
-
 PROFILE_REVIEW_RESPONSE_SCHEMA = {
     "type": "object",
     "properties": {
@@ -3257,7 +3243,7 @@ def parse_llm_profile_checks(table: ValidationTable, raw_checks: Any) -> list[di
             confidence = float(raw_check.get("confidence", 0.7))
         except (TypeError, ValueError):
             confidence = 0.7
-        group = profile_group_for_type(rule_type)
+        group = check_group_for_rule_type(rule_type)
         check = {
             **raw_check,
             "id": str(raw_check.get("id") or f"profile.{table.code}.llm.{index + 1}"),
@@ -3268,24 +3254,6 @@ def parse_llm_profile_checks(table: ValidationTable, raw_checks: Any) -> list[di
         }
         checks.append(rule_spec(group, check))
     return checks
-
-
-def profile_group_for_type(rule_type: str) -> str:
-    if rule_type in {
-        "row_ratio",
-        "column_share_ratio",
-        "row_ratio_by_rows",
-        "weighted_average",
-    }:
-        return "ratio"
-    if rule_type in {
-        "growth_rate_scan",
-        "row_growth_rate",
-        "row_year_over_year_rate",
-        "year_rows_change_rate",
-    }:
-        return "growth_rate"
-    return "sum"
 
 
 def profile_coordinates_are_valid(table: ValidationTable, spec: dict[str, Any]) -> bool:

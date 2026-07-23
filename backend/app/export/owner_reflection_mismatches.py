@@ -11,7 +11,7 @@ from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 
-from app.db.schema import DB_PATH, connect
+from app.db.connection import DB_PATH, connect
 from app.export.metadata_owner_audit import (
     LogicalTable,
     OnnaraUser,

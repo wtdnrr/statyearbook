@@ -4,6 +4,7 @@ from abc import ABC, abstractmethod
 import re
 
 from app.validation.models import (
+    ValidationCheckRecord,
     ValidationIssueRecord,
     ValidationTable,
     clean_display_text,
@@ -211,6 +212,14 @@ class ValidationRule(ABC):
     @abstractmethod
     def validate(self, table: ValidationTable) -> list[ValidationIssueRecord]:
         raise NotImplementedError
+
+    def evaluate(
+        self,
+        table: ValidationTable,
+    ) -> tuple[list[ValidationIssueRecord], list[ValidationCheckRecord]]:
+        """Run a table rule and return issues plus optional audit checks."""
+
+        return self.validate(table), []
 
     def issue(
         self,

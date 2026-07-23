@@ -3,10 +3,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from app.db.schema import DB_PATH
+from app.db.connection import DB_PATH
 from app.validation.engine import ValidationEngine
-from app.validation.profile_repository import SQLiteValidationProfileRepository
-from app.validation.sqlite_repository import SQLiteValidationRepository
+from app.validation.profile_repository import ValidationProfileRepository
+from app.validation.repository import ValidationRepository
 
 
 @dataclass(frozen=True)
@@ -26,8 +26,8 @@ class CalculationValidationWorkflow:
     """
 
     def __init__(self, db_path: Path = DB_PATH) -> None:
-        self._validation_repository = SQLiteValidationRepository(db_path)
-        self._profile_repository = SQLiteValidationProfileRepository(db_path)
+        self._validation_repository = ValidationRepository(db_path)
+        self._profile_repository = ValidationProfileRepository(db_path)
 
     def run(
         self,

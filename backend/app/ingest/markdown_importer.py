@@ -7,7 +7,7 @@ from pathlib import Path
 import re
 from typing import Iterable
 
-from app.db.schema import DB_PATH
+from app.db.connection import DB_PATH
 from app.ingest.anomaly import annotate_adjacent_duplicate_tables
 from app.ingest.cell_text import footnote_markers_from_texts, split_cell_text
 from app.ingest.repository import ImportedTable, ReportImportRepository

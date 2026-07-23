@@ -4,11 +4,10 @@ from dataclasses import dataclass, field
 from datetime import datetime
 import hashlib
 from pathlib import Path
-from sqlite3 import Connection as SQLiteConnection
 
 from app.core.numeric_text import parse_numeric_value
-from app.db.schema import DB_PATH, connect, init_db
-from app.db.postgres import PostgresConnection
+from app.db.connection import DB_PATH, DatabaseConnection, connect
+from app.db.schema import init_db
 
 
 @dataclass(frozen=True)
@@ -76,7 +75,7 @@ class ReportImportRepository:
                 ).fetchone()
                 if existing_report is not None:
                     # Exact input is idempotent. Reuse the prior report rather
-                    # than deleting its tables and forcing SQLite to inspect
+                    # than deleting its tables and forcing the database to inspect
                     # every historical validation record that references them.
                     report_id = int(existing_report["id"])
                     connection.execute(
@@ -182,7 +181,7 @@ def file_digest(source_path: Path) -> str:
     return digest.hexdigest()
 
 
-def table_count_for_report(connection: SQLiteConnection | PostgresConnection, report_id: int) -> int:
+def table_count_for_report(connection: DatabaseConnection, report_id: int) -> int:
     row = connection.execute(
         "SELECT COUNT(*) AS count FROM stat_tables WHERE report_id = ?",
         (report_id,),
@@ -190,7 +189,7 @@ def table_count_for_report(connection: SQLiteConnection | PostgresConnection, re
     return int(row["count"])
 
 
-def cell_count_for_report(connection: SQLiteConnection | PostgresConnection, report_id: int) -> int:
+def cell_count_for_report(connection: DatabaseConnection, report_id: int) -> int:
     row = connection.execute(
         """
         SELECT COUNT(*) AS count

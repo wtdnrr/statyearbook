@@ -6,13 +6,14 @@ import json
 from pathlib import Path
 from typing import Callable
 
-from app.db.schema import DB_PATH, connect, init_db
+from app.db.connection import DB_PATH, connect
+from app.db.schema import init_db
 from app.ingest.excel_importer import import_excel
 from app.ingest.hwpx_importer import import_hwpx
 from app.ingest.markdown_importer import import_markdown
 from app.validation.calculation_workflow import CalculationValidationWorkflow
 from app.validation.language_workflow import LanguageValidationWorkflow
-from app.validation.sqlite_repository import SQLiteValidationRepository
+from app.validation.repository import ValidationRepository
 from app.validation.workflow import validation_issue_count
 
 
@@ -21,6 +22,13 @@ SUPPORTED_SOURCE_TYPES = {
     ".hwpx": "hwpx",
     ".md": "markdown",
 }
+SOURCE_IMPORTERS = {
+    "xlsx": import_excel,
+    "hwpx": import_hwpx,
+    "markdown": import_markdown,
+}
+
+
 @dataclass(frozen=True)
 class ReportProcessingOptions:
     include_llm: bool = False
@@ -82,7 +90,10 @@ class ReportProcessingWorkflow:
         if job["status"] == "completed":
             return job
 
-        resume_stage = str(job["current_stage"] or "import") if job["status"] == "failed" else "import"
+        # ``queue_retry`` changes only the status. Keeping the persisted stage
+        # lets a retry resume after the last successful stage instead of
+        # importing the same source a second time.
+        resume_stage = str(job["current_stage"] or "import")
         self._update_job(job_id, status="running", current_stage=resume_stage, started=True, error="")
         try:
             options = processing_options_from_json(str(job["options_json"] or "{}"))
@@ -120,7 +131,7 @@ class ReportProcessingWorkflow:
                     current_stage="language_validation",
                 )
 
-            report = SQLiteValidationRepository(self._db_path).report(report_id)
+            report = ValidationRepository(self._db_path).report(report_id)
             if report is None:
                 raise RuntimeError(f"검수할 연보를 찾을 수 없습니다: {report_id}")
             language_result = self._run_stage(
@@ -206,13 +217,10 @@ class ReportProcessingWorkflow:
             "run_validation": False,
         }
         source_type = str(job["source_type"])
-        if source_type == "xlsx":
-            return import_excel(source_path, **common)
-        if source_type == "hwpx":
-            return import_hwpx(source_path, **common)
-        if source_type == "markdown":
-            return import_markdown(source_path, **common)
-        raise ValueError(f"등록되지 않은 가져오기 형식입니다: {source_type}")
+        importer = SOURCE_IMPORTERS.get(source_type)
+        if importer is None:
+            raise ValueError(f"등록되지 않은 가져오기 형식입니다: {source_type}")
+        return importer(source_path, **common)
 
     def _run_language_validation(
         self,

@@ -3,7 +3,8 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from app.db.schema import DB_PATH, connect, init_db
+from app.db.connection import DB_PATH, connect
+from app.db.schema import init_db
 from app.validation.blue_review import append_blue_text_review_checks, synchronize_blue_review_checks
 from app.validation.llm_translation_review import (
     apply_reusable_linguistic_reviews,

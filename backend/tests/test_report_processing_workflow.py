@@ -4,17 +4,19 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 import json
 import unittest
+from unittest.mock import patch
 
 from openpyxl import Workbook
 
-from app.db.schema import connect, init_db
+from app.db.connection import connect
+from app.db.schema import init_db
 from app.ingest.excel_importer import import_excel, parse_excel
 from app.ingest.repository import ReportImportRepository
-from app.validation.profile_repository import SQLiteValidationProfileRepository
+from app.validation.profile_repository import ValidationProfileRepository
 from app.validation.profiles import HeuristicProfileDraftProvider
-from app.validation.sqlite_repository import SQLiteValidationRepository
+from app.validation.repository import ValidationRepository
 from app.validation.workflow import ValidationWorkflow
-from app.workflows.report_processing import ReportProcessingWorkflow
+from app.workflows.report_processing import ReportProcessingError, ReportProcessingWorkflow
 
 
 class CountingProfileProvider(HeuristicProfileDraftProvider):
@@ -134,8 +136,8 @@ class ReportProcessingWorkflowTest(unittest.TestCase):
                 run_validation=False,
             )
             report_id = int(imported["report_id"])
-            tables = SQLiteValidationRepository(db_path).load_tables(report_id)
-            repository = SQLiteValidationProfileRepository(db_path)
+            tables = ValidationRepository(db_path).load_tables(report_id)
+            repository = ValidationProfileRepository(db_path)
             provider = CountingProfileProvider()
 
             repository.ensure_profiles(report_id=report_id, tables=tables, provider=provider)
@@ -156,8 +158,8 @@ class ReportProcessingWorkflowTest(unittest.TestCase):
                 run_validation=False,
             )
             report_id = int(imported["report_id"])
-            tables = SQLiteValidationRepository(db_path).load_tables(report_id)
-            repository = SQLiteValidationProfileRepository(db_path)
+            tables = ValidationRepository(db_path).load_tables(report_id)
+            repository = ValidationProfileRepository(db_path)
             provider = CountingProfileProvider()
 
             repository.ensure_profiles(report_id=report_id, tables=tables, provider=provider)
@@ -186,11 +188,11 @@ class ReportProcessingWorkflowTest(unittest.TestCase):
             workbook_path = root / "changed.xlsx"
             db_path = root / "report.sqlite"
             self.make_workbook(workbook_path)
-            repository = SQLiteValidationProfileRepository(db_path)
+            repository = ValidationProfileRepository(db_path)
             provider = CountingProfileProvider()
 
             first = import_excel(workbook_path, db_path=db_path, year=2026, run_validation=False)
-            first_tables = SQLiteValidationRepository(db_path).load_tables(int(first["report_id"]))
+            first_tables = ValidationRepository(db_path).load_tables(int(first["report_id"]))
             repository.ensure_profiles(
                 report_id=int(first["report_id"]),
                 tables=first_tables,
@@ -207,7 +209,7 @@ class ReportProcessingWorkflowTest(unittest.TestCase):
             workbook.save(workbook_path)
             workbook.close()
             second = import_excel(workbook_path, db_path=db_path, year=2027, run_validation=False)
-            second_tables = SQLiteValidationRepository(db_path).load_tables(int(second["report_id"]))
+            second_tables = ValidationRepository(db_path).load_tables(int(second["report_id"]))
             repository.ensure_profiles(
                 report_id=int(second["report_id"]),
                 tables=second_tables,
@@ -224,10 +226,10 @@ class ReportProcessingWorkflowTest(unittest.TestCase):
             db_path = root / "report.sqlite"
             self.make_workbook(first_path)
             provider = CountingProfileProvider()
-            repository = SQLiteValidationProfileRepository(db_path)
+            repository = ValidationProfileRepository(db_path)
 
             first = import_excel(first_path, db_path=db_path, year=2026, run_validation=False)
-            first_tables = SQLiteValidationRepository(db_path).load_tables(int(first["report_id"]))
+            first_tables = ValidationRepository(db_path).load_tables(int(first["report_id"]))
             repository.ensure_profiles(
                 report_id=int(first["report_id"]),
                 tables=first_tables,
@@ -249,7 +251,7 @@ class ReportProcessingWorkflowTest(unittest.TestCase):
             workbook.close()
 
             second = import_excel(second_path, db_path=db_path, year=2027, run_validation=False)
-            second_tables = SQLiteValidationRepository(db_path).load_tables(int(second["report_id"]))
+            second_tables = ValidationRepository(db_path).load_tables(int(second["report_id"]))
             profiles = repository.ensure_profiles(
                 report_id=int(second["report_id"]),
                 tables=second_tables,
@@ -286,6 +288,36 @@ class ReportProcessingWorkflowTest(unittest.TestCase):
             language_stage = job["stages"][-1]
             language_result = json.loads(str(language_stage["result_json"]))
             self.assertIn(language_result["status"], {"완료", "대기"})
+
+    def test_retry_resumes_failed_stage_without_reimporting(self) -> None:
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            workbook_path = root / "retry.xlsx"
+            db_path = root / "report.sqlite"
+            self.make_workbook(workbook_path)
+            workflow = ReportProcessingWorkflow(db_path)
+            job_id = workflow.create_job(
+                source_path=workbook_path,
+                year=2026,
+                title="2026 재시도 테스트 연보",
+            )
+
+            with patch.object(
+                workflow,
+                "_run_language_validation",
+                side_effect=RuntimeError("temporary language failure"),
+            ):
+                with self.assertRaises(ReportProcessingError):
+                    workflow.run(job_id)
+
+            workflow.queue_retry(job_id)
+            completed = workflow.retry(job_id)
+            stage_names = [stage["stage_name"] for stage in completed["stages"]]
+
+            self.assertEqual(completed["status"], "completed")
+            self.assertEqual(stage_names.count("import"), 1)
+            self.assertEqual(stage_names.count("calculation_validation"), 1)
+            self.assertEqual(stage_names.count("language_validation"), 2)
 
 
 if __name__ == "__main__":

@@ -4,7 +4,8 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from app.db.schema import connect, init_db
+from app.db.connection import connect
+from app.db.schema import init_db
 from app.validation.glossary_audit import (
     quarantine_known_spelling_contamination,
     reset_rejected_dictionary_candidates,

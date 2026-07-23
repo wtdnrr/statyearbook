@@ -1,11 +1,12 @@
-import { useMemo, useRef, useState } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 
 import { AppHeader, type AppSection } from "./components/AppHeader";
 import { DetailView } from "./components/DetailView";
 import { PressPage } from "./components/PressPage";
 import { ReportWorkspace } from "./components/ReportWorkspace";
 import { useReport } from "./hooks/useReport";
-import { fetchTable, uploadReport, waitForImport } from "./api/reportApi";
+import { useReportImport } from "./hooks/useReportImport";
+import { fetchTable } from "./api/reportApi";
 import type { StatTable, TableStatus } from "./types";
 import {
   DEFAULT_HIDDEN_VALIDATION_TYPES,
@@ -33,8 +34,19 @@ export default function App() {
     () => new Set(DEFAULT_HIDDEN_VALIDATION_TYPES),
   );
   const [reportRefreshKey, setReportRefreshKey] = useState(0);
-  const [uploadState, setUploadState] = useState<"idle" | "uploading" | "error">("idle");
   const report = useReport(selectedReportId || undefined, reportRefreshKey);
+
+  const handleImportCompleted = useCallback((completed: { report_id: number | null }) => {
+    setSelectedReportId(completed.report_id ? String(completed.report_id) : "");
+    setSelectedTableId("");
+    setDetailTableId(null);
+    setDetailTable(null);
+    setSelectedTableDetail(null);
+    selectedTableRequestRef.current = "";
+    setDetailStatus("idle");
+    setReportRefreshKey((current) => current + 1);
+  }, []);
+  const { upload: handleUpload, uploadState } = useReportImport(handleImportCompleted);
 
   const rawTables = report.data?.tables ?? [];
   const validationTypes = useMemo(
@@ -135,26 +147,6 @@ export default function App() {
       }
       return next;
     });
-  }
-
-  async function handleUpload(file: File) {
-    setUploadState("uploading");
-    try {
-      const queued = await uploadReport(file);
-      const completed = await waitForImport(queued.id);
-      setSelectedReportId(completed.report_id ? String(completed.report_id) : "");
-      setSelectedTableId("");
-      setDetailTableId(null);
-      setDetailTable(null);
-      setSelectedTableDetail(null);
-      selectedTableRequestRef.current = "";
-      setDetailStatus("idle");
-      setReportRefreshKey((current) => current + 1);
-      setUploadState("idle");
-    } catch (error) {
-      setUploadState("error");
-      window.alert(error instanceof Error ? error.message : "연보 처리 중 오류가 발생했습니다.");
-    }
   }
 
   if (report.status === "loading") {

@@ -1,8 +1,10 @@
 # 통계연보 검수 보조
 
 통계연보 파일을 구조화하고 합계·비율·오탈자·번역·메타정보 등을 검수하는
-React + FastAPI 웹앱입니다. 업로드한 파일은 SQLite에 저장되며, 검수 작업은
-연보 ID에 고정된 단계형 워크플로로 실행됩니다.
+React + FastAPI 웹앱입니다. 업로드한 파일의 구조화 데이터와 검수 결과는 선택된
+DB에 저장되며, 검수 작업은 연보 ID에 고정된 단계형 워크플로로 실행됩니다.
+로컬은 SQLite를 사용하고, Railway는 같은 저장소 계층을 통해 PostgreSQL을
+사용합니다.
 
 ## 실행
 
@@ -114,6 +116,7 @@ Railway에서 GitHub 저장소를 연결한 뒤 백엔드 서비스를 만듭니
 
 ```dotenv
 DATABASE_URL=${{Postgres.DATABASE_URL}}
+DATABASE_BACKEND=postgres
 UPLOAD_DIR=/data/uploads
 ALLOWED_ORIGINS=https://your-vercel-project.vercel.app
 AUTO_IMPORT_INCLUDE_LLM=0
@@ -136,9 +139,8 @@ AUTO_IMPORT_INCLUDE_LLM=1
 
 ### Vercel 프론트엔드
 
-Vercel에서 같은 GitHub 저장소를 연결합니다. Project Root를 `frontend`로 설정해도
-되고, 설정을 건드리지 않고 저장소 루트로 두어도 됩니다. 루트 `vercel.json`은
-`frontend` 앱을 빌드해 `frontend/dist`를 배포하도록 지정합니다.
+Vercel에서 같은 GitHub 저장소를 연결하고 Root Directory를 `frontend`로
+설정합니다. `frontend/vercel.json`이 Vite 빌드와 SPA 경로 처리를 담당합니다.
 
 필수 환경 변수:
 
@@ -155,7 +157,7 @@ Vercel 배포 URL이 확정되면 Railway의 `ALLOWED_ORIGINS` 값을 그 URL로
 backend/app/
   api/                    FastAPI 엔드포인트
   core/                   설정, 공용 LLM 전송 계층
-  db/                     SQLite 스키마
+  db/                     DB 연결 선택, 공통 스키마, PostgreSQL 어댑터
   ingest/                 Excel/HWPX/Markdown 파서와 저장소
   validation/             프로파일, 규칙 엔진, 언어 검수 단계
   workflows/              업로드부터 검수 완료까지의 작업 오케스트레이션

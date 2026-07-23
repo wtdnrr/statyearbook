@@ -4,8 +4,9 @@ import tempfile
 import unittest
 import zipfile
 
-from app.db.schema import connect, init_db
-from app.services.sqlite_report_service import (
+from app.db.connection import connect
+from app.db.schema import init_db
+from app.services.database_report_service import (
     build_columns,
     build_rows,
     clean_label,

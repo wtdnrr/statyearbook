@@ -3,10 +3,11 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
-from app.db.schema import DB_PATH, connect, init_db
+from app.db.connection import DB_PATH, connect
+from app.db.schema import init_db
 from app.validation.calculation_workflow import CalculationValidationWorkflow
 from app.validation.language_workflow import LanguageValidationWorkflow
-from app.validation.sqlite_repository import SQLiteValidationRepository
+from app.validation.repository import ValidationRepository
 
 
 @dataclass(frozen=True)
@@ -39,7 +40,7 @@ class ValidationWorkflow:
 
     def __init__(self, db_path: Path = DB_PATH) -> None:
         self._db_path = db_path
-        self._repository = SQLiteValidationRepository(db_path)
+        self._repository = ValidationRepository(db_path)
         self._calculation = CalculationValidationWorkflow(db_path)
         self._language = LanguageValidationWorkflow(db_path)
 

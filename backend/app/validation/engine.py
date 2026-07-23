@@ -71,12 +71,9 @@ class ValidationEngine:
         checks: list[ValidationCheckRecord] = []
         for table in tables:
             for rule in [*self._profile_rules, *self._rules]:
-                if isinstance(rule, ProfileSpecRule):
-                    profile_issues, profile_checks = rule.evaluate(table)
-                    issues.extend(profile_issues)
-                    checks.extend(profile_checks)
-                else:
-                    issues.extend(rule.validate(table))
+                rule_issues, rule_checks = rule.evaluate(table)
+                issues.extend(rule_issues)
+                checks.extend(rule_checks)
 
         for rule in self._cross_table_rules:
             result = rule.evaluate(tables)

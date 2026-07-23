@@ -9,7 +9,8 @@ import unicodedata
 import xml.etree.ElementTree as ET
 import zipfile
 
-from app.db.schema import connect, init_db
+from app.db.connection import connect
+from app.db.schema import init_db
 from app.validation.models import restore_hyphenated_line_breaks
 from app.validation.translation_glossary import (
     extract_bilingual_pair,

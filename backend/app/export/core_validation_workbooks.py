@@ -10,7 +10,8 @@ from openpyxl import Workbook, load_workbook
 from openpyxl.styles import PatternFill
 
 from app.core.contact_metadata import ContactMetadata, parse_contact_metadata
-from app.db.schema import DB_PATH, connect, init_db
+from app.db.connection import DB_PATH, connect
+from app.db.schema import init_db
 from app.export.validation_workbooks import (
     ERROR_RELATED,
     REVIEW_RELATED,

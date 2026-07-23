@@ -9,7 +9,7 @@ import xml.etree.ElementTree as ET
 from zipfile import ZipFile
 
 from app.core.contact_metadata import clean_source_text
-from app.db.schema import DB_PATH
+from app.db.connection import DB_PATH
 from app.core.numeric_text import parse_numeric_value
 from app.ingest.anomaly import annotate_adjacent_duplicate_tables
 from app.ingest.cell_text import footnote_markers_from_texts, split_cell_text

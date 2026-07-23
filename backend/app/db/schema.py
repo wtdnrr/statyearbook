@@ -1,15 +1,11 @@
-from pathlib import Path
 import json
 import re
-import sqlite3
-from typing import Callable
+from typing import Any, Callable
 
-from app.core.env import env_value, load_local_env_file
-from app.db.postgres import PostgresConnection
+from app.db.connection import DB_PATH, DatabaseConnection
 from app.validation.catalog import REQUIRED_RULE_DEFINITIONS
 
 
-DB_PATH = Path(__file__).with_name("annual_statistics.sqlite")
 INITIALIZED_POSTGRES_URLS: set[str] = set()
 
 
@@ -331,21 +327,7 @@ ON linguistic_review_cache(review_type, prompt_version, reviewed_model);
 """
 
 
-def connect(db_path: Path | None = None) -> sqlite3.Connection | PostgresConnection:
-    load_local_env_file()
-    database_url = env_value("DATABASE_URL")
-    if database_url and (db_path is None or Path(db_path) == DB_PATH):
-        return PostgresConnection(database_url)
-
-    resolved_path = db_path or DB_PATH
-    resolved_path.parent.mkdir(parents=True, exist_ok=True)
-    connection = sqlite3.connect(resolved_path)
-    connection.row_factory = sqlite3.Row
-    connection.execute("PRAGMA foreign_keys = ON")
-    return connection
-
-
-def init_db(connection: sqlite3.Connection | PostgresConnection) -> None:
+def init_db(connection: DatabaseConnection) -> None:
     postgres_key = postgres_connection_key(connection)
     if postgres_key and postgres_key in INITIALIZED_POSTGRES_URLS:
         return
@@ -397,7 +379,7 @@ def init_db(connection: sqlite3.Connection | PostgresConnection) -> None:
 
 
 def ensure_column(
-    connection: sqlite3.Connection | PostgresConnection,
+    connection: DatabaseConnection,
     table_name: str,
     column_name: str,
     column_definition: str,
@@ -432,9 +414,9 @@ def postgres_connection_key(connection: object) -> str | None:
 
 
 def apply_data_migration(
-    connection: sqlite3.Connection,
+    connection: DatabaseConnection,
     key: str,
-    migration: Callable[[sqlite3.Connection], None],
+    migration: Callable[[DatabaseConnection], None],
 ) -> None:
     if connection.execute("SELECT 1 FROM schema_migrations WHERE key = ?", (key,)).fetchone():
         return
@@ -442,7 +424,7 @@ def apply_data_migration(
     connection.execute("INSERT INTO schema_migrations (key) VALUES (?)", (key,))
 
 
-def restore_semantic_type_qualifiers(connection: sqlite3.Connection) -> None:
+def restore_semantic_type_qualifiers(connection: DatabaseConnection) -> None:
     """Restore Type A/B header qualifiers removed by an older cell normalizer."""
 
     qualifier_by_column = {2: "[Type A]", 3: "[Type B]"}
@@ -469,7 +451,7 @@ def restore_semantic_type_qualifiers(connection: sqlite3.Connection) -> None:
         )
 
 
-def retire_terminology_validation(connection: sqlite3.Connection) -> None:
+def retire_terminology_validation(connection: DatabaseConnection) -> None:
     """Remove the retired terminology-suggestion category and its stored output."""
 
     connection.execute("DELETE FROM linguistic_review_cache WHERE review_type = '용어 제안'")
@@ -530,7 +512,7 @@ def retire_terminology_validation(connection: sqlite3.Connection) -> None:
     )
 
 
-def retire_metadata_validation(connection: sqlite3.Connection) -> None:
+def retire_metadata_validation(connection: DatabaseConnection) -> None:
     """Historical cleanup retained so older databases migrate deterministically."""
 
     retired_rule_filter = "rule_id = 'metadata.required' OR rule_id LIKE '%.metadata_required'"
@@ -587,7 +569,7 @@ def retire_metadata_validation(connection: sqlite3.Connection) -> None:
         )
 
 
-def restore_metadata_validation(connection: sqlite3.Connection) -> None:
+def restore_metadata_validation(connection: DatabaseConnection) -> None:
     """Restore presence checks while keeping metadata out of language review."""
 
     retire_metadata_linguistic_reviews(connection)
@@ -596,7 +578,7 @@ def restore_metadata_validation(connection: sqlite3.Connection) -> None:
     restore_latest_run_metadata_checks(connection)
 
 
-def restore_metadata_profile_specs(connection: sqlite3.Connection) -> None:
+def restore_metadata_profile_specs(connection: DatabaseConnection) -> None:
     metadata_definition = next(
         definition.to_dict()
         for definition in REQUIRED_RULE_DEFINITIONS
@@ -673,7 +655,7 @@ def metadata_profile_spec(table_code: str, expected_unit: str) -> dict[str, obje
     }
 
 
-def restore_latest_run_metadata_checks(connection: sqlite3.Connection) -> None:
+def restore_latest_run_metadata_checks(connection: DatabaseConnection) -> None:
     latest_runs = connection.execute(
         """
         SELECT vr.id, vr.report_id
@@ -777,7 +759,7 @@ def restore_latest_run_metadata_checks(connection: sqlite3.Connection) -> None:
     )
 
 
-def repair_misaligned_linguistic_reviews(connection: sqlite3.Connection) -> None:
+def repair_misaligned_linguistic_reviews(connection: DatabaseConnection) -> None:
     """Reset LLM results whose returned source text belongs to another candidate."""
 
     rows = connection.execute(
@@ -819,7 +801,7 @@ def repair_misaligned_linguistic_reviews(connection: sqlite3.Connection) -> None
         )
         materialized_values.setdefault(key, []).append(str(record["current_value"] or ""))
 
-    invalid_rows_by_id: dict[int, sqlite3.Row] = {}
+    invalid_rows_by_id: dict[int, Any] = {}
     for row in rows:
         try:
             decision = json.loads(str(row["review_result_json"] or "{}"))
@@ -956,7 +938,7 @@ def linguistic_materialized_rule_id(candidate_kind: str, review_type: str) -> st
     }.get(review_type, "")
 
 
-def retire_metadata_linguistic_reviews(connection: sqlite3.Connection) -> None:
+def retire_metadata_linguistic_reviews(connection: DatabaseConnection) -> None:
     locations = ("분야", "단위", "기준일", "주석", "출처")
     location_filter = " OR ".join("location = ? OR location LIKE ?" for _ in locations)
     location_params = tuple(
@@ -1004,7 +986,7 @@ def retire_metadata_linguistic_reviews(connection: sqlite3.Connection) -> None:
 
 
 def retire_mislinked_metadata_payload_reviews(
-    connection: sqlite3.Connection,
+    connection: DatabaseConnection,
     language_rule_ids: tuple[str, ...],
 ) -> None:
     candidate_rows = connection.execute(
@@ -1082,7 +1064,7 @@ def retire_mislinked_metadata_payload_reviews(
             connection.executemany(f"DELETE FROM {table_name} WHERE id = ?", record_ids)
 
 
-def retire_stale_linguistic_review_records(connection: sqlite3.Connection) -> None:
+def retire_stale_linguistic_review_records(connection: DatabaseConnection) -> None:
     """Remove language results that contain note/source payloads in cell locations."""
 
     language_rule_ids = (
@@ -1145,7 +1127,7 @@ def matches_long_metadata_payload(value: str, note: str, source: str) -> bool:
     return False
 
 
-def seed_validation_rule_definitions(connection: sqlite3.Connection) -> None:
+def seed_validation_rule_definitions(connection: DatabaseConnection) -> None:
     connection.executemany(
         "DELETE FROM validation_rule_definitions WHERE key = ?",
         [("unit",), ("empty",), ("terminology",)],

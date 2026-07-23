@@ -95,3 +95,101 @@ def rule_spec(rule_key: str, spec: dict) -> dict:
         "severity": definition.default_severity,
         **spec,
     }
+
+
+# Profile specs are persisted as JSON, so their type names form a database
+# contract. Keep that contract and the corresponding executor in one place.
+PROFILE_SPEC_EXECUTORS: dict[str, str] = {
+    "metadata_required": "_validate_metadata",
+    "region_total": "_validate_column_sum",
+    "column_sum": "_validate_column_sum",
+    "cell_sum": "_validate_cell_sum",
+    "cell_relation_sum": "_validate_cell_relation_sum",
+    "row_sum": "_validate_row_sum",
+    "row_arithmetic": "_validate_row_arithmetic",
+    "row_ratio": "_validate_row_ratio",
+    "column_share_ratio": "_validate_column_share_ratio",
+    "row_ratio_by_rows": "_validate_row_ratio_by_rows",
+    "weighted_average": "_validate_weighted_average",
+    "growth_rate_scan": "_validate_growth_rate_scan",
+    "row_growth_rate": "_validate_row_growth_rate",
+    "row_year_over_year_rate": "_validate_row_year_over_year_rate",
+    "row_year_over_year_change_amount": "_validate_row_year_over_year_change_amount",
+    "year_rows_change_rate": "_validate_year_rows_change_rate",
+    "year_rows_change_amount": "_validate_year_rows_change_amount",
+    "outlier_columns": "_validate_outliers",
+}
+
+# These specs are consumed by another stage or normalized before execution.
+DEFERRED_PROFILE_SPEC_TYPES = {
+    "unit_required",
+    "cross_table_row_sum",
+    "cross_table_weighted_average",
+    "cross_table_cell_match",
+}
+
+SUPPORTED_PROFILE_SPEC_TYPES = frozenset(PROFILE_SPEC_EXECUTORS) | DEFERRED_PROFILE_SPEC_TYPES
+
+LLM_PROFILE_RULE_TYPES = frozenset(
+    {
+        "region_total",
+        "column_sum",
+        "cell_sum",
+        "cell_relation_sum",
+        "row_sum",
+        "row_arithmetic",
+        "row_ratio",
+        "column_share_ratio",
+        "row_ratio_by_rows",
+        "weighted_average",
+        "growth_rate_scan",
+        "row_growth_rate",
+        "row_year_over_year_rate",
+        "row_year_over_year_change_amount",
+        "year_rows_change_rate",
+        "year_rows_change_amount",
+    }
+)
+
+RATIO_RULE_TYPES = frozenset(
+    {
+        "row_ratio",
+        "column_share_ratio",
+        "row_ratio_by_rows",
+        "weighted_average",
+    }
+)
+
+GROWTH_RATE_RULE_TYPES = frozenset(
+    {
+        "growth_rate_scan",
+        "row_growth_rate",
+        "row_year_over_year_rate",
+        "year_rows_change_rate",
+    }
+)
+
+CALCULATION_RULE_TYPES = frozenset(
+    {
+        "region_total",
+        "column_sum",
+        "cell_sum",
+        "cell_relation_sum",
+        "row_sum",
+        "row_arithmetic",
+        "row_ratio",
+        "column_share_ratio",
+        "row_ratio_by_rows",
+        "cross_table_cell_match",
+        "cross_table_row_sum",
+        "cross_table_weighted_average",
+    }
+)
+
+
+def check_group_for_rule_type(rule_type: str) -> str:
+    if rule_type in RATIO_RULE_TYPES:
+        return "ratio"
+    if rule_type in GROWTH_RATE_RULE_TYPES:
+        return "growth_rate"
+    return "sum"
