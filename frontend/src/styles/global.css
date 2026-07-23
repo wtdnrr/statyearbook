@@ -1571,7 +1571,7 @@ button {
 }
 
 .check-review-panel {
-  grid-template-rows: auto auto minmax(0, 1fr) auto;
+  grid-template-rows: auto auto auto minmax(0, 1fr) auto;
   min-height: calc(100vh - 168px);
 }
 
@@ -1718,6 +1718,7 @@ button {
 
 .check-result-list {
   display: grid;
+  grid-auto-rows: 38px;
   gap: 6px;
   max-height: 154px;
   overflow: auto;
@@ -1730,7 +1731,8 @@ button {
   grid-template-columns: 28px minmax(0, 1fr) auto;
   align-items: center;
   gap: 8px;
-  min-height: 38px;
+  height: 38px;
+  min-height: 0;
   padding: 0 10px;
   color: var(--text);
   background: #fff;
