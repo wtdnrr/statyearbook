@@ -710,9 +710,7 @@ export function DetailView({
   const filteredChecks = checksForFilter(checkFilter, displayChecks, passedChecks, reviewChecks, errorChecks);
   const selectedIssueBase =
     filteredChecks.find((check) => check.id === selectedCheckId) ??
-    filteredChecks[0] ??
-    displayChecks.find((check) => check.id === selectedCheckId) ??
-    displayChecks[0];
+    filteredChecks[0];
   const selectedIssue = expandCalculationFamilyForHighlight(activePart, selectedIssueBase, allRawChecks);
   const isMetadataIssue = selectedIssue?.highlight_scope === "metadata";
   const activeIssueIndex = Math.max(filteredChecks.findIndex((check) => check.id === selectedIssue?.id), 0);
@@ -976,32 +974,32 @@ export function DetailView({
                   ) : null}
                 </article>
               ) : (
-                <p className="empty-copy">이 분류에 해당하는 검수 결과가 없습니다.</p>
+                <p className="empty-copy">해당 내용이 없습니다.</p>
               )}
 
-              <div className="check-card-nav">
-                <button
-                  className="icon-button"
-                  type="button"
-                  onClick={() => moveIssue(-1)}
-                  disabled={filteredChecks.length <= 1}
-                  aria-label="이전 검수"
-                >
-                  <ChevronLeft aria-hidden="true" size={18} />
-                </button>
-                <span>
-                  {filteredChecks.length > 0 ? `${activeIssueIndex + 1} / ${filteredChecks.length}` : "0 / 0"}
-                </span>
-                <button
-                  className="icon-button"
-                  type="button"
-                  onClick={() => moveIssue(1)}
-                  disabled={filteredChecks.length <= 1}
-                  aria-label="다음 검수"
-                >
-                  <ChevronRight aria-hidden="true" size={18} />
-                </button>
-              </div>
+              {filteredChecks.length > 0 ? (
+                <div className="check-card-nav">
+                  <button
+                    className="icon-button"
+                    type="button"
+                    onClick={() => moveIssue(-1)}
+                    disabled={filteredChecks.length <= 1}
+                    aria-label="이전 검수"
+                  >
+                    <ChevronLeft aria-hidden="true" size={18} />
+                  </button>
+                  <span>{`${activeIssueIndex + 1} / ${filteredChecks.length}`}</span>
+                  <button
+                    className="icon-button"
+                    type="button"
+                    onClick={() => moveIssue(1)}
+                    disabled={filteredChecks.length <= 1}
+                    aria-label="다음 검수"
+                  >
+                    <ChevronRight aria-hidden="true" size={18} />
+                  </button>
+                </div>
+              ) : null}
             </div>
             ) : null}
 

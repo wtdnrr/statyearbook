@@ -169,6 +169,20 @@ export default function App() {
     return <div className="state-page">상세 데이터를 불러오는 중입니다.</div>;
   }
 
+  if (rawTables.length === 0) {
+    return (
+      <main className="app-shell">
+        <AppHeader
+          activeSection={activeSection}
+          onSectionChange={setActiveSection}
+          onUpload={handleUpload}
+          uploadState={uploadState}
+        />
+        <div className="state-page">데이터가 없습니다.</div>
+      </main>
+    );
+  }
+
   if (detailTable) {
     return (
       <DetailView

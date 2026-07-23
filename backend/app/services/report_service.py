@@ -1,32 +1,16 @@
 from app.models.report import PressInsight, ReportOption, ReportPayload, ReportSummary, StatTable
 
 
-FALLBACK_ORIGINAL_FILE = "2025_통계연보_추출.xlsx"
-
-
 class ReportService:
     def __init__(self, tables: list[StatTable] | None = None) -> None:
-        if tables is None:
-            from app.data.dummy_report import TABLES
-
-            tables = TABLES
-        self._tables = tables
+        self._tables = tables or []
 
     def get_payload(self) -> ReportPayload:
         return ReportPayload(
             summary=self.get_summary(),
             tables=self.list_tables(),
             press_insights=self.get_press_insights(),
-            available_reports=[
-                ReportOption(
-                    id=0,
-                    year=2025,
-                    title="2025 통계연보 더미",
-                    file_name=FALLBACK_ORIGINAL_FILE,
-                    imported_at="",
-                    table_count=len(self._tables),
-                )
-            ],
+            available_reports=self._fallback_report_options(),
         )
 
     def get_summary(self) -> ReportSummary:
@@ -37,15 +21,29 @@ class ReportService:
                     issue_counts[check.type] = issue_counts.get(check.type, 0) + 1
 
         return ReportSummary(
-            report_id=0,
-            file_name=FALLBACK_ORIGINAL_FILE,
-            base_year="2025",
+            report_id=0 if self._tables else None,
+            file_name="",
+            base_year="",
             total_tables=len(self._tables),
             normal_count=sum(1 for table in self._tables if table.status == "normal"),
             needs_review_count=sum(1 for table in self._tables if table.status == "needs_review"),
             suspected_error_count=sum(1 for table in self._tables if table.status == "suspected_error"),
             issue_counts=issue_counts,
         )
+
+    def _fallback_report_options(self) -> list[ReportOption]:
+        if not self._tables:
+            return []
+        return [
+            ReportOption(
+                id=0,
+                year=0,
+                title="임시 데이터",
+                file_name="",
+                imported_at="",
+                table_count=len(self._tables),
+            )
+        ]
 
     def list_tables(self, report_id: int | None = None) -> list[StatTable]:
         return self._tables
